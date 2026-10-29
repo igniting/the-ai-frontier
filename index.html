@@ -5,7 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Lumen Playground</title>
 <meta name="claude:viewport-fit-sides" content="cover">
-<meta name="description" content="Lumen: a statically typed functional language compiled to WebAssembly in your browser.">
+<meta name="description" content="Lumen: a statically typed functional language with its own compiler and garbage collector, compiled to WebAssembly in your browser.">
+<meta property="og:title" content="Lumen Playground">
+<meta property="og:description" content="A typed functional language with a from-scratch compiler to WebAssembly: type inference, exhaustiveness checking, tail calls and a copying garbage collector, verified by differential fuzzing.">
+<meta property="og:image" content="https://igniting.github.io/the-ai-frontier/docs/playground.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%235a43dc'/%3E%3Ctext x='16' y='23' font-family='Georgia,serif' font-size='20' font-style='italic' text-anchor='middle' fill='white'%3Ee%3C/text%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap">
@@ -94,6 +99,8 @@ select {
 .run:hover { filter: brightness(1.08); }
 .run kbd { font-family: var(--font-code); font-size: 11px; opacity: 0.75; font-weight: 400; }
 .run.stop { background: var(--err); }
+.source-link { color: var(--muted); font-size: 13px; text-decoration: none; padding: 6px 2px; }
+.source-link:hover { color: var(--accent); text-decoration: underline; }
 
 /* -------------------------------------------------------- pipeline strip */
 .pipeline { display: flex; flex-wrap: wrap; align-items: stretch; gap: 4px; }
@@ -252,6 +259,7 @@ table.mut td.num { font-family: var(--font-code); text-align: right; font-varian
       <label class="check" title="Collect garbage on every single allocation, with a 4 KiB heap. Slow, but any GC bug shows up immediately."><input type="checkbox" id="opt-stress"> GC on every allocation</label>
       <label class="check" title="Also run the program in the reference interpreter and compare the output byte for byte."><input type="checkbox" id="opt-compare" checked> Cross-check</label>
       <button class="run" id="run" type="button">Run <kbd id="run-key">Ctrl ↵</kbd></button>
+      <a class="source-link" href="https://github.com/igniting/the-ai-frontier" target="_blank" rel="noopener">Source</a>
     </div>
   </header>
 
@@ -368,6 +376,8 @@ table.mut td.num { font-family: var(--font-code); text-align: right; font-varian
             </ul>
             <h3>How it is verified</h3>
             <p>Golden tests cover every example. Semantic tests run each program three ways. The differential fuzzer (the Fuzzer tab) has checked more than 11,000 random programs with no disagreement. Mutation testing confirms that the fuzzer catches 16 of 16 deliberately injected compiler bugs.</p>
+            <h3>Source</h3>
+            <p>The compiler, tests, fuzzer, language spec and a model-comparison challenge are on <a href="https://github.com/igniting/the-ai-frontier" target="_blank" rel="noopener">GitHub</a>.</p>
             <h3>The language in one breath</h3>
             <p>31-bit integers that wrap around, booleans, byte strings, tuples, and generic algebraic data types. Pattern matching with guards and nested patterns. First-class functions and closures. Structural <code>==</code> and <code>&lt;</code> on any type except functions. A prelude of list, option and string functions, itself written in Lumen. Run it locally with <code>npm run serve</code>, or use the CLI: <code>node bin/lumen.js run examples/huffman.lm --stats</code>.</p>
           </div>

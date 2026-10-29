@@ -1,5 +1,9 @@
 # Lumen
 
+[![ci](https://github.com/igniting/the-ai-frontier/actions/workflows/ci.yml/badge.svg)](https://github.com/igniting/the-ai-frontier/actions/workflows/ci.yml)
+
+**[Try it in your browser →](https://igniting.github.io/the-ai-frontier/)**
+
 **A statically typed functional language with a from-scratch compiler to
 WebAssembly.** It infers every type, proves every `match` exhaustive, converts
 closures, compiles tail calls to `return_call`, and ships its own copying
