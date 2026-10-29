@@ -1,0 +1,23 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Unit, golden and three-way semantic tests
+        run: npm test
+      - name: Differential fuzzing (fresh seeds every run)
+        run: node fuzz/fuzz.js --count 1000 --size 2 --seed $(( GITHUB_RUN_NUMBER * 1000 )) --quiet
+      - name: Mutation testing of the fuzzer
+        run: node fuzz/mutants.js --budget 300
+      - name: Spec conformance
+        run: node challenge/score.js --fuzz 200 -- node bin/lumen.js run

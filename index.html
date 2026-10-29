@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lumen Playground</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="Lumen: a statically typed functional language compiled to WebAssembly in your browser.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap">
+<style>
+/* Layout: a one-screen workbench. Header and pipeline strip on top; editor and
+   inspector side by side below, each scrolling on its own. Stacks on phones. */
+:root {
+  --bg: #f5f4f9;
+  --surface: #ffffff;
+  --sunken: #eeecf5;
+  --ink: #1d1b2b;
+  --muted: #676379;
+  --line: #e0dcea;
+  --accent: #5a43dc;
+  --accent-soft: #ebe7fd;
+  --on-accent: #ffffff;
+  --ok: #1d7f55;
+  --ok-soft: #e1f3ea;
+  --err: #c2373a;
+  --err-soft: #fbe6e6;
+  --warn: #9a6a12;
+  --warn-soft: #fbf0d9;
+  /* code */
+  --c-kw: #5a43dc;
+  --c-type: #9a2f83;
+  --c-str: #a24a12;
+  --c-num: #0b7069;
+  --c-fn: #1d4f9c;
+  --c-com: #8d899e;
+  --c-op: #5d596e;
+
+  --font-ui: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-code: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --font-display: "Instrument Serif", "Iowan Old Style", Georgia, serif;
+  --code-size: 13px;
+  --code-line: 20px;
+  --radius: 6px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #121119; --surface: #1a1825; --sunken: #15131e; --ink: #e9e7f3; --muted: #9b97ad; --line: #2c2939;
+    --accent: #a596ff; --accent-soft: #2a2550; --on-accent: #14121d;
+    --ok: #5fd39c; --ok-soft: #173126; --err: #ff8a85; --err-soft: #3a1c1f; --warn: #f0c060; --warn-soft: #362c14;
+    --c-kw: #b2a6ff; --c-type: #ee93d8; --c-str: #f4a76f; --c-num: #6fd7cb; --c-fn: #8cb8ff; --c-com: #6f6b82; --c-op: #a7a3b8;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #121119; --surface: #1a1825; --sunken: #15131e; --ink: #e9e7f3; --muted: #9b97ad; --line: #2c2939;
+  --accent: #a596ff; --accent-soft: #2a2550; --on-accent: #14121d;
+  --ok: #5fd39c; --ok-soft: #173126; --err: #ff8a85; --err-soft: #3a1c1f; --warn: #f0c060; --warn-soft: #362c14;
+  --c-kw: #b2a6ff; --c-type: #ee93d8; --c-str: #f4a76f; --c-num: #6fd7cb; --c-fn: #8cb8ff; --c-com: #6f6b82; --c-op: #a7a3b8;
+  color-scheme: dark;
+}
+
+html, body { height: 100%; }
+[hidden] { display: none !important; }
+body {
+  margin: 0;
+  background: var(--bg); color: var(--ink); font-family: var(--font-ui); font-size: 14px; line-height: 1.45;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.app { box-sizing: border-box; height: 100%; display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 10px; padding-block: 12px; max-width: 1680px; margin: 0 auto; }
+button, select, input { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------------------------------------------------------------- header */
+.bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 20px; }
+.brand { display: flex; align-items: baseline; gap: 12px; min-width: 0; flex-wrap: wrap; }
+.wordmark { font-family: var(--font-display); font-size: 30px; line-height: 1; letter-spacing: -0.01em; }
+.wordmark em { color: var(--accent); }
+.tagline { color: var(--muted); font-size: 13px; }
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+select {
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 6px 28px 6px 10px; max-width: 260px;
+  appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 15px) 52%, calc(100% - 10px) 52%; background-size: 5px 5px; background-repeat: no-repeat;
+}
+.check { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; cursor: pointer; user-select: none; }
+.check input { accent-color: var(--accent); margin: 0; }
+.run {
+  display: inline-flex; align-items: center; gap: 8px; border: 0; border-radius: var(--radius); padding: 7px 14px;
+  background: var(--accent); color: var(--on-accent); font-weight: 600; cursor: pointer;
+}
+.run:hover { filter: brightness(1.08); }
+.run kbd { font-family: var(--font-code); font-size: 11px; opacity: 0.75; font-weight: 400; }
+.run.stop { background: var(--err); }
+
+/* -------------------------------------------------------- pipeline strip */
+.pipeline { display: flex; flex-wrap: wrap; align-items: stretch; gap: 4px; }
+.stage {
+  display: flex; flex-direction: column; gap: 1px; padding: 6px 10px; border-radius: var(--radius);
+  background: var(--surface); border: 1px solid var(--line); min-width: 0;
+}
+.stage .k { font-size: 10.5px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+.stage .v { font-family: var(--font-code); font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.stage.result { border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); }
+.arrow { align-self: center; color: var(--line); font-size: 13px; padding: 0 1px; }
+.stage.failed { border-color: var(--err); background: var(--err-soft); }
+.stage.failed .v { color: var(--err); }
+.stage.skipped { opacity: 0.45; }
+
+/* ------------------------------------------------------------------ split */
+.split { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 10px; min-height: 0; }
+.pane { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
+.pane-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 12px; border-bottom: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
+.pane-head .file { font-family: var(--font-code); color: var(--ink); }
+.status-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 2px 8px; border-radius: 99px; background: var(--sunken); color: var(--muted); white-space: nowrap; }
+.status-chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.status-chip.ok { background: var(--ok-soft); color: var(--ok); }
+.status-chip.err { background: var(--err-soft); color: var(--err); }
+.status-chip.warn { background: var(--warn-soft); color: var(--warn); }
+.example-note { padding: 7px 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12.5px; }
+
+/* ----------------------------------------------------------------- editor */
+.editor { flex: 1; display: grid; grid-template-columns: auto minmax(0, 1fr); min-height: 0; background: var(--surface); }
+.gutter {
+  overflow: hidden; padding: 10px 8px 10px 12px; text-align: right; color: var(--c-com); background: var(--surface);
+  font-family: var(--font-code); font-size: var(--code-size); line-height: var(--code-line); user-select: none; font-variant-numeric: tabular-nums;
+}
+.gutter div.bad { color: var(--err); font-weight: 500; }
+.code-wrap { position: relative; min-width: 0; min-height: 0; }
+.code-wrap pre, .code-wrap textarea {
+  position: absolute; inset: 0; margin: 0; padding: 10px 14px 10px 6px; border: 0;
+  font-family: var(--font-code); font-size: var(--code-size); line-height: var(--code-line); tab-size: 2;
+  white-space: pre; overflow-wrap: normal; letter-spacing: 0; font-variant-ligatures: none;
+}
+.code-wrap pre { overflow: hidden; pointer-events: none; color: var(--ink); }
+.code-wrap #marks { color: transparent; }
+.code-wrap textarea {
+  overflow: auto; resize: none; background: transparent; color: transparent; caret-color: var(--ink); outline: none;
+}
+.code-wrap textarea::selection { background: color-mix(in srgb, var(--accent) 28%, transparent); color: transparent; }
+#marks mark { background: transparent; color: transparent; text-decoration: underline wavy var(--err); text-decoration-skip-ink: none; text-underline-offset: 4px; }
+#marks mark.warning { text-decoration-color: var(--warn); }
+.k { color: var(--c-kw); font-weight: 500; }
+.t { color: var(--c-type); }
+.s { color: var(--c-str); }
+.n { color: var(--c-num); }
+.f { color: var(--c-fn); }
+.c { color: var(--c-com); font-style: italic; }
+.o { color: var(--c-op); }
+
+/* --------------------------------------------------------------- inspector */
+.tabs { display: flex; gap: 2px; padding: 4px 6px 0; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
+.tab {
+  border: 0; background: none; padding: 7px 10px 8px; color: var(--muted); cursor: pointer; font-size: 13px; white-space: nowrap;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); font-weight: 500; }
+.tab .count { font-family: var(--font-code); font-size: 11px; color: var(--muted); margin-left: 4px; }
+.panels { flex: 1; min-height: 0; position: relative; }
+.panel { position: absolute; inset: 0; overflow: auto; padding: 12px 14px 16px; }
+.panel pre.code { margin: 0; font-family: var(--font-code); font-size: 12px; line-height: 18px; white-space: pre; tab-size: 2; }
+
+.run-status { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-bottom: 10px; }
+.run-status .msg { font-weight: 500; }
+.badge { font-size: 12px; padding: 2px 8px; border-radius: 99px; background: var(--sunken); color: var(--muted); white-space: nowrap; }
+.badge.ok { background: var(--ok-soft); color: var(--ok); }
+.badge.err { background: var(--err-soft); color: var(--err); }
+.diag {
+  margin: 0 0 10px; padding: 9px 12px; border-radius: var(--radius); border-left: 3px solid var(--err); background: var(--err-soft);
+  font-family: var(--font-code); font-size: 12px; line-height: 17px; white-space: pre; overflow-x: auto; color: var(--ink);
+}
+.diag.warning { border-left-color: var(--warn); background: var(--warn-soft); }
+.out {
+  margin: 0; padding: 10px 12px; border-radius: var(--radius); background: var(--sunken); min-height: 3em;
+  font-family: var(--font-code); font-size: 12.5px; line-height: 18px; white-space: pre; overflow-x: auto;
+}
+.out:empty::before { content: "(no output)"; color: var(--muted); }
+.runtime-error { margin-top: 8px; color: var(--err); font-family: var(--font-code); font-size: 12.5px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(105px, 1fr)); gap: 8px; margin-top: 12px; }
+.stat { padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius); }
+.stat .k { font-size: 10.5px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); font-weight: 400; }
+.stat .v { font-family: var(--font-code); font-size: 15px; font-variant-numeric: tabular-nums; margin-top: 2px; color: var(--ink); }
+.hint { color: var(--muted); font-size: 12.5px; margin: 0 0 10px; max-width: 70ch; }
+
+.sigs { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.sigs button {
+  display: flex; gap: 10px; width: 100%; text-align: left; border: 0; background: none; padding: 6px 8px; border-radius: var(--radius); cursor: pointer;
+  font-family: var(--font-code); font-size: 12.5px; line-height: 18px;
+}
+.sigs button:hover { background: var(--sunken); }
+.sigs .name { color: var(--c-fn); white-space: nowrap; }
+.sigs .ty { color: var(--ink); overflow-wrap: anywhere; min-width: 0; }
+
+/* WAT / IR highlighting */
+.w-com { color: var(--c-com); font-style: italic; }
+.w-id { color: var(--c-type); }
+.w-num { color: var(--c-num); }
+.w-kw { color: var(--c-kw); font-weight: 500; }
+
+/* ------------------------------------------------------------------ fuzzer */
+.fuzz-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 12px; }
+.fuzz-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 14px; }
+.stat.good .v { color: var(--ok); }
+.stat.bad .v { color: var(--err); }
+.section-title { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 16px 0 8px; font-weight: 500; }
+.fuzz-program { max-height: 340px; overflow: auto; padding: 10px 12px; border-radius: var(--radius); background: var(--sunken); }
+table.mut { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+table.mut td, table.mut th { padding: 5px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+table.mut th { font-weight: 500; color: var(--muted); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; }
+table.mut td.num { font-family: var(--font-code); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.table-wrap { overflow-x: auto; }
+
+/* ------------------------------------------------------------------- about */
+.about { max-width: 68ch; }
+.about h2 { font-family: var(--font-display); font-weight: 400; font-size: 26px; line-height: 1.15; margin: 4px 0 8px; text-wrap: balance; }
+.about h3 { font-size: 13px; margin: 18px 0 6px; font-weight: 600; }
+.about p { margin: 0 0 10px; }
+.about code { font-family: var(--font-code); font-size: 12.5px; background: var(--sunken); padding: 1px 4px; border-radius: 3px; }
+.phases { list-style: none; padding: 0; margin: 0; display: grid; gap: 0; }
+.phases li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; padding: 7px 0; border-bottom: 1px solid var(--line); }
+.phases .what { min-width: 0; }
+.phases .what b { font-weight: 500; }
+.phases .what span { display: block; color: var(--muted); font-size: 12.5px; }
+.phases .loc { font-family: var(--font-code); font-size: 12px; color: var(--muted); text-align: right; white-space: nowrap; }
+.about a { color: var(--accent); }
+
+@media (max-width: 860px) {
+  html, body { height: auto; }
+  .app { height: auto; grid-template-rows: none; }
+  .split { grid-template-columns: minmax(0, 1fr); }
+  .editor-pane { height: 58vh; min-height: 360px; }
+  .panel-pane { height: 75vh; min-height: 420px; }
+  .tagline { display: none; }
+  .pipeline { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .fuzz-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+
+</head>
+<body>
+<div class="app">
+  <header class="bar">
+    <div class="brand">
+      <span class="wordmark">Lum<em>e</em>n</span>
+      <span class="tagline">A typed functional language, compiled to WebAssembly in your browser</span>
+    </div>
+    <div class="controls">
+      <select id="example" aria-label="Example program"></select>
+      <label class="check" title="Collect garbage on every single allocation, with a 4 KiB heap. Slow, but any GC bug shows up immediately."><input type="checkbox" id="opt-stress"> GC on every allocation</label>
+      <label class="check" title="Also run the program in the reference interpreter and compare the output byte for byte."><input type="checkbox" id="opt-compare" checked> Cross-check</label>
+      <button class="run" id="run" type="button">Run <kbd id="run-key">Ctrl ↵</kbd></button>
+    </div>
+  </header>
+
+  <section class="pipeline" id="pipeline" aria-label="Compiler pipeline timings">
+    <div class="stage"><span class="k">Parse</span><span class="v" id="t-parse">–</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="stage"><span class="k">Infer types</span><span class="v" id="t-typecheck">–</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="stage"><span class="k">Lower to IR</span><span class="v" id="t-lower">–</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="stage"><span class="k">Codegen</span><span class="v" id="t-codegen">–</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="stage"><span class="k">Encode</span><span class="v" id="t-encode">–</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="stage result"><span class="k">Binary</span><span class="v" id="t-size">–</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="stage result"><span class="k">Run</span><span class="v" id="t-run">–</span></div>
+    <span class="arrow" aria-hidden="true">·</span>
+    <div class="stage result"><span class="k">Garbage collector</span><span class="v" id="t-gc">–</span></div>
+  </section>
+
+  <main class="split">
+    <section class="pane editor-pane" aria-label="Editor">
+      <div class="pane-head"><span class="file" id="file-name">hello.lm</span><span class="status-chip" id="check-status">checking…</span></div>
+      <div class="editor">
+        <div class="gutter" id="gutter" aria-hidden="true"></div>
+        <div class="code-wrap">
+          <pre id="hl" aria-hidden="true"></pre>
+          <pre id="marks" aria-hidden="true"></pre>
+          <textarea id="code" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" wrap="off" aria-label="Lumen source code"></textarea>
+        </div>
+      </div>
+      <div class="example-note" id="example-note"></div>
+    </section>
+
+    <section class="pane panel-pane" aria-label="Inspector">
+      <nav class="tabs" role="tablist">
+        <button class="tab" role="tab" id="tab-output" aria-controls="panel-output" aria-selected="true">Output</button>
+        <button class="tab" role="tab" id="tab-types" aria-controls="panel-types" aria-selected="false">Types<span class="count" id="types-count"></span></button>
+        <button class="tab" role="tab" id="tab-ir" aria-controls="panel-ir" aria-selected="false">IR</button>
+        <button class="tab" role="tab" id="tab-wat" aria-controls="panel-wat" aria-selected="false">WebAssembly</button>
+        <button class="tab" role="tab" id="tab-fuzz" aria-controls="panel-fuzz" aria-selected="false">Fuzzer</button>
+        <button class="tab" role="tab" id="tab-about" aria-controls="panel-about" aria-selected="false">About</button>
+      </nav>
+      <div class="panels">
+        <div class="panel" role="tabpanel" id="panel-output" aria-labelledby="tab-output">
+          <div class="run-status" id="run-status"><span class="msg">Compiling…</span></div>
+          <div id="diagnostics"></div>
+          <pre class="out" id="out"></pre>
+          <div class="runtime-error" id="runtime-error" hidden></div>
+          <div class="stats" id="run-stats" hidden>
+            <div class="stat"><div class="k">Run time</div><div class="v" id="s-time">–</div></div>
+            <div class="stat"><div class="k">Collections</div><div class="v" id="s-gc">–</div></div>
+            <div class="stat"><div class="k">Allocated</div><div class="v" id="s-alloc">–</div></div>
+            <div class="stat"><div class="k">Live at exit</div><div class="v" id="s-live">–</div></div>
+            <div class="stat"><div class="k">Semispace</div><div class="v" id="s-heap">–</div></div>
+          </div>
+        </div>
+        <div class="panel" role="tabpanel" id="panel-types" aria-labelledby="tab-types" hidden>
+          <p class="hint">Every type below was inferred (Hindley–Milner, with let-polymorphism). Click a function to jump to it.</p>
+          <ul class="sigs" id="sigs"></ul>
+        </div>
+        <div class="panel" role="tabpanel" id="panel-ir" aria-labelledby="tab-ir" hidden>
+          <p class="hint">The A-normal-form IR after closure conversion and pattern-match compilation, for the functions that survive dead-code elimination. Variables marked <code>#</code> hold only immediates, so they stay out of the garbage collector's root set.</p>
+          <pre class="code" id="ir"></pre>
+        </div>
+        <div class="panel" role="tabpanel" id="panel-wat" aria-labelledby="tab-wat" hidden>
+          <p class="hint">The exact module that runs, printed as WebAssembly text. The runtime (allocator, copying collector, structural equality, strings) is hand-written wasm emitted by the compiler.</p>
+          <pre class="code" id="wat"></pre>
+        </div>
+        <div class="panel" role="tabpanel" id="panel-fuzz" aria-labelledby="tab-fuzz" hidden>
+          <p class="hint">The fuzzer writes random, well-typed Lumen programs and runs each one three ways: in the reference interpreter, as compiled WebAssembly, and as WebAssembly that collects garbage on every allocation. All three must print exactly the same bytes and stop with the same error.</p>
+          <div class="fuzz-controls">
+            <button class="run" id="fuzz-toggle" type="button">Start fuzzing</button>
+            <select id="fuzz-size" aria-label="Program size">
+              <option value="1">Small programs</option>
+              <option value="2" selected>Medium programs</option>
+              <option value="3">Large programs</option>
+            </select>
+          </div>
+          <div class="fuzz-grid">
+            <div class="stat"><div class="k">Programs</div><div class="v" id="f-programs">0</div></div>
+            <div class="stat good"><div class="k">All three agree</div><div class="v" id="f-agreed">0</div></div>
+            <div class="stat"><div class="k">Same runtime error</div><div class="v" id="f-errors">0</div></div>
+            <div class="stat" id="f-mismatch-card"><div class="k">Mismatches</div><div class="v" id="f-mismatches">0</div></div>
+            <div class="stat"><div class="k">Collections</div><div class="v" id="f-gcs">0</div></div>
+            <div class="stat"><div class="k">Programs / s</div><div class="v" id="f-rate">–</div></div>
+          </div>
+          <div class="section-title" id="fuzz-program-title">Latest generated program</div>
+          <pre class="code fuzz-program" id="fuzz-program">Press “Start fuzzing” to watch programs being generated and checked.</pre>
+          <div class="section-title">Who checks the checker?</div>
+          <p class="hint">To show the fuzzer can find real bugs, <code>fuzz/mutants.js</code> injects each of these compiler bugs into a copy of the compiler and counts how many random programs it takes to notice. All 16 were caught.</p>
+          <div class="table-wrap">
+            <table class="mut" id="mutants">
+              <thead><tr><th>Injected bug</th><th style="text-align:right">Caught after</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="panel" role="tabpanel" id="panel-about" aria-labelledby="tab-about" hidden>
+          <div class="about">
+            <h2>A compiler you can watch work</h2>
+            <p>Lumen is a small, statically typed functional language. Everything on this page runs in your browser. The compiler is about 3,500 lines of dependency-free JavaScript. It infers every type, checks that every <code>match</code> is exhaustive, and emits a WebAssembly binary byte by byte. Programs that allocate carry their own garbage collector inside that binary.</p>
+            <h3>Pipeline</h3>
+            <ul class="phases">
+              <li><div class="what"><b>Lexer and parser</b><span>Recursive descent with precedence climbing; list literals and <code>|&gt;</code> are desugared.</span></div><div class="loc">src/lexer.js, parser.js · 526 lines</div></li>
+              <li><div class="what"><b>Type inference</b><span>Hindley–Milner with level-based generalization. Top-level functions are grouped into strongly connected components so they can appear in any order.</span></div><div class="loc">types.js, typecheck.js · 721</div></li>
+              <li><div class="what"><b>Exhaustiveness</b><span>Maranget’s usefulness algorithm. It reports a concrete value that no arm handles, and warns about unreachable arms.</span></div><div class="loc">exhaustive.js · 157</div></li>
+              <li><div class="what"><b>Lowering</b><span>A-normal form, closure conversion, lambda lifting, pattern-match compilation and type-directed root elision.</span></div><div class="loc">lower.js · 355</div></li>
+              <li><div class="what"><b>Code generation</b><span>Shadow-stack frames for GC roots, <code>return_call</code> for tail calls, static closures for capture-free functions.</span></div><div class="loc">codegen.js · 362</div></li>
+              <li><div class="what"><b>Runtime</b><span>Bump allocator, Cheney copying collector with growing semispaces, structural equality and ordering, strings. Written as raw wasm instructions.</span></div><div class="loc">runtime.js · 332</div></li>
+              <li><div class="what"><b>Binary encoder</b><span>LEB128, sections, label-depth resolution, a name section, and the WAT printer you see in the WebAssembly tab.</span></div><div class="loc">wasm.js · 342</div></li>
+              <li><div class="what"><b>Reference interpreter</b><span>An independent tree-walking evaluator over the typed AST, used as the oracle for differential testing.</span></div><div class="loc">interp.js · 242</div></li>
+            </ul>
+            <h3>How it is verified</h3>
+            <p>Golden tests cover every example. Semantic tests run each program three ways. The differential fuzzer (the Fuzzer tab) has checked more than 11,000 random programs with no disagreement. Mutation testing confirms that the fuzzer catches 16 of 16 deliberately injected compiler bugs.</p>
+            <h3>The language in one breath</h3>
+            <p>31-bit integers that wrap around, booleans, byte strings, tuples, and generic algebraic data types. Pattern matching with guards and nested patterns. First-class functions and closures. Structural <code>==</code> and <code>&lt;</code> on any type except functions. A prelude of list, option and string functions, itself written in Lumen. Run it locally with <code>npm run serve</code>, or use the CLI: <code>node bin/lumen.js run examples/huffman.lm --stats</code>.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+<script type="module" src="playground/app.js"></script>
+</body>
+</html>
