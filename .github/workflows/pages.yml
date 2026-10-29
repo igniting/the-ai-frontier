@@ -1,10 +1,11 @@
 name: pages
 
-# Publishes the playground to GitHub Pages from the default branch.
+# Publishes the playground to GitHub Pages (source: GitHub Actions) from main.
 # The compiler's tests must pass before anything is published.
 
 on:
   push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -18,7 +19,7 @@ concurrency:
 
 jobs:
   build:
-    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
