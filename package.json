@@ -1,0 +1,14 @@
+{
+  "name": "lumen",
+  "version": "1.0.0",
+  "description": "A statically typed functional language that compiles to WebAssembly — built from scratch, zero dependencies.",
+  "type": "module",
+  "license": "MIT",
+  "bin": { "lumen": "bin/lumen.js" },
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test test/",
+    "fuzz": "node fuzz/fuzz.js --count 2000",
+    "serve": "node bin/serve.js"
+  }
+}
