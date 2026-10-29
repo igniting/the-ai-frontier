@@ -1,0 +1,38 @@
+// Conway's Game of Life on a 24x10 torus. The board is a list of live cells;
+// tuples compare structurally, so `contains` works on coordinates directly.
+
+fn neighbors(cell, w, h) {
+  let (x, y) = cell;
+  [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)]
+    |> map(|d| match d { (dx, dy) -> ((x + dx + w) % w, (y + dy + h) % h) })
+}
+
+fn step(live, w, h) {
+  let cells = flat_map(range(0, h), |y| map(range(0, w), |x| (x, y)));
+  cells |> filter(|cell| {
+    let n = length(filter(neighbors(cell, w, h), |p| contains(live, p)));
+    n == 3 || (n == 2 && contains(live, cell))
+  })
+}
+
+fn render(live, w, h) {
+  range(0, h) |> each(|y| println(join(map(range(0, w), |x| if contains(live, (x, y)) { "#" } else { "." }), "")))
+}
+
+fn run(live, w, h, gen, last) {
+  if gen <= last {
+    if gen % 4 == 0 {
+      println("generation " ++ int_to_string(gen) ++ " (" ++ int_to_string(length(live)) ++ " cells)");
+      render(live, w, h);
+      println("");
+    }
+    run(step(live, w, h), w, h, gen + 1, last)
+  }
+}
+
+fn main() {
+  let glider = [(1, 0), (2, 1), (0, 2), (1, 2), (2, 2)];
+  let blinker = [(16, 4), (17, 4), (18, 4)];
+  let block = [(20, 7), (21, 7), (20, 8), (21, 8)];
+  run(append(glider, append(blinker, block)), 24, 10, 0, 12)
+}

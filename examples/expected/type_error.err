@@ -1,0 +1,5 @@
+error: `++` concatenates Strings: expected String, found Int
+ --> 8:26
+  |
+8 |   println("average: " ++ average(scores))
+  |                          ^^^^^^^^^^^^^^^

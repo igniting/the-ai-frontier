@@ -1,0 +1,30 @@
+// The Mandelbrot set in ASCII, using fixed-point arithmetic on 31-bit
+// integers (scale 2^11). No floats needed.
+
+fn one() { 2048 }
+
+fn escape_time(cr, ci, limit) {
+  fn go(zr, zi, i) {
+    let zr2 = zr * zr / one();
+    let zi2 = zi * zi / one();
+    if i == limit || zr2 + zi2 > 4 * one() { i }
+    else { go(zr2 - zi2 + cr, 2 * zr * zi / one() + ci, i + 1) }
+  }
+  go(0, 0, 0)
+}
+
+fn main() {
+  let width = 76;
+  let height = 30;
+  let limit = 80;
+  let shades = " .:-=+*%#";
+  range(0, height) |> each(|row| {
+    let ci = row * 2 * 2458 / (height - 1) - 2458; // y in [-1.2, 1.2]
+    let line = range(0, width) |> map(|col| {
+      let cr = col * 3 * one() / (width - 1) - 2 * one(); // x in [-2, 1]
+      let n = escape_time(cr, ci, limit);
+      if n == limit { "@" } else { let i = min(n / 2, 8); substring(shades, i, i + 1) }
+    });
+    println(join(line, ""))
+  })
+}

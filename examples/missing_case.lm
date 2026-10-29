@@ -1,0 +1,18 @@
+// The compiler proves that every `match` handles every possible value,
+// and names a concrete value that would slip through.
+
+type Light { Red, Yellow, Green, FlashingRed }
+
+fn advance(light, emergency) {
+  match (light, emergency) {
+    (_, Some(reason)) -> (FlashingRed, reason),
+    (Red, None) -> (Green, "go"),
+    (Green, None) -> (Yellow, "slow down"),
+    (Yellow, None) -> (Red, "stop"),
+  }
+}
+
+fn main() {
+  let (light, msg) = advance(Red, None);
+  println(msg)
+}

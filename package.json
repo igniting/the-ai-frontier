@@ -7,8 +7,9 @@
   "bin": { "lumen": "bin/lumen.js" },
   "engines": { "node": ">=20" },
   "scripts": {
-    "test": "node --test test/",
+    "test": "node --test test/*.test.js",
     "fuzz": "node fuzz/fuzz.js --count 2000",
+    "mutants": "node fuzz/mutants.js --budget 400",
     "serve": "node bin/serve.js"
   }
 }

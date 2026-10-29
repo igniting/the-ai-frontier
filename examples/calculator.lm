@@ -1,0 +1,156 @@
+// A complete interpreter for a small expression language, written in Lumen:
+// a tokenizer over raw bytes, a recursive-descent parser and an evaluator,
+// with errors threaded through Result values.
+
+type Token { Num(Int), Ident(String), Op(String), LParen, RParen, Let, In, Equals }
+type Expr { Lit(Int), Var(String), Bin(String, Expr, Expr), LetIn(String, Expr, Expr) }
+
+fn is_digit(c) { c >= 48 && c <= 57 }
+fn is_alpha(c) { (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c == 95 }
+
+fn tokenize(src) {
+  let n = string_length(src);
+  fn go(i, acc) {
+    if i >= n { Ok(reverse(acc)) }
+    else {
+      let c = char_code_at(src, i);
+      if c == 32 { go(i + 1, acc) }
+      else if is_digit(c) {
+        fn number(j, v) {
+          if j < n && is_digit(char_code_at(src, j)) { number(j + 1, v * 10 + char_code_at(src, j) - 48) }
+          else { go(j, [Num(v), ..acc]) }
+        }
+        number(i, 0)
+      }
+      else if is_alpha(c) {
+        fn word_end(j) { if j < n && (is_alpha(char_code_at(src, j)) || is_digit(char_code_at(src, j))) { word_end(j + 1) } else { j } }
+        let j = word_end(i);
+        let word = substring(src, i, j);
+        let token = if word == "let" { Let } else if word == "in" { In } else { Ident(word) };
+        go(j, [token, ..acc])
+      }
+      else if c == 40 { go(i + 1, [LParen, ..acc]) }
+      else if c == 41 { go(i + 1, [RParen, ..acc]) }
+      else if c == 61 { go(i + 1, [Equals, ..acc]) }
+      else if contains(["+", "-", "*", "/"], char_from_code(c)) { go(i + 1, [Op(char_from_code(c)), ..acc]) }
+      else { Err("unexpected character '" ++ char_from_code(c) ++ "' at column " ++ int_to_string(i + 1)) }
+    }
+  }
+  go(0, [])
+}
+
+// expr := 'let' ident '=' expr 'in' expr | sum
+fn parse_expr(ts) {
+  match ts {
+    [Let, Ident(x), Equals, ..rest] -> match parse_expr(rest) {
+      Ok((bound, [In, ..rest2])) -> match parse_expr(rest2) {
+        Ok((body, rest3)) -> Ok((LetIn(x, bound, body), rest3)),
+        Err(m) -> Err(m),
+      },
+      Ok(_) -> Err("expected 'in'"),
+      Err(m) -> Err(m),
+    },
+    [Let, ..] -> Err("expected 'let <name> = ...'"),
+    _ -> parse_binary(ts, ["+", "-"], parse_term),
+  }
+}
+
+fn parse_term(ts) { parse_binary(ts, ["*", "/"], parse_atom) }
+
+// Left-associative binary operators, parameterized by the operand parser.
+fn parse_binary(ts, ops, operand) {
+  fn tail(lhs, ts) {
+    match ts {
+      [Op(op), ..rest] if contains(ops, op) -> match operand(rest) {
+        Ok((rhs, rest2)) -> tail(Bin(op, lhs, rhs), rest2),
+        Err(m) -> Err(m),
+      },
+      _ -> Ok((lhs, ts)),
+    }
+  }
+  match operand(ts) {
+    Ok((lhs, rest)) -> tail(lhs, rest),
+    Err(m) -> Err(m),
+  }
+}
+
+fn parse_atom(ts) {
+  match ts {
+    [Num(n), ..rest] -> Ok((Lit(n), rest)),
+    [Ident(x), ..rest] -> Ok((Var(x), rest)),
+    [Op("-"), ..rest] -> match parse_atom(rest) {
+      Ok((e, rest2)) -> Ok((Bin("-", Lit(0), e), rest2)),
+      Err(m) -> Err(m),
+    },
+    [LParen, ..rest] -> match parse_expr(rest) {
+      Ok((e, [RParen, ..rest2])) -> Ok((e, rest2)),
+      Ok(_) -> Err("expected ')'"),
+      Err(m) -> Err(m),
+    },
+    [] -> Err("unexpected end of input"),
+    _ -> Err("unexpected token"),
+  }
+}
+
+fn eval(e, env) {
+  match e {
+    Lit(n) -> Ok(n),
+    Var(x) -> match find(env, |b| match b { (k, _) -> k == x }) {
+      Some((_, v)) -> Ok(v),
+      None -> Err("unbound variable '" ++ x ++ "'"),
+    },
+    Bin(op, a, b) -> match (eval(a, env), eval(b, env)) {
+      (Ok(x), Ok(y)) ->
+        if op == "+" { Ok(x + y) }
+        else if op == "-" { Ok(x - y) }
+        else if op == "*" { Ok(x * y) }
+        else if y == 0 { Err("division by zero") }
+        else { Ok(x / y) },
+      (Err(m), _) -> Err(m),
+      (_, Err(m)) -> Err(m),
+    },
+    LetIn(x, bound, body) -> match eval(bound, env) {
+      Ok(v) -> eval(body, [(x, v), ..env]),
+      Err(m) -> Err(m),
+    },
+  }
+}
+
+fn show(e) {
+  match e {
+    Lit(n) -> int_to_string(n),
+    Var(x) -> x,
+    Bin(op, a, b) -> "(" ++ show(a) ++ " " ++ op ++ " " ++ show(b) ++ ")",
+    LetIn(x, a, b) -> "let " ++ x ++ " = " ++ show(a) ++ " in " ++ show(b),
+  }
+}
+
+fn run(src) {
+  let result = match tokenize(src) {
+    Err(m) -> "lex error: " ++ m,
+    Ok(tokens) -> match parse_expr(tokens) {
+      Ok((e, [])) -> show(e) ++ "  =>  " ++ match eval(e, []) {
+        Ok(v) -> int_to_string(v),
+        Err(m) -> "error: " ++ m,
+      },
+      Ok(_) -> "parse error: unexpected trailing input",
+      Err(m) -> "parse error: " ++ m,
+    },
+  };
+  println("> " ++ src);
+  println("  " ++ result);
+}
+
+fn main() {
+  [
+    "1 + 2 * 3",
+    "(1 + 2) * 3",
+    "let x = 5 in x * (x + 1)",
+    "let a = 10 in let b = a * a in b - a / 3",
+    "-(4 - 10) * 2",
+    "100 / (5 - 5)",
+    "let y = 1 in z + y",
+    "2 * (3 + 4",
+    "7 $ 3",
+  ] |> each(run)
+}

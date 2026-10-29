@@ -1,0 +1,14 @@
+code table (most frequent first):
+  ' '  00
+  'a'  010
+  'b'  0110
+  's'  1001
+  'i'  1010
+  'n'  1011
+  'e'  1101
+  'r'  01110
+original: 528 bits
+encoded:  269 bits
+first 64: 1111001111101010010010101001000101011001101100011010111111000011
+decoded:  this is an example of a huffman tree, built and run in webassembly
+round trip ok: yes

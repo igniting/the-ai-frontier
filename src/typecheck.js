@@ -374,6 +374,28 @@ export function typecheck(preludeAst, userAst) {
     return e.ty;
   }
 
+  // `[a, b, ..rest]` is sugar for nested Cons cells. Checking the elements
+  // directly against each other gives "expected Int, found String" at the
+  // offending element instead of a mismatch between two List types.
+  function inferListLiteral(e, scope) {
+    const consCtor = preludeScope.ctors.get('Cons');
+    const elem = newVar(level);
+    const listTy = tcon(consCtor.type.name, [elem]);
+    const cells = [];
+    let node = e;
+    for (; node.k === 'ctor' && node.literal === e.literal; node = node.args[1]) cells.push(node);
+    cells.forEach((cell, i) => {
+      expect(infer(cell.args[0], scope), elem, cell.args[0].span, i ? 'list elements must all have the same type: ' : '');
+    });
+    const ownNil = node.k === 'ctor' && node.sugar && node.name === 'Nil';
+    expect(infer(node, scope), listTy, node.span, ownNil ? '' : 'the tail of a list (`..rest`): ');
+    for (const cell of cells) {
+      cell.ctor = consCtor;
+      cell.ty = listTy;
+    }
+    return listTy;
+  }
+
   function inferInner(e, scope) {
     switch (e.k) {
       case 'int': return INT;
@@ -388,6 +410,7 @@ export function typecheck(preludeAst, userAst) {
         return instantiate(b.type, level);
       }
       case 'ctor': {
+        if (e.sugar && e.name === 'Cons') return inferListLiteral(e, scope);
         const ctor = e.sugar ? preludeScope.ctors.get(e.name) : scope.find('ctors', e.name);
         if (!ctor) fail(`unknown constructor \`${e.name}\``, e.nameSpan ?? e.span, suggest(e.name, scope.names('ctors')));
         e.ctor = ctor;

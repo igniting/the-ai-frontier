@@ -1,0 +1,37 @@
+// Calls in tail position compile to the WebAssembly `return_call`
+// instruction, so these loops run in constant stack space — including
+// mutual recursion between two functions.
+
+fn count_up(n, acc) { if n == 0 { acc } else { count_up(n - 1, acc + 1) } }
+
+fn is_even(n) { if n == 0 { true } else { is_odd(n - 1) } }
+fn is_odd(n) { if n == 0 { false } else { is_even(n - 1) } }
+
+fn collatz_steps(n) {
+  fn go(n, steps) {
+    if n == 1 { steps }
+    else if n % 2 == 0 { go(n / 2, steps + 1) }
+    else { go(3 * n + 1, steps + 1) }
+  }
+  go(n, 0)
+}
+
+fn longest_collatz(limit) {
+  fn go(n, best, best_steps) {
+    if n == limit { (best, best_steps) }
+    else {
+      let s = collatz_steps(n);
+      if s > best_steps { go(n + 1, n, s) } else { go(n + 1, best, best_steps) }
+    }
+  }
+  go(1, 1, 0)
+}
+
+fn main() {
+  println("count_up(10000000) = " ++ int_to_string(count_up(10000000, 0)));
+  println("is_even(1000001)   = " ++ if is_even(1000001) { "true" } else { "false" });
+  let (start, steps) = longest_collatz(10000);
+  println("longest Collatz chain below 10000 starts at " ++ int_to_string(start) ++ " (" ++ int_to_string(steps) ++ " steps)");
+  // A 1,000,000-element list built and folded without deep recursion:
+  println("sum of 0..1000000 = " ++ int_to_string(sum(range(0, 1000000))) ++ " (31-bit wrap-around)");
+}

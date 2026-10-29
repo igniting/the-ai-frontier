@@ -1,0 +1,87 @@
+// Okasaki's red-black trees. The four rebalancing cases collapse into one
+// nested-pattern match, which the compiler checks for exhaustiveness and
+// compiles to a sequence of tag tests on the heap.
+
+type Color { Red, Black }
+type Tree<a> { E, T(Color, Tree<a>, a, Tree<a>) }
+
+fn balance(color, left, value, right) {
+  match (color, left, value, right) {
+    (Black, T(Red, T(Red, a, x, b), y, c), z, d) -> T(Red, T(Black, a, x, b), y, T(Black, c, z, d)),
+    (Black, T(Red, a, x, T(Red, b, y, c)), z, d) -> T(Red, T(Black, a, x, b), y, T(Black, c, z, d)),
+    (Black, a, x, T(Red, T(Red, b, y, c), z, d)) -> T(Red, T(Black, a, x, b), y, T(Black, c, z, d)),
+    (Black, a, x, T(Red, b, y, T(Red, c, z, d))) -> T(Red, T(Black, a, x, b), y, T(Black, c, z, d)),
+    _ -> T(color, left, value, right),
+  }
+}
+
+fn insert(tree, x) {
+  fn ins(t) {
+    match t {
+      E -> T(Red, E, x, E),
+      T(c, l, y, r) ->
+        if x < y { balance(c, ins(l), y, r) }
+        else if x > y { balance(c, l, y, ins(r)) }
+        else { t },
+    }
+  }
+  match ins(tree) {
+    T(_, l, y, r) -> T(Black, l, y, r),
+    E -> E,
+  }
+}
+
+fn member(t, x) {
+  match t {
+    E -> false,
+    T(_, l, y, r) -> if x < y { member(l, x) } else if x > y { member(r, x) } else { true },
+  }
+}
+
+fn to_list(t) {
+  fn go(t, acc) { match t { E -> acc, T(_, l, x, r) -> go(l, [x, ..go(r, acc)]) } }
+  go(t, [])
+}
+
+// Invariant 1: every root-to-leaf path has the same number of black nodes.
+fn black_height(t) {
+  match t {
+    E -> Some(1),
+    T(c, l, _, r) -> match (black_height(l), black_height(r)) {
+      (Some(hl), Some(hr)) if hl == hr -> Some(if c == Black { hl + 1 } else { hl }),
+      _ -> None,
+    },
+  }
+}
+
+// Invariant 2: no red node has a red child.
+fn no_red_red(t) {
+  match t {
+    E -> true,
+    T(Red, T(Red, _, _, _), _, _) -> false,
+    T(Red, _, _, T(Red, _, _, _)) -> false,
+    T(_, l, _, r) -> no_red_red(l) && no_red_red(r),
+  }
+}
+
+fn depth(t) { match t { E -> 0, T(_, l, _, r) -> 1 + max(depth(l), depth(r)) } }
+
+fn yes_no(b) { if b { "yes" } else { "NO" } }
+
+fn main() {
+  let n = 50000;
+  // A pseudo-random permutation of 0..n (7919 is coprime to n).
+  let keys = map(range(0, n), |i| (i * 7919) % n);
+  let tree = fold(keys, E, insert);
+  println("inserted " ++ int_to_string(n) ++ " keys");
+  println("in order:      " ++ yes_no(to_list(tree) == range(0, n)));
+  println("no red-red:    " ++ yes_no(no_red_red(tree)));
+  println("black height:  " ++ match black_height(tree) { Some(h) -> int_to_string(h), None -> "UNBALANCED" });
+  println("depth:         " ++ int_to_string(depth(tree)) ++ " (log2(n) is about 15.6)");
+  println("member(4242):  " ++ yes_no(member(tree, 4242)));
+  println("member(-1):    " ++ yes_no(!member(tree, -1)) ++ ", -1 is absent");
+
+  // The same code works for any ordered type — here, strings.
+  let words = fold(["kiwi", "apple", "mango", "fig", "banana", "cherry"], E, insert);
+  println("words:         " ++ join(to_list(words), " < "));
+}

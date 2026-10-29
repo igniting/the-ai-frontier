@@ -1,0 +1,9 @@
+// This program has a type error. Lumen infers every type and reports the
+// mismatch at the exact expression, with no annotations needed.
+
+fn average(xs) { sum(xs) / length(xs) }
+
+fn main() {
+  let scores = [90, 85, 77];
+  println("average: " ++ average(scores))
+}

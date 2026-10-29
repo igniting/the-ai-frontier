@@ -68,7 +68,7 @@ const kindOf = (ptrCode) => seq(ptrCode, ld(), c(1), o('i32.shr_u'), c(255), o('
 const lenOf = (ptrCode) => seq(ptrCode, ld(), c(9), o('i32.shr_u'));
 const toBool = () => seq(c(1), o('i32.shl'), c(1), o('i32.or'));
 const objBytes = (lenCode) => seq(lenCode, c(3), o('i32.add'), c(-4), o('i32.and'), c(4), o('i32.add'));
-const trap = (code) => seq(c(code), call('$rt.trap'));
+const trap = (code) => seq(c(code), call('$rt:trap'));
 
 const I32 = (name) => ({ name, type: 'i32' });
 
@@ -76,10 +76,10 @@ export function addRuntime(mod, layout, opts) {
   const fn = (name, params, results, locals, body, comment) =>
     mod.addFunc({ name, params: params.map(I32), results, locals: locals.map(I32), body: seq(body), comment });
 
-  mod.addImport('env', 'print', '$host.print', ['i32', 'i32'], []);
-  mod.addImport('env', 'error', '$host.error', ['i32', 'i32'], []);
+  mod.addImport('env', 'print', '$host:print', ['i32', 'i32'], []);
+  mod.addImport('env', 'error', '$host:error', ['i32', 'i32'], []);
 
-  fn('$rt.trap', ['$code'], [], [], [lg('$code'), c(0), call('$host.error'), o('unreachable')],
+  fn('$rt:trap', ['$code'], [], [], [lg('$code'), c(0), call('$host:error'), o('unreachable')],
     'Reports a runtime error to the host, which throws; never returns.');
 
   // Shadow-stack helpers for runtime functions that allocate: their pointer
@@ -92,17 +92,17 @@ export function addRuntime(mod, layout, opts) {
   const popRoots = (...names) => seq(names.map((n, i) => seq(lg('$fp'), ld(4 * i), ls(n))), lg('$fp'), gs('$sp'));
 
   // ---------------------------------------------------------- allocation --
-  fn('$rt.alloc', ['$bytes'], ['i32'], ['$p'], [
+  fn('$rt:alloc', ['$bytes'], ['i32'], ['$p'], [
     gg('$hp'), lt('$p'), lg('$bytes'), o('i32.add'), gg('$from_end'), o('i32.gt_u'),
     opts.gcStress ? [o('drop'), c(1)] : [],
-    if_(null, [lg('$bytes'), call('$rt.gc'), gg('$hp'), ls('$p')]),
+    if_(null, [lg('$bytes'), call('$rt:gc'), gg('$hp'), ls('$p')]),
     lg('$p'), lg('$bytes'), o('i32.add'), gs('$hp'),
     gg('$alloc_bytes'), lg('$bytes'), o('i64.extend_i32_u'), o('i64.add'), gs('$alloc_bytes'),
     lg('$p'),
   ], opts.gcStress ? 'Bump allocator. GC STRESS MODE: collects on every allocation.' : 'Bump allocator; collects when the semispace is full.');
 
-  fn('$rt.gc', ['$need'], [], ['$live', '$size', '$base'], [
-    call('$rt.collect'),
+  fn('$rt:gc', ['$need'], [], ['$live', '$size', '$base'], [
+    call('$rt:collect'),
     gg('$hp'), gg('$from_start'), o('i32.sub'), ls('$live'),
     gg('$from_end'), gg('$from_start'), o('i32.sub'), ls('$size'),
     // Grow when live data plus the pending request exceeds half the semispace.
@@ -117,19 +117,19 @@ export function addRuntime(mod, layout, opts) {
       if_(null, trap(ERR.OOM)),
       lg('$base'), gs('$to_start'),
       lg('$base'), lg('$size'), o('i32.add'), gs('$to_end'),
-      call('$rt.collect'),
+      call('$rt:collect'),
       lg('$base'), lg('$size'), o('i32.add'), gs('$to_start'),
       lg('$base'), lg('$size'), c(1), o('i32.shl'), o('i32.add'), gs('$to_end'),
     ]),
   ], 'Collects garbage, then doubles the semispaces if they are more than half full.');
 
-  fn('$rt.collect', [], [], ['$p', '$scan', '$h', '$end'], [
+  fn('$rt:collect', [], [], ['$p', '$scan', '$h', '$end'], [
     gg('$gc_count'), c(1), o('i32.add'), gs('$gc_count'),
     gg('$to_start'), gs('$next'),
     // 1. Forward every root on the shadow stack.
     c(layout.STACK_BASE), ls('$p'),
     loop('roots', [lg('$p'), gg('$sp'), o('i32.ge_u')], [
-      lg('$p'), lg('$p'), ld(), call('$rt.forward'), st(),
+      lg('$p'), lg('$p'), ld(), call('$rt:forward'), st(),
       lg('$p'), c(4), o('i32.add'), ls('$p'),
     ]),
     // 2. Cheney scan: forward the fields of every object copied so far.
@@ -143,7 +143,7 @@ export function addRuntime(mod, layout, opts) {
           lg('$scan'), c(4), o('i32.add'), ls('$p'),
           lg('$p'), lg('$h'), c(9), o('i32.shr_u'), c(2), o('i32.shl'), o('i32.add'), ls('$end'),
           loop('fields', [lg('$p'), lg('$end'), o('i32.ge_u')], [
-            lg('$p'), lg('$p'), ld(), call('$rt.forward'), st(),
+            lg('$p'), lg('$p'), ld(), call('$rt:forward'), st(),
             lg('$p'), c(4), o('i32.add'), ls('$p'),
           ]),
           lg('$end'), ls('$scan'),
@@ -157,7 +157,7 @@ export function addRuntime(mod, layout, opts) {
     opts.gcStress ? [gg('$to_start'), c(0x55), gg('$to_end'), gg('$to_start'), o('i32.sub'), ['memory.fill']] : [],
   ], "Cheney's copying collector: roots are the shadow stack.");
 
-  fn('$rt.forward', ['$v'], ['i32'], ['$h', '$n', '$new'], [
+  fn('$rt:forward', ['$v'], ['i32'], ['$h', '$n', '$new'], [
     lg('$v'), c(1), o('i32.and'), if_(null, ret(lg('$v'))), // immediate
     lg('$v'), gg('$from_start'), o('i32.lt_u'), if_(null, ret(lg('$v'))), // static data
     lg('$v'), gg('$from_end'), o('i32.ge_u'), if_(null, ret(lg('$v'))),
@@ -174,20 +174,20 @@ export function addRuntime(mod, layout, opts) {
   ], 'Copies one object to to-space (once) and returns its new address.');
 
   // ------------------------------------------------ equality / ordering --
-  fn('$rt.eq', ['$a', '$b'], ['i32'], ['$h', '$k', '$n', '$i'], [
+  fn('$rt:eq', ['$a', '$b'], ['i32'], ['$h', '$k', '$n', '$i'], [
     ['loop', '$top', null],
     lg('$a'), lg('$b'), o('i32.or'), c(1), o('i32.and'),
     if_(null, ret(lg('$a'), lg('$b'), o('i32.eq'))), // at least one immediate
     lg('$a'), ld(), lt('$h'), c(1), o('i32.shr_u'), c(255), o('i32.and'), lt('$k'),
     c(TAG_CLOSURE), o('i32.eq'), if_(null, trap(ERR.COMPARE_FN)),
-    lg('$k'), c(TAG_STRING), o('i32.eq'), if_(null, ret(lg('$a'), lg('$b'), call('$rt.str_eq'))),
+    lg('$k'), c(TAG_STRING), o('i32.eq'), if_(null, ret(lg('$a'), lg('$b'), call('$rt:str_eq'))),
     lg('$h'), lg('$b'), ld(), o('i32.ne'), if_(null, ret(c(0))), // different constructor
     lg('$h'), c(9), o('i32.shr_u'), lt('$n'), o('i32.eqz'), if_(null, ret(c(1))),
     c(0), ls('$i'),
     loop('fields', [lg('$i'), lg('$n'), c(1), o('i32.sub'), o('i32.ge_s')], [
       lg('$a'), lg('$i'), c(2), o('i32.shl'), o('i32.add'), ld(4),
       lg('$b'), lg('$i'), c(2), o('i32.shl'), o('i32.add'), ld(4),
-      call('$rt.eq'), o('i32.eqz'), if_(null, ret(c(0))),
+      call('$rt:eq'), o('i32.eqz'), if_(null, ret(c(0))),
       lg('$i'), c(1), o('i32.add'), ls('$i'),
     ]),
     // Iterate (rather than recurse) on the last field, so long lists don't use stack.
@@ -198,7 +198,7 @@ export function addRuntime(mod, layout, opts) {
     o('unreachable'),
   ], 'Structural equality. Returns raw 0/1.');
 
-  fn('$rt.compare', ['$a', '$b'], ['i32'], ['$ka', '$kb', '$n', '$i', '$r'], [
+  fn('$rt:compare', ['$a', '$b'], ['i32'], ['$ka', '$kb', '$n', '$i', '$r'], [
     ['loop', '$top', null],
     lg('$a'), lg('$b'), o('i32.and'), c(1), o('i32.and'),
     if_(null, ret(lg('$a'), lg('$b'), o('i32.gt_s'), lg('$a'), lg('$b'), o('i32.lt_s'), o('i32.sub'))),
@@ -208,7 +208,7 @@ export function addRuntime(mod, layout, opts) {
     lg('$b'), c(1), o('i32.and'),
     if_(null, ret(kindOf(lg('$a')), lg('$b'), c(1), o('i32.shr_s'), o('i32.lt_s'), if_('i32', c(-1), c(1)))),
     kindOf(lg('$a')), lt('$ka'), c(TAG_CLOSURE), o('i32.eq'), if_(null, trap(ERR.COMPARE_FN)),
-    lg('$ka'), c(TAG_STRING), o('i32.eq'), if_(null, ret(lg('$a'), lg('$b'), call('$rt.str_cmp'))),
+    lg('$ka'), c(TAG_STRING), o('i32.eq'), if_(null, ret(lg('$a'), lg('$b'), call('$rt:str_cmp'))),
     kindOf(lg('$b')), lt('$kb'), lg('$ka'), o('i32.ne'),
     if_(null, ret(lg('$ka'), lg('$kb'), o('i32.lt_s'), if_('i32', c(-1), c(1)))),
     lenOf(lg('$a')), lt('$n'), o('i32.eqz'), if_(null, ret(c(0))),
@@ -216,7 +216,7 @@ export function addRuntime(mod, layout, opts) {
     loop('fields', [lg('$i'), lg('$n'), c(1), o('i32.sub'), o('i32.ge_s')], [
       lg('$a'), lg('$i'), c(2), o('i32.shl'), o('i32.add'), ld(4),
       lg('$b'), lg('$i'), c(2), o('i32.shl'), o('i32.add'), ld(4),
-      call('$rt.compare'), lt('$r'), if_(null, ret(lg('$r'))),
+      call('$rt:compare'), lt('$r'), if_(null, ret(lg('$r'))),
       lg('$i'), c(1), o('i32.add'), ls('$i'),
     ]),
     lg('$a'), lg('$n'), c(2), o('i32.shl'), o('i32.add'), ld(), ls('$a'),
@@ -227,7 +227,7 @@ export function addRuntime(mod, layout, opts) {
   ], 'Structural ordering: constructor index, then fields left to right. Returns raw -1/0/1.');
 
   // ------------------------------------------------------------- strings --
-  fn('$rt.str_eq', ['$a', '$b'], ['i32'], ['$n', '$i'], [
+  fn('$rt:str_eq', ['$a', '$b'], ['i32'], ['$n', '$i'], [
     lg('$a'), lg('$b'), o('i32.eq'), if_(null, ret(c(1))),
     lenOf(lg('$a')), lt('$n'), lenOf(lg('$b')), o('i32.ne'), if_(null, ret(c(0))),
     c(0), ls('$i'),
@@ -240,7 +240,7 @@ export function addRuntime(mod, layout, opts) {
     c(1),
   ]);
 
-  fn('$rt.str_cmp', ['$a', '$b'], ['i32'], ['$la', '$lb', '$i', '$x', '$y'], [
+  fn('$rt:str_cmp', ['$a', '$b'], ['i32'], ['$la', '$lb', '$i', '$x', '$y'], [
     lenOf(lg('$a')), ls('$la'), lenOf(lg('$b')), ls('$lb'),
     c(0), ls('$i'),
     loop('bytes', [lg('$i'), lg('$la'), o('i32.ge_u'), lg('$i'), lg('$lb'), o('i32.ge_u'), o('i32.or')], [
@@ -253,11 +253,11 @@ export function addRuntime(mod, layout, opts) {
   ]);
 
   const newString = (lenLocal) => seq(
-    objBytes(lg(lenLocal)), call('$rt.alloc'), ls('$p'),
+    objBytes(lg(lenLocal)), call('$rt:alloc'), ls('$p'),
     lg('$p'), lg(lenLocal), c(9), o('i32.shl'), c((TAG_STRING << 1) | 1), o('i32.or'), st(),
   );
 
-  fn('$rt.concat', ['$a', '$b'], ['i32'], ['$la', '$lb', '$n', '$p', '$fp'], [
+  fn('$rt:concat', ['$a', '$b'], ['i32'], ['$la', '$lb', '$n', '$p', '$fp'], [
     lenOf(lg('$a')), lt('$la'), o('i32.eqz'), if_(null, ret(lg('$b'))),
     lenOf(lg('$b')), lt('$lb'), o('i32.eqz'), if_(null, ret(lg('$a'))),
     lg('$la'), lg('$lb'), o('i32.add'), lt('$n'), c(MAX_STRING), o('i32.gt_u'), if_(null, trap(ERR.STR_LEN)),
@@ -269,7 +269,7 @@ export function addRuntime(mod, layout, opts) {
     lg('$p'),
   ], 'String concatenation (`++`).');
 
-  fn('$rt.int_to_string', ['$v'], ['i32'], ['$n', '$neg', '$pos', '$len', '$p'], [
+  fn('$rt:int_to_string', ['$v'], ['i32'], ['$n', '$neg', '$pos', '$len', '$p'], [
     lg('$v'), c(1), o('i32.shr_s'), lt('$n'), c(0), o('i32.lt_s'), lt('$neg'),
     if_(null, [c(0), lg('$n'), o('i32.sub'), ls('$n')]),
     c(layout.SCRATCH_END), ls('$pos'),
@@ -286,9 +286,9 @@ export function addRuntime(mod, layout, opts) {
     lg('$p'),
   ]);
 
-  fn('$rt.string_length', ['$s'], ['i32'], [], [lenOf(lg('$s')), toBool()]);
+  fn('$rt:string_length', ['$s'], ['i32'], [], [lenOf(lg('$s')), toBool()]);
 
-  fn('$rt.substring', ['$s', '$a', '$b'], ['i32'], ['$len', '$n', '$p', '$fp'], [
+  fn('$rt:substring', ['$s', '$a', '$b'], ['i32'], ['$len', '$n', '$p', '$fp'], [
     lenOf(lg('$s')), ls('$len'),
     // start = clamp(a, 0, len); end = clamp(b, start, len)
     lg('$a'), c(1), o('i32.shr_s'), ls('$a'),
@@ -306,27 +306,27 @@ export function addRuntime(mod, layout, opts) {
     lg('$p'),
   ]);
 
-  fn('$rt.char_code_at', ['$s', '$i'], ['i32'], [], [
+  fn('$rt:char_code_at', ['$s', '$i'], ['i32'], [], [
     lg('$i'), c(1), o('i32.shr_s'), lt('$i'), lenOf(lg('$s')), o('i32.ge_u'), if_(null, trap(ERR.INDEX)),
     lg('$s'), lg('$i'), o('i32.add'), ['i32.load8_u', 4], toBool(),
   ]);
 
-  fn('$rt.char_from_code', ['$c'], ['i32'], [], [
+  fn('$rt:char_from_code', ['$c'], ['i32'], [], [
     lg('$c'), c(1), o('i32.shr_u'), c(255), o('i32.and'), c(3), o('i32.shl'), c(layout.CHAR_TABLE), o('i32.add'),
   ], 'Single-byte strings live in a static table, so this never allocates.');
 
-  fn('$rt.print', ['$s'], ['i32'], [], [lg('$s'), c(0), call('$host.print'), c(1)]);
-  fn('$rt.println', ['$s'], ['i32'], [], [lg('$s'), c(1), call('$host.print'), c(1)]);
-  fn('$rt.panic', ['$s'], ['i32'], [], [c(ERR.PANIC), lg('$s'), call('$host.error'), o('unreachable')]);
+  fn('$rt:print', ['$s'], ['i32'], [], [lg('$s'), c(0), call('$host:print'), c(1)]);
+  fn('$rt:println', ['$s'], ['i32'], [], [lg('$s'), c(1), call('$host:print'), c(1)]);
+  fn('$rt:panic', ['$s'], ['i32'], [], [c(ERR.PANIC), lg('$s'), call('$host:error'), o('unreachable')]);
 }
 
 export const BUILTIN_RUNTIME = {
-  print: '$rt.print',
-  println: '$rt.println',
-  int_to_string: '$rt.int_to_string',
-  string_length: '$rt.string_length',
-  substring: '$rt.substring',
-  char_code_at: '$rt.char_code_at',
-  char_from_code: '$rt.char_from_code',
-  panic: '$rt.panic',
+  print: '$rt:print',
+  println: '$rt:println',
+  int_to_string: '$rt:int_to_string',
+  string_length: '$rt:string_length',
+  substring: '$rt:substring',
+  char_code_at: '$rt:char_code_at',
+  char_from_code: '$rt:char_from_code',
+  panic: '$rt:panic',
 };

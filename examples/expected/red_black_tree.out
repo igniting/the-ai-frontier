@@ -1,0 +1,8 @@
+inserted 50000 keys
+in order:      yes
+no red-red:    yes
+black height:  13
+depth:         23 (log2(n) is about 15.6)
+member(4242):  yes
+member(-1):    yes, -1 is absent
+words:         apple < banana < cherry < fig < kiwi < mango

@@ -117,7 +117,7 @@ export function lower(checked) {
 
   // ------------------------------------------------- generated wrappers --
   function builtinWrapper(name) {
-    const fname = `builtin.${name}`;
+    const fname = `builtin:${name}`;
     if (!funcs.has(fname)) {
       const ctx = new FnCtx(null, fname, null);
       const arity = BUILTIN_SIGNATURES[name].params.length;
@@ -128,7 +128,7 @@ export function lower(checked) {
   }
 
   function ctorWrapper(ctor) {
-    const fname = `ctor.${ctor.type.display}.${ctor.name}`;
+    const fname = `ctor:${ctor.type.display}.${ctor.name}`;
     if (!funcs.has(fname)) {
       const ctx = new FnCtx(null, fname, null);
       const params = ctor.fields.map((_, i) => ctx.newVar(`a${i}`, true));

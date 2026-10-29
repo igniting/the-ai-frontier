@@ -96,7 +96,7 @@ export function codegen(ir, options = {}) {
   for (const f of funcs) genFunction(f);
 
   mod.addFunc({
-    name: '$run', exportName: 'run', params: [], results: [], locals: [],
+    name: '$rt:start', exportName: 'run', params: [], results: [], locals: [],
     body: [c(0), call(wasmName(ir.entry)), o('drop')],
     comment: 'Entry point: calls main().',
   });
@@ -129,12 +129,12 @@ export function codegen(ir, options = {}) {
     // -------------------------------------------------------- prologue --
     if (opts.fuel) {
       emit(gg('$fuel'), c(1), o('i32.sub'), lt('$fuel_tmp'), gs('$fuel'), lg('$fuel_tmp'), c(0), o('i32.lt_s'),
-        ['if', null, null], c(ERR.FUEL), call('$rt.trap'), ['end']);
+        ['if', null, null], c(ERR.FUEL), call('$rt:trap'), ['end']);
       locals.push({ name: '$fuel_tmp', type: 'i32' });
     }
     if (frameBytes) {
       emit(gg('$sp'), lt('$fp'), c(frameBytes), o('i32.add'), gs('$sp'),
-        gg('$sp'), c(layout.STACK_LIMIT), o('i32.gt_u'), ['if', null, null], c(ERR.STACK), call('$rt.trap'), ['end']);
+        gg('$sp'), c(layout.STACK_LIMIT), o('i32.gt_u'), ['if', null, null], c(ERR.STACK), call('$rt:trap'), ['end']);
       if (slots > paramSlots) {
         emit(lg('$fp'), paramSlots ? [c(paramSlots * 4), o('i32.add')] : [], c(0), c((slots - paramSlots) * 4), ['memory.fill']);
       }
@@ -175,11 +175,11 @@ export function codegen(ir, options = {}) {
 
     const popFrame = () => { if (frameBytes) emit(lg('$fp'), gs('$sp')); };
 
-    // Allocation: the fields are loaded *after* $rt.alloc returns, because a
+    // Allocation: the fields are loaded *after* $rt:alloc returns, because a
     // collection inside alloc may move the objects they point to.
     function genAlloc(hdr, fields) {
       needsTmp = true;
-      emit(c(4 + 4 * fields.length), call('$rt.alloc'), ls('$tmp'), lg('$tmp'), c(hdr), st(0));
+      emit(c(4 + 4 * fields.length), call('$rt:alloc'), ls('$tmp'), lg('$tmp'), c(hdr), st(0));
       fields.forEach((a, i) => {
         emit(lg('$tmp'));
         genAtom(a);
@@ -203,23 +203,23 @@ export function codegen(ir, options = {}) {
           return;
         case 'div':
         case 'rem':
-          genAtom(b); emit(c(1), o('i32.eq'), ['if', null, null], c(ERR.DIV_ZERO), call('$rt.trap'), ['end']);
+          genAtom(b); emit(c(1), o('i32.eq'), ['if', null, null], c(ERR.DIV_ZERO), call('$rt:trap'), ['end']);
           genAtom(a); emit(c(1), o('i32.shr_s'));
           genAtom(b); emit(c(1), o('i32.shr_s'), o(e.op === 'div' ? 'i32.div_s' : 'i32.rem_s'));
           return toBool();
         case 'neg': emit(c(2)); genAtom(a); return emit(o('i32.sub'));
         case 'not': emit(c(4)); genAtom(a); return emit(o('i32.sub'));
-        case 'concat': both(); return emit(call('$rt.concat'));
+        case 'concat': both(); return emit(call('$rt:concat'));
         case 'eq_imm': both(); emit(o('i32.eq')); return toBool();
         case 'ne_imm': both(); emit(o('i32.ne')); return toBool();
         case 'lt_imm': both(); emit(o('i32.lt_s')); return toBool();
         case 'le_imm': both(); emit(o('i32.le_s')); return toBool();
         case 'gt_imm': both(); emit(o('i32.gt_s')); return toBool();
         case 'ge_imm': both(); emit(o('i32.ge_s')); return toBool();
-        case 'eq': both(); emit(call('$rt.eq')); return toBool();
-        case 'ne': both(); emit(call('$rt.eq'), o('i32.eqz')); return toBool();
+        case 'eq': both(); emit(call('$rt:eq')); return toBool();
+        case 'ne': both(); emit(call('$rt:eq'), o('i32.eqz')); return toBool();
         case 'lt': case 'le': case 'gt': case 'ge':
-          both(); emit(call('$rt.compare'), c(0), o(`i32.${e.op}_s`)); return toBool();
+          both(); emit(call('$rt:compare'), c(0), o(`i32.${e.op}_s`)); return toBool();
       }
       throw new Error(`codegen: unknown primitive ${e.op}`);
     }
@@ -235,7 +235,7 @@ export function codegen(ir, options = {}) {
         case 'imm': return emit(c(t.n), o('i32.eq'));
         case 'isblock': return emit(c(1), o('i32.and'), o('i32.eqz'));
         case 'tag': return emit(ld(0), c(1), o('i32.shr_u'), c(255), o('i32.and'), c(t.tag), o('i32.eq'));
-        case 'str': return emit(c(stringAddr(t.idx)), call('$rt.str_eq'));
+        case 'str': return emit(c(stringAddr(t.idx)), call('$rt:str_eq'));
       }
     }
 

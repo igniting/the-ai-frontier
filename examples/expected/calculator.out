@@ -1,0 +1,18 @@
+> 1 + 2 * 3
+  (1 + (2 * 3))  =>  7
+> (1 + 2) * 3
+  ((1 + 2) * 3)  =>  9
+> let x = 5 in x * (x + 1)
+  let x = 5 in (x * (x + 1))  =>  30
+> let a = 10 in let b = a * a in b - a / 3
+  let a = 10 in let b = (a * a) in (b - (a / 3))  =>  97
+> -(4 - 10) * 2
+  ((0 - (4 - 10)) * 2)  =>  12
+> 100 / (5 - 5)
+  (100 / (5 - 5))  =>  error: division by zero
+> let y = 1 in z + y
+  let y = 1 in (z + y)  =>  error: unbound variable 'z'
+> 2 * (3 + 4
+  parse error: expected ')'
+> 7 $ 3
+  lex error: unexpected character '$' at column 3

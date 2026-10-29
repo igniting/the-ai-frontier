@@ -1,0 +1,70 @@
+// Huffman coding: count character frequencies, build an optimal prefix
+// code tree, then encode and decode a message.
+
+type Huff { Leaf(Int, String), Node(Int, Huff, Huff) }
+
+fn weight(t) { match t { Leaf(w, _) -> w, Node(w, _, _) -> w } }
+
+fn frequencies(text) {
+  fn group(cs, acc) {
+    match (cs, acc) {
+      ([], _) -> acc,
+      ([c, ..rest], [(d, n), ..more]) if c == d -> group(rest, [(d, n + 1), ..more]),
+      ([c, ..rest], _) -> group(rest, [(c, 1), ..acc]),
+    }
+  }
+  group(sort(chars(text)), [])
+}
+
+fn build(trees) {
+  match sort_by(trees, |a, b| weight(a) <= weight(b)) {
+    [] -> panic("cannot build a code for empty input"),
+    [t] -> t,
+    [a, b, ..rest] -> build([Node(weight(a) + weight(b), a, b), ..rest]),
+  }
+}
+
+fn codes(t, prefix) {
+  match t {
+    Leaf(_, ch) -> [(ch, if prefix == "" { "0" } else { prefix })],
+    Node(_, l, r) -> append(codes(l, prefix ++ "0"), codes(r, prefix ++ "1")),
+  }
+}
+
+fn lookup(table, key) {
+  match find(table, |entry| match entry { (k, _) -> k == key }) {
+    Some((_, v)) -> Some(v),
+    None -> None,
+  }
+}
+
+fn encode(text, table) { join(map(chars(text), |c| unwrap_or(lookup(table, c), "?")), "") }
+
+fn decode(bits, tree) {
+  let n = string_length(bits);
+  fn go(i, node, acc) {
+    match node {
+      Leaf(_, ch) -> if i == n { join(reverse([ch, ..acc]), "") } else { go(i, tree, [ch, ..acc]) },
+      Node(_, l, r) -> if char_code_at(bits, i) == 48 { go(i + 1, l, acc) } else { go(i + 1, r, acc) },
+    }
+  }
+  go(0, tree, [])
+}
+
+fn main() {
+  let text = "this is an example of a huffman tree, built and run in webassembly";
+  let freqs = frequencies(text);
+  let tree = build(map(freqs, |p| match p { (ch, n) -> Leaf(n, ch) }));
+  let table = sort_by(codes(tree, ""), |a, b| match (a, b) { ((_, x), (_, y)) -> string_length(x) <= string_length(y) });
+  println("code table (most frequent first):");
+  table |> take(8) |> each(|entry| match entry {
+    (ch, code) -> println("  '" ++ ch ++ "'  " ++ code),
+  });
+  let bits = encode(text, table);
+  println("original: " ++ int_to_string(8 * string_length(text)) ++ " bits");
+  println("encoded:  " ++ int_to_string(string_length(bits)) ++ " bits");
+  println("first 64: " ++ substring(bits, 0, 64));
+  let decoded = decode(bits, tree);
+  println("decoded:  " ++ decoded);
+  println("round trip ok: " ++ if decoded == text { "yes" } else { "NO" });
+}

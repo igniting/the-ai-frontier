@@ -54,19 +54,23 @@ const UNIT = Object.freeze({ unit: true });
 const fail = (msg) => { throw new LumenRuntimeError(msg); };
 
 export function compareValues(a, b) {
-  if (typeof a === 'number') return a < b ? -1 : a > b ? 1 : 0;
-  if (typeof a === 'boolean') return a === b ? 0 : a ? 1 : -1;
-  if (typeof a === 'string') return a < b ? -1 : a > b ? 1 : 0;
-  if (a === UNIT) return 0;
-  if (a instanceof Block) {
+  for (;;) {
+    if (typeof a === 'number') return a < b ? -1 : a > b ? 1 : 0;
+    if (typeof a === 'boolean') return a === b ? 0 : a ? 1 : -1;
+    if (typeof a === 'string') return a < b ? -1 : a > b ? 1 : 0;
+    if (a === UNIT) return 0;
+    if (!(a instanceof Block)) return fail('cannot compare functions');
     if (a.tag !== b.tag) return a.tag < b.tag ? -1 : 1;
-    for (let i = 0; i < a.fields.length; i++) {
+    const n = a.fields.length;
+    if (n === 0) return 0;
+    for (let i = 0; i < n - 1; i++) {
       const c = compareValues(a.fields[i], b.fields[i]);
       if (c !== 0) return c;
     }
-    return 0;
+    // Loop on the last field (like the runtime) so long lists don't exhaust the stack.
+    a = a.fields[n - 1];
+    b = b.fields[n - 1];
   }
-  return fail('cannot compare functions');
 }
 
 export function interpret(checked, { maxSteps = Infinity } = {}) {

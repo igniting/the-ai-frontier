@@ -1,0 +1,29 @@
+// Allocates hundreds of megabytes in total while keeping only a small live
+// set. The Cheney copying collector (written in raw WebAssembly) reclaims
+// everything else: check the GC stats after running.
+
+fn churn(round, acc) {
+  if round == 0 { acc }
+  else {
+    // 10,000 tuples, each holding a freshly allocated string.
+    let xs = map(range(0, 10000), |i| (i, "#" ++ int_to_string(i)));
+    let total = fold(xs, 0, |s, p| match p { (i, str) -> s + i + string_length(str) });
+    churn(round - 1, (acc + total) % 1000003)
+  }
+}
+
+type Rose { Rose(List<Rose>) }
+
+fn build_tree(depth) {
+  if depth <= 0 { Rose([]) } else { Rose([build_tree(depth - 1), build_tree(depth - 1), build_tree(depth - 2)]) }
+}
+
+fn count_nodes(t) { match t { Rose(children) -> 1 + fold(children, 0, |n, child| n + count_nodes(child)) } }
+
+fn main() {
+  let kept = map(range(0, 5000), int_to_string); // stays live through every collection
+  println("churn result: " ++ int_to_string(churn(150, 0)));
+  let tree = build_tree(14);
+  println("tree nodes:   " ++ int_to_string(count_nodes(tree)));
+  println("kept list:    " ++ int_to_string(length(kept)) ++ " strings, last = " ++ unwrap_or(nth(kept, 4999), "?"));
+}

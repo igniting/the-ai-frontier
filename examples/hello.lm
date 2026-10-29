@@ -1,0 +1,44 @@
+// Welcome to Lumen! A statically typed functional language that compiles
+// to WebAssembly. Every type in this file is inferred; there are no annotations.
+
+type Shape { Circle(Int), Rect(Int, Int), Triangle(Int, Int) }
+
+fn area(shape) {
+  match shape {
+    Circle(r) -> 3 * r * r, // integers only, so pi is 3 today
+    Rect(w, h) -> w * h,
+    Triangle(base, height) -> base * height / 2,
+  }
+}
+
+fn describe(shape) {
+  match shape {
+    Circle(_) -> "circle",
+    Rect(w, h) if w == h -> "square",
+    Rect(_, _) -> "rectangle",
+    Triangle(_, _) -> "triangle",
+  }
+}
+
+fn main() {
+  println("Hello from WebAssembly!");
+
+  let shapes = [Circle(2), Rect(3, 4), Rect(5, 5), Triangle(6, 3)];
+  shapes |> each(|s| println(pad_left(describe(s), 10, " ") ++ " has area " ++ int_to_string(area(s))));
+
+  let total = shapes |> map(area) |> sum;
+  println("total area: " ++ int_to_string(total));
+
+  // Let-polymorphism: `twice` is generic, so it works on strings and ints alike.
+  let twice = |f| |x| f(f(x));
+  println(twice(|s| s ++ "!")("wow"));
+  println(int_to_string(twice(|n| n * 10)(7)));
+
+  // Closures capture their environment.
+  let make_counter = |start| |step| start + step;
+  let from_100 = make_counter(100);
+  println(show_list(map([1, 2, 3], from_100), int_to_string));
+
+  // Structural equality and ordering work on any data (except functions).
+  println(show_list(sort([(2, "b"), (1, "z"), (2, "a")]), |p| match p { (n, s) -> int_to_string(n) ++ s }));
+}

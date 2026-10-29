@@ -1,0 +1,6 @@
+error: non-exhaustive match: pattern `(FlashingRed, None)` is not covered
+ --> 7:9
+  |
+7 |   match (light, emergency) {
+  |         ^^^^^^^^^^^^^^^^^^
+  = note: add an arm for the missing case, or a wildcard `_ ->` arm

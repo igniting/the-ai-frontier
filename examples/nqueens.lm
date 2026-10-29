@@ -1,0 +1,60 @@
+// The N-queens puzzle by backtracking over immutable lists.
+
+fn safe(col, placed) {
+  fn go(qs, dist) {
+    match qs {
+      [] -> true,
+      [q, ..rest] -> q != col && abs(q - col) != dist && go(rest, dist + 1),
+    }
+  }
+  go(placed, 1)
+}
+
+fn count_solutions(n) {
+  fn place(row, placed) {
+    if row == n { 1 }
+    else {
+      range(0, n)
+        |> filter(|col| safe(col, placed))
+        |> map(|col| place(row + 1, [col, ..placed]))
+        |> sum
+    }
+  }
+  place(0, [])
+}
+
+fn first_solution(n) {
+  fn place(row, placed) {
+    if row == n { Some(reverse(placed)) }
+    else {
+      fn try_cols(cols) {
+        match cols {
+          [] -> None,
+          [c, ..rest] ->
+            if !safe(c, placed) { try_cols(rest) }
+            else {
+              match place(row + 1, [c, ..placed]) {
+                Some(solution) -> Some(solution),
+                None -> try_cols(rest),
+              }
+            },
+        }
+      }
+      try_cols(range(0, n))
+    }
+  }
+  place(0, [])
+}
+
+fn main() {
+  range(1, 11) |> each(|n| {
+    println(pad_left(int_to_string(n), 2, " ") ++ " queens: " ++ int_to_string(count_solutions(n)) ++ " solutions")
+  });
+
+  println("");
+  println("first solution for 8 queens:");
+  match first_solution(8) {
+    Some(cols) -> each(cols, |col| println(join(map(range(0, 8), |c| if c == col { "Q" } else { "." }), " "))),
+    None -> println("none"),
+  }
+}

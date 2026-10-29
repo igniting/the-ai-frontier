@@ -1,0 +1,4 @@
+count_up(10000000) = 10000000
+is_even(1000001)   = false
+longest Collatz chain below 10000 starts at 6171 (261 steps)
+sum of 0..1000000 = -364189984 (31-bit wrap-around)

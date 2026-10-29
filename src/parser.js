@@ -129,8 +129,9 @@ export function parse(src) {
         const elems = [];
         let tail = null;
         while (!at(']')) {
-          if (accept('..')) {
-            tail = parsePattern();
+          if (at('..')) {
+            const dots = next();
+            tail = at(']') || at(',') ? { k: 'pwild', span: span(dots.s, dots.e) } : parsePattern();
             accept(',');
             break;
           }
@@ -277,7 +278,7 @@ export function parse(src) {
         const close = expect(']');
         let result = tail ?? { k: 'ctor', name: 'Nil', args: null, span: span(close.s, close.e), nameSpan: span(close.s, close.e), sugar: true };
         for (let i = elems.length - 1; i >= 0; i--) {
-          result = { k: 'ctor', name: 'Cons', args: [elems[i], result], span: span(elems[i].span.s, close.e), nameSpan: span(t.s, t.e), sugar: true };
+          result = { k: 'ctor', name: 'Cons', args: [elems[i], result], span: span(elems[i].span.s, close.e), nameSpan: span(t.s, t.e), sugar: true, literal: t.s };
         }
         return { ...result, span: span(t.s, close.e) };
       }
