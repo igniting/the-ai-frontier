@@ -183,7 +183,14 @@ export function codegen(ir, options = {}) {
     // collection inside alloc may move the objects they point to.
     function genAlloc(hdr, fields) {
       needsTmp = true;
-      emit(c(4 + 4 * fields.length), call('$rt:alloc'), ls('$tmp'), lg('$tmp'), c(hdr), st(0));
+      const bytes = 4 + 4 * fields.length;
+      if (opts.optimize && !opts.gcStress) {
+        // -O: bump the heap pointer inline; call the runtime only when full.
+        emit(gg('$hp'), c(bytes), o('i32.add'), lt('$tmp'), gg('$from_end'), o('i32.gt_u'),
+          ['if', null, 'i32'], c(bytes), call('$rt:alloc'),
+          ['else'], gg('$hp'), lg('$tmp'), gs('$hp'), ['end'],
+          ls('$tmp'), lg('$tmp'), c(hdr), st(0));
+      } else emit(c(bytes), call('$rt:alloc'), ls('$tmp'), lg('$tmp'), c(hdr), st(0));
       fields.forEach((a, i) => {
         emit(lg('$tmp'));
         genAtom(a);
@@ -362,6 +369,7 @@ export function codegen(ir, options = {}) {
   mod.addGlobal('$to_end', 'i32', true, toStart + opts.heapSize);
   mod.addGlobal('$gc_count', 'i32', true, 0, 'gc_count');
   mod.addGlobal('$alloc_bytes', 'i64', true, 0, 'alloc_bytes');
+  if (opts.optimize) mod.addGlobal('$alloc_mark', 'i32', true, fromStart, 'alloc_mark');
   if (opts.fuel) mod.addGlobal('$fuel', 'i32', true, opts.fuel);
 
   const peephole = opts.optimize ? optimize(mod) : null;

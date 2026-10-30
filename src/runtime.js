@@ -99,7 +99,9 @@ export function addRuntime(mod, layout, opts) {
     opts.gcStress ? [o('drop'), c(1)] : [],
     if_(null, [lg('$bytes'), call('$rt:gc'), gg('$hp'), ls('$p')]),
     lg('$p'), lg('$bytes'), o('i32.add'), gs('$hp'),
-    gg('$alloc_bytes'), lg('$bytes'), o('i64.extend_i32_u'), o('i64.add'), gs('$alloc_bytes'),
+    // Under -O, compiled code bumps $hp inline, so allocated bytes are
+    // tallied per collection instead (see $rt:gc and $alloc_mark).
+    opts.optimize ? [] : [gg('$alloc_bytes'), lg('$bytes'), o('i64.extend_i32_u'), o('i64.add'), gs('$alloc_bytes')],
     lg('$p'),
   ], opts.gcStress ? 'Bump allocator. GC STRESS MODE: collects on every allocation.' : 'Bump allocator; collects when the semispace is full.');
 
@@ -119,7 +121,11 @@ export function addRuntime(mod, layout, opts) {
       lg('$base'), c(2), o('i32.shl'), ls('$base'),
     ]
     : [lg('$live'), lg('$need'), o('i32.add'), c(1), o('i32.shl'), ls('$base')];
+  const tally = opts.optimize
+    ? [gg('$alloc_bytes'), gg('$hp'), gg('$alloc_mark'), o('i32.sub'), o('i64.extend_i32_u'), o('i64.add'), gs('$alloc_bytes')]
+    : [];
   fn('$rt:gc', ['$need'], [], ['$live', '$size', '$base'], [
+    tally,
     call('$rt:collect'),
     gg('$hp'), gg('$from_start'), o('i32.sub'), ls('$live'),
     gg('$from_end'), gg('$from_start'), o('i32.sub'), ls('$size'),
@@ -138,6 +144,7 @@ export function addRuntime(mod, layout, opts) {
       lg('$base'), lg('$size'), o('i32.add'), gs('$to_start'),
       lg('$base'), lg('$size'), c(1), o('i32.shl'), o('i32.add'), gs('$to_end'),
     ]),
+    opts.optimize ? [gg('$hp'), gs('$alloc_mark')] : [],
   ], opts.optimize ? 'Collects garbage, then grows the semispaces if they are more than a quarter full.' : 'Collects garbage, then doubles the semispaces if they are more than half full.');
 
   fn('$rt:collect', [], [], ['$p', '$scan', '$h', '$end'], [

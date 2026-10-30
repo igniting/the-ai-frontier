@@ -114,7 +114,7 @@ function finish(state, instance, run) {
     timeMs: now() - t,
     stats: {
       gcCount: ex.gc_count.value,
-      allocatedBytes: Number(ex.alloc_bytes.value),
+      allocatedBytes: Number(ex.alloc_bytes.value) + (ex.alloc_mark ? ex.hp.value - ex.alloc_mark.value : 0),
       heapBytes: ex.from_end.value - ex.from_start.value,
       liveBytes: ex.hp.value - ex.from_start.value,
       memoryBytes: ex.memory.buffer.byteLength,

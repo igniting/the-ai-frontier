@@ -137,6 +137,12 @@ export const MUTANTS = [
     replace: '"rhs":[["i32.const",1],["i32.lt_u"]]',
   },
   {
+    name: '-O: inline allocation forgets to bump the heap pointer (objects overlap)',
+    file: 'codegen.js',
+    find: "['else'], gg('$hp'), lg('$tmp'), gs('$hp'), ['end'],",
+    replace: "['else'], gg('$hp'), ['end'],",
+  },
+  {
     name: '-O: the heap-growth test is inverted (the heap does not grow when it must)',
     file: 'runtime.js',
     find: "lg('$base'), lg('$size'), c(2), o('i32.shr_u'), o('i32.gt_u'),",
