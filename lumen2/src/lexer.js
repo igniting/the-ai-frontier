@@ -6,7 +6,7 @@
 
 import { LumenError } from './diagnostics.js';
 
-export const KEYWORDS = new Set(['fn', 'let', 'if', 'else', 'match', 'type', 'true', 'false']);
+export const KEYWORDS = new Set(['fn', 'let', 'if', 'else', 'match', 'type', 'true', 'false', 'trait', 'impl', 'for', 'where', 'property']);
 
 // Longest first, so that `|>` wins over `|`.
 const PUNCT = ['|>', '->', '=>', '==', '!=', '<=', '>=', '&&', '||', '++', '..',

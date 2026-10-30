@@ -13,9 +13,12 @@
 // shorthand for the four capabilities.
 //
 // Type variables use the "levels" technique (as in OCaml) for linear-time
-// generalization. A type variable may carry the `cmp` constraint: it can only
-// be instantiated to a type whose values can be compared, i.e. one that
-// contains no functions. This makes `==` and `<` on functions a type error.
+// generalization. A type variable carries a set of trait constraints: it can
+// only be instantiated to a type that implements those traits. A type
+// implements a trait when there is an `impl` for its head (with the impl's
+// `where` constraints met by its arguments). `Ord` also holds structurally,
+// for any type without functions in it, so `==` and `<` on functions are a
+// type error, while a user `impl Ord` replaces the structural ordering.
 
 import { LumenError } from './diagnostics.js';
 
@@ -24,7 +27,7 @@ export const LABELS = ['clock', 'fail', 'input', 'output', 'random'];
 export const CAPABILITIES = ['clock', 'input', 'output', 'random'];
 
 let counter = 0;
-export const newVar = (level, cmp = false) => ({ k: 'var', id: counter++, level, link: null, cmp });
+export const newVar = (level, traits = new Set()) => ({ k: 'var', id: counter++, level, link: null, traits });
 export const newRowVar = (level) => ({ k: 'rvar', id: counter++, level, link: null });
 export const tcon = (name, args = []) => ({ k: 'con', name, args });
 export const tfun = (params, ret, eff) => ({ k: 'fun', params, ret, eff });
@@ -55,10 +58,20 @@ export function pruneRow(r) {
 
 export class UnifyError extends Error {}
 
+// The head of a type, which selects an impl: a type name, or `(n)` for n-tuples.
+export function headOf(t) {
+  t = prune(t);
+  if (t.k === 'con') return t.name;
+  if (t.k === 'tuple') return `(${t.elems.length})`;
+  return null;
+}
+
+
+
 // ----------------------------------------------------------- unification --
-// `adts` maps type names to their declarations; it is needed to decide
-// whether a user-defined type is comparable.
-export function makeUnifier(adts) {
+// `adts` maps type names to their declarations; `impls` maps a trait name to
+// a map from type heads to impls ({ params, where: Map(param -> [traits]) }).
+export function makeUnifier(adts, impls = new Map()) {
   function occursAdjust(v, t) {
     t = prune(t);
     if (t === v) throw new UnifyError('infinite type');
@@ -72,18 +85,26 @@ export function makeUnifier(adts) {
     if (p.tail && p.tail.level > level) p.tail.level = level;
   }
 
-  // Can values of this type be compared? Marks type variables as needing it.
-  function requireCmp(t, seen = new Set()) {
+  // Does type t implement the trait? Records the constraint on type variables.
+  function requireTrait(trait, t, seen = new Set()) {
     t = prune(t);
-    if (t.k === 'var') { t.cmp = true; return; }
-    if (t.k === 'fun') throw new UnifyError('functions cannot be compared');
-    if (t.k === 'tuple') { t.elems.forEach((e) => requireCmp(e, seen)); return; }
-    t.args.forEach((a) => requireCmp(a, seen));
+    if (t.k === 'var') { t.traits.add(trait); return; }
+    const impl = impls.get(trait)?.get(headOf(t));
+    if (impl) {
+      const args = t.k === 'tuple' ? t.elems : t.args;
+      impl.params.forEach((p, i) => { for (const c of impl.where.get(p) ?? []) requireTrait(c, args[i], seen); });
+      return;
+    }
+    if (trait !== 'Ord') throw new TraitError(trait, t);
+    // Structural ordering: every component must be ordered.
+    if (t.k === 'fun') throw new TraitError(trait, t);
+    if (t.k === 'tuple') { t.elems.forEach((e) => requireTrait(trait, e, seen)); return; }
+    t.args.forEach((a) => requireTrait(trait, a, seen));
     const decl = adts.get(t.name);
     if (!decl || seen.has(t.name)) return;
     seen.add(t.name);
     const sub = new Map(decl.params.map((p, i) => [p, t.args[i]]));
-    for (const c of decl.ctors) for (const f of c.fieldTypes) requireCmp(substParams(f, sub), seen);
+    for (const c of decl.ctors) for (const f of c.fieldTypes) requireTrait(trait, substParams(f, sub), seen);
   }
 
   function unify(a, b) {
@@ -91,9 +112,8 @@ export function makeUnifier(adts) {
     if (a === b) return;
     if (a.k === 'var') {
       occursAdjust(a, b);
-      if (a.cmp) {
-        if (b.k === 'var') b.cmp = true; else requireCmp(b);
-      }
+      if (b.k === 'var') for (const c of a.traits) b.traits.add(c);
+      else for (const c of a.traits) requireTrait(c, b);
       a.link = b;
       return;
     }
@@ -152,7 +172,11 @@ export function makeUnifier(adts) {
     v.link = r;
   }
 
-  return { unify, unifyRows, requireCmp };
+  return { unify, unifyRows, requireTrait };
+}
+
+export class TraitError extends UnifyError {
+  constructor(trait, type) { super(`no impl ${trait}`); this.trait = trait; this.type = type; }
 }
 
 export class EffectError extends UnifyError {
@@ -190,7 +214,7 @@ export function instantiate(t, level, inst = new Map()) {
   switch (t.k) {
     case 'var':
       if (t.level !== GENERIC) return t;
-      if (!inst.has(t)) inst.set(t, newVar(level, t.cmp));
+      if (!inst.has(t)) inst.set(t, newVar(level, new Set(t.traits)));
       return inst.get(t);
     case 'con': return t.args.length ? tcon(t.name, t.args.map((a) => instantiate(a, level, inst))) : t;
     case 'tuple': return ttuple(t.elems.map((a) => instantiate(a, level, inst)));
@@ -273,11 +297,11 @@ export class TypePrinter {
     }
   }
 
-  // A signature: the type plus any comparability constraints on its variables.
+  // A signature: the type plus the trait constraints on its variables.
   signature(t) {
     const s = this.show(t);
-    const cmp = [...this.names.keys()].filter((v) => v.cmp).map((v) => `${this.names.get(v)}: Cmp`);
-    return cmp.length ? `${s} where ${cmp.join(', ')}` : s;
+    const cs = [...this.names.keys()].filter((v) => v.traits.size).map((v) => `${this.names.get(v)}: ${[...v.traits].sort().join(' + ')}`);
+    return cs.length ? `${s} where ${cs.join(', ')}` : s;
   }
 }
 

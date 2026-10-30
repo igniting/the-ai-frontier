@@ -73,6 +73,26 @@ test('closures, local functions, guards and nested patterns', () => {
     }`);
 });
 
+test('traits: impls are resolved at compile time, and user Ord reaches structural comparison', () => {
+  agree(`type Shape { Circle(Int), Rect(Int, Int), Dot }
+    type Version { V(Int, Int) }
+    impl Ord for Version { fn compare(a, b) { match (a, b) { (V(x1, y1), V(x2, y2)) -> if x1 != x2 { x2 - x1 } else { y2 - y1 } } } }
+    trait Area { fn area(x: Self) -> Int }
+    impl Area for Shape { fn area(s) { match s { Circle(r) -> 3 * r * r, Rect(w, h) -> w * h, Dot -> 0 } } }
+    impl Area for List<a> where a: Area { fn area(xs) { sum(map(xs, area)) } }
+    type Tree<a> { Leaf, Node(Tree<a>, a, Tree<a>) }
+    fn main() {
+      println(show([Rect(2, 3), Dot]) ++ show((1, "two", [true], ())));
+      println(show(sort([V(1, 2), V(3, 0), V(1, 5)])) ++ show([Some(V(1, 1))] < [Some(V(0, 1))]));
+      println(show(area([[Rect(2, 3)], [Circle(1), Dot]])) ++ show(compare(Some(2), None)) ++ show(compare("a", "b")));
+      println(show(Node(Leaf, (V(1, 2), "x"), Leaf)) ++ join(map([1, 2], show), "+"));
+      println(show(map([(Dot, Dot), (Dot, Circle(1))], |p| match p { (x, y) -> compare(x, y) })) ++ show(sort(["pear", "fig", "apple"])))
+    }`);
+  // join is linear: a long join neither overflows the stack nor takes quadratic time.
+  const r = agree('fn main() { println(int_to_string(string_length(join(map(range(0, 20000), int_to_string), ",")))) }');
+  assert.equal(r.output, '108889\n');
+});
+
 test('constant stack: tail calls, long lists are freed and compared without recursion', () => {
   const r = agree(`fn main() {
     fn count(n, acc) { if n == 0 { acc } else { count(n - 1, [n, ..acc]) } }

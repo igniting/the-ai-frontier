@@ -34,7 +34,7 @@ test('types and effects are inferred, effects are polymorphic', () => {
   assert.equal(s.average, 'fn(List<Int>) -> Int ! fail');
   assert.equal(s.shout, 'fn(List<Int>) -> () ! output');
   assert.equal(s.apply, 'fn(fn(a) -> b ! e, a) -> b ! e');
-  assert.equal(s.has, 'fn(List<a>, a) -> Bool where a: Cmp');
+  assert.equal(s.has, 'fn(List<a>, a) -> Bool where a: Ord');
   assert.equal(s.main, 'fn() -> () ! {fail, output}');
 });
 
@@ -78,6 +78,43 @@ test('clock and random come from the host, so a seeded run is reproducible', () 
   assert.equal(run(src, '', makeHost({ seed: 42 })).output, one);
   const [a, b, dt] = one.trim().split(' ').map(Number);
   assert.ok(a >= 1 && a <= 100 && b >= 1 && b <= 100 && dt === 1);
+});
+
+test('traits: methods are typed by their signatures and need an impl', () => {
+  const prog = `
+    trait Area { fn area(x: Self) -> Int }
+    type Shape { Sq(Int), Rect(Int, Int) }
+    impl Area for Shape { fn area(s) { match s { Sq(n) -> n * n, Rect(w, h) -> w * h } } }
+    impl Area for List<a> where a: Area { fn area(xs) { sum(map(xs, area)) } }
+    fn total(xs) { area(xs) }
+    fn describe(x) { show(x) ++ " has area " ++ show(area(x)) }
+    fn main() { println(describe([Sq(2), Rect(1, 3)])) }`;
+  const s = sigs(prog);
+  assert.equal(s.total, 'fn(a) -> Int where a: Area');
+  assert.equal(s.describe, 'fn(a) -> String where a: Area + Show');
+  assert.equal(run(prog).output, '[Sq(2), Rect(1, 3)] has area 7\n');
+  rejects('trait Area { fn area(x: Self) -> Int }\nfn main() { println(show(area(3))) }', /`Int` does not implement `Area`/);
+  rejects('type F { F(fn(Int) -> Int) }\nfn main() { println(show(F(|x| x))) }', /`F` does not implement `Show`/);
+  const base = 'trait Area { fn area(x: Self) -> Int }\ntype S { S(Int) }\n';
+  rejects(base + 'impl Area for S { }\nfn main() { () }', /missing the method `area`/);
+  rejects(base + 'impl Area for S { fn area(s) { "big" } }\nfn main() { () }', /does not match the trait/);
+  rejects(base + 'impl Area for S { fn area(s) { println("x"); 1 } }\nfn main() { () }', /calling `println` can write output, but `area` in `impl Area for S` is declared without `output`/);
+  rejects('trait Area { fn area(x: Self) -> Int }\ntype B<a> { B(a) }\nimpl Area for B<a> { fn area(b) { match b { B(x) -> area(x) } } }\nfn main() { () }', /needs `a: Area`/);
+  rejects('type V { V(Int) }\nimpl Ord for V { fn compare(a, b) { 0 } }\nimpl Ord for V { fn compare(a, b) { 1 } }\nfn main() { () }', /already implements `Ord`/);
+  rejects('impl Show for Int { fn show(n) { "n" } }\nfn main() { () }', /only types declared in this program can have their own `impl Show`/);
+});
+
+test('Ord: a user impl replaces structural ordering, everywhere the type is compared', () => {
+  const r = run(`
+    type Version { V(Int, Int) }
+    impl Ord for Version {
+      fn compare(a, b) { match (a, b) { (V(x1, y1), V(x2, y2)) -> if x1 != x2 { x2 - x1 } else { y2 - y1 } } }
+    }
+    fn main() {
+      println(show(sort([V(1, 2), V(3, 0), V(1, 5)])));
+      println(show([V(1, 0)] < [V(0, 0)]) ++ " " ++ show(compare(Some(V(1, 0)), Some(V(2, 0)))) ++ " " ++ show(compare((1, "a"), (1, "b"))))
+    }`);
+  assert.equal(r.output, '[V(3, 0), V(1, 5), V(1, 2)]\ntrue 1 -1\n');
 });
 
 test('comparison needs a type without functions', () => {

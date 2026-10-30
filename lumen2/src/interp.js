@@ -22,9 +22,11 @@ const int = (v) => (v < INT_MIN || v > INT_MAX ? fail('integer overflow') : v);
 
 class TailCall { constructor(fn, args) { this.fn = fn; this.args = args; } }
 
-// Structural ordering. The last field is compared by looping, not recursion,
+// Ordering: structural, except that a constructor of a type with an
+// `impl Ord` is compared by calling it (userOrd returns the comparison
+// function, or null). The last field is compared by looping, not recursion,
 // so comparing long lists takes constant stack.
-export function compare(a, b) {
+export function compare(a, b, userOrd = () => null) {
   for (;;) {
     if (typeof a === 'bigint') return a < b ? -1 : a > b ? 1 : 0;
     if (typeof a === 'boolean') return a === b ? 0 : a ? 1 : -1;
@@ -33,6 +35,8 @@ export function compare(a, b) {
     let xs, ys;
     if (a.t === 'tup') { xs = a.v; ys = b.v; }
     else if (a.t === 'ctor') {
+      const user = userOrd(a);
+      if (user) { const c = user(a, b); return c < 0n ? -1 : c > 0n ? 1 : 0; }
       if (a.idx !== b.idx) return a.idx < b.idx ? -1 : 1;
       xs = a.f; ys = b.f;
     } else if (a.t === 'arr') {
@@ -40,7 +44,7 @@ export function compare(a, b) {
       xs = a.v; ys = b.v;
     } else throw new Error('compare: not comparable');
     if (!xs.length) return 0;
-    for (let i = 0; i < xs.length - 1; i++) { const c = compare(xs[i], ys[i]); if (c) return c; }
+    for (let i = 0; i < xs.length - 1; i++) { const c = compare(xs[i], ys[i], userOrd); if (c) return c; }
     a = xs[xs.length - 1]; b = ys[ys.length - 1];
   }
 }
@@ -52,6 +56,28 @@ export function interpret(program, { input = '', maxSteps = Infinity, maxDepth =
   let steps = 0;
   let depth = 0;
   const tick = () => { if (++steps > maxSteps) fail('out of fuel'); };
+
+  // Trait methods dispatch on the first argument's value, whose head (type
+  // name, or tuple arity) selects the impl.
+  const headOfValue = (v) => {
+    switch (typeof v) {
+      case 'bigint': return 'Int';
+      case 'string': return 'String';
+      case 'boolean': return 'Bool';
+      default:
+        if (v === null) return 'Unit';
+        if (v.t === 'tup') return `(${v.v.length})`;
+        if (v.t === 'arr') return 'Array';
+        if (v.t === 'ctor') return v.key.slice(0, v.key.indexOf('.'));
+        return null;
+    }
+  };
+  const implKey = (trait, method, v) => program.impls?.get(trait)?.get(headOfValue(v))?.keys.get(method) ?? null;
+  const userOrd = (v) => {
+    const key = implKey('Ord', 'compare', v);
+    return key && ((x, y) => call({ t: 'glob', key }, [x, y]));
+  };
+  const cmp = (a, b) => compare(a, b, userOrd);
 
   const lookup = (env, id) => {
     for (let e = env; e; e = e.parent) if (e.vars.has(id)) return e.vars.get(id);
@@ -66,6 +92,12 @@ export function interpret(program, { input = '', maxSteps = Infinity, maxDepth =
     clock_ms: () => host.clock(),
     random_int: ([lo, hi]) => host.random(lo, hi),
     int_to_string: ([n]) => n.toString(),
+    concat_strings: ([xs]) => {
+      const parts = [];
+      let n = 0;
+      for (let c = xs; c.name === 'Cons'; c = c.f[1]) { parts.push(c.f[0]); n += c.f[0].length; }
+      return n > MAX_STRING ? fail('string too long') : parts.join('');
+    },
     string_length: ([s]) => BigInt(s.length),
     substring: ([s, start, end]) => {
       const len = BigInt(s.length);
@@ -101,6 +133,12 @@ export function interpret(program, { input = '', maxSteps = Infinity, maxDepth =
         tick();
         let r;
         if (fn.t === 'bi') return BUILTINS[fn.name](args);
+        if (fn.t === 'method') {
+          const key = implKey(fn.trait, fn.method, args[0]);
+          if (key) { fn = { t: 'glob', key }; continue; }
+          if (fn.trait === 'Ord') return BigInt(cmp(args[0], args[1])); // structural ordering
+          throw new Error(`interp: no impl of ${fn.trait} for this value`);
+        }
         if (fn.t === 'ctorfn') return { t: 'ctor', key: fn.info.key, idx: fn.info.idx, name: fn.info.name, f: args };
         if (fn.t === 'glob') {
           const f = fns.get(fn.key);
@@ -190,6 +228,7 @@ export function interpret(program, { input = '', maxSteps = Infinity, maxDepth =
       case 'var':
         if (e.ref.k === 'local') return lookup(env, e.ref.id);
         if (e.ref.k === 'global') return { t: 'glob', key: e.ref.key };
+        if (e.ref.k === 'method') return { t: 'method', trait: e.ref.trait, method: e.ref.method };
         return { t: 'bi', name: e.ref.name };
       case 'ctor':
         if (e.args === null) return e.ctor.fieldTypes.length ? { t: 'ctorfn', info: e.ctor } : { t: 'ctor', key: e.ctor.key, idx: e.ctor.idx, name: e.ctor.name, f: [] };
@@ -225,12 +264,12 @@ export function interpret(program, { input = '', maxSteps = Infinity, maxDepth =
       case '/': return r === 0n ? fail('division by zero') : int(l / r);
       case '%': return r === 0n ? fail('division by zero') : l % r;
       case '++': return l.length + r.length > MAX_STRING ? fail('string too long') : l + r;
-      case '==': return compare(l, r) === 0;
-      case '!=': return compare(l, r) !== 0;
-      case '<': return compare(l, r) < 0;
-      case '<=': return compare(l, r) <= 0;
-      case '>': return compare(l, r) > 0;
-      case '>=': return compare(l, r) >= 0;
+      case '==': return cmp(l, r) === 0;
+      case '!=': return cmp(l, r) !== 0;
+      case '<': return cmp(l, r) < 0;
+      case '<=': return cmp(l, r) <= 0;
+      case '>': return cmp(l, r) > 0;
+      case '>=': return cmp(l, r) >= 0;
       default: throw new Error(e.op);
     }
   }

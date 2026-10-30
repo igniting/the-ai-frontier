@@ -36,6 +36,13 @@ fn show_tree(t) { match t { Leaf -> ".", Node(l, x, r) -> "(" ++ show_tree(l) ++
 fn show_shape(s) { match s { Circle(r) -> "C" ++ int_to_string(r), Rect(w, h) -> "R" ++ int_to_string(w) ++ "x" ++ int_to_string(h), Dot -> "D" } }
 fn show_color(c) { match c { Red -> "red", Green -> "green", Blue -> "blue" } }
 fn small(n) { abs(n % 7) }
+fn rank(c) { match c { Red -> 0, Green -> 1, Blue -> 2 } }
+impl Ord for Color { fn compare(a, b) { rank(b) - rank(a) } }
+trait Size { fn size(x: Self) -> Int }
+impl Size for Shape { fn size(s) { match s { Circle(r) -> r, Rect(w, h) -> w + h, Dot -> 0 } } }
+impl Size for Tree { fn size(t) { length(tree_list(t)) } }
+impl Size for Int { fn size(n) { n } }
+impl Size for List<a> where a: Size { fn size(xs) { fold(xs, 0, |acc, x| acc + size(x)) } }
 `;
 
 // A small, fast, seedable random number generator (mulberry32).
@@ -59,7 +66,9 @@ export function generate(seed) {
   const fresh = (p) => `${p}${names++}`;
   const fns = []; // { name, params: [types], ret }
 
+  // Text for a value: usually by hand, sometimes with the derived or built-in `show`.
   const show = (t, e) => {
+    if (![T.fn, T.arr, T.sarr].includes(t) && chance(0.3)) return `show(${e})`;
     switch (t) {
       case T.int: return `int_to_string(${e})`;
       case T.bool: return `(if ${e} { "T" } else { "F" })`;
@@ -161,6 +170,8 @@ export function generate(seed) {
         () => { const a = fresh('acc'), x = fresh('x'); return `fold(${g(T.ints)}, ${g(T.int)}, |${a}, ${x}| ${gen(T.int, d - 1, [...env, { name: a, t: T.int }, { name: x, t: T.int }])})`; },
         () => `length(tree_list(${g(T.tree)}))`,
         () => `random_int(${g(T.int)}, ${g(T.int)})`, () => `(clock_ms() - clock_ms())`,
+        () => `size(${g(pick([T.shape, T.tree, T.ints, T.int]))})`,
+        () => { const u = cmpTy(); return `compare(${g(u)}, ${g(u)})`; },
       ])();
       case T.bool: return pick([
         () => { const u = cmpTy(); return `(${g(u)} ${pick(['==', '!=', '<', '<=', '>', '>='])} ${g(u)})`; },
@@ -341,6 +352,7 @@ export const MUTANTS = [
   'add-no-overflow', // drop the overflow check on +
   'cmp-ignore-tag', // compare constructors by their fields only
   'substring-end', // off by one at the end of a substring
+  'ord-ignore-impl', // compare a type structurally even though it has an `impl Ord`
 ];
 
 function main() {

@@ -235,6 +235,24 @@ export function compileProgram(program, { paranoid = false, reuse = true, mutant
     get('p'), i32(8), ['i32.add'], get('la'), ['i32.add'], get('b'), i32(8), ['i32.add'], get('lb'), ['memory.copy'],
     get('p'),
   ]);
+  // Joins a List<String> (Cons cells: head at 8, tail at 16; Nil is the immediate 0).
+  fn('str_concat_list', [['xs', 'i32']], ['i32'], [['c', 'i32'], ['n', 'i64'], ['p', 'i32'], ['at', 'i32'], ['s', 'i32']], [
+    get('xs'), set('c'),
+    ['block', 'sized', null], ['loop', 'size', null],
+    get('c'), i32(IMM), ['i32.lt_u'], ['br_if', 'sized'],
+    get('n'), get('c'), chk(), ['i32.load', 8], ['i32.load', 4], ['i64.extend_i32_u'], ['i64.add'], set('n'),
+    get('c'), ['i32.load', 16], set('c'), ['br', 'size'], ['end'], ['end'],
+    get('n'), i64(MAX_STRING), ['i64.gt_u'], ['if'], fail(STRLONG), ['end'],
+    get('n'), ['i32.wrap_i64'], call('str_new'), tee('p'), i32(8), ['i32.add'], set('at'),
+    get('xs'), set('c'),
+    ['block', 'done', null], ['loop', 'copy', null],
+    get('c'), i32(IMM), ['i32.lt_u'], ['br_if', 'done'],
+    get('c'), ['i32.load', 8], set('s'),
+    get('at'), get('s'), i32(8), ['i32.add'], get('s'), ['i32.load', 4], ['memory.copy'],
+    get('at'), get('s'), ['i32.load', 4], ['i32.add'], set('at'),
+    get('c'), ['i32.load', 16], set('c'), ['br', 'copy'], ['end'], ['end'],
+    get('p'),
+  ]);
   fn('str_cmp', [['a', 'i32'], ['b', 'i32']], ['i32'], [['la', 'i32'], ['lb', 'i32'], ['n', 'i32'], ['i', 'i32'], ['ca', 'i32'], ['cb', 'i32']], [
     len('a'), set('la'), len('b'), set('lb'),
     get('la'), get('lb'), get('la'), get('lb'), ['i32.lt_u'], ['select'], set('n'),
@@ -438,7 +456,13 @@ export function compileProgram(program, { paranoid = false, reuse = true, mutant
       return [operands, call(cmpFn(ft)), tee('c'), ['if'], get('c'), ['return'], ['end']];
     });
     let body;
-    if (isInt(t)) body = [get('a'), get('b'), ['i64.gt_s'], get('a'), get('b'), ['i64.lt_s'], ['i32.sub']];
+    const user = mutant === 'ord-ignore-impl' ? null : ir.ordImpls.get(tkey(t));
+    if (user) {
+      // The program's own compare takes ownership of its arguments; these are borrowed.
+      const own = (x) => (isHeap(t) ? [get(x), call('rt_dup')] : [get(x)]);
+      locals.push(['r', 'i64']);
+      body = [own('a'), own('b'), call(user), tee('r'), i64(0), ['i64.gt_s'], get('r'), i64(0), ['i64.lt_s'], ['i32.sub']];
+    } else if (isInt(t)) body = [get('a'), get('b'), ['i64.gt_s'], get('a'), get('b'), ['i64.lt_s'], ['i32.sub']];
     else if (t.k === 'tuple') body = [fields(t.elems), i32(0)];
     else if (t.k === 'con' && t.name === 'String') body = [get('a'), get('b'), call('str_cmp')];
     else if (t.k === 'con' && t.name === 'Array') {
@@ -517,7 +541,9 @@ export function compileProgram(program, { paranoid = false, reuse = true, mutant
           const w = isInt(r.ty) ? 'i64' : 'i32';
           return [atoms(r.args), [`${w}.${CMPS[r.op]}`]];
         }
-        case 'cmp': return [atoms(r.args), call(cmpFn(r.ty)), i32(0), [`i32.${CMPS[r.op]}`]];
+        case 'cmp':
+          if (r.op === 'three') return [atoms(r.args), call(cmpFn(r.ty)), ['i64.extend_i32_s']];
+          return [atoms(r.args), call(cmpFn(r.ty)), i32(0), [`i32.${CMPS[r.op]}`]];
         case 'call': return [atoms(r.args), call(r.fn)];
         case 'callc': return [atom(r.f), atoms(r.args), atom(r.f), ['i32.load', 4], ['call_indirect', sigOf(typeOf(r.f))]];
         case 'ctor': {
@@ -560,6 +586,7 @@ export function compileProgram(program, { paranoid = false, reuse = true, mutant
         case 'clock_ms': return call('host_clock');
         case 'random_int': return [args, call('host_random')];
         case 'int_to_string': return [args, call('int_to_string')];
+        case 'concat_strings': return [args, call('str_concat_list')];
         case 'string_length': return [args, call('str_length')];
         case 'substring': return [args, call('str_sub')];
         case 'char_code_at': return [args, call('str_code_at')];

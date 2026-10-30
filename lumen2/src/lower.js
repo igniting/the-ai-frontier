@@ -3,7 +3,9 @@
 // Monomorphization: every polymorphic top-level function is compiled once
 // per concrete type it is used at, so each value gets its native
 // representation (Int is a 64-bit integer, never boxed) and reference
-// counting knows statically which values live on the heap.
+// counting knows statically which values live on the heap. Trait methods are
+// resolved here too: at a concrete type, a method is the impl's function, so
+// calls are direct (no dictionaries, no dynamic dispatch).
 //
 // The IR is a tree. An expression is a chain of `let v = rhs` ending in
 // `ret rhs` (the expression's value), with `if` nodes in between; a nested
@@ -13,7 +15,7 @@
 // tests and guard read the matched value without taking ownership of
 // anything (`peek`), so a failed arm leaves nothing to clean up.
 
-import { prune, GENERIC, tcon, tfun, ttuple, row, INT, BOOL, STRING, UNIT } from './types.js';
+import { prune, GENERIC, tcon, tfun, ttuple, row, headOf, substParams, INT, BOOL, STRING, UNIT } from './types.js';
 
 // ------------------------------------------------------------ concrete types --
 export function tkey(t) {
@@ -86,11 +88,44 @@ export function lowerProgram(program) {
     let rhs;
     if (kind === 'fn') rhs = { k: 'call', fn: target, args };
     else if (kind === 'ctor') rhs = { k: 'ctor', ty: ty.ret, tag: extra.idx, args };
+    else if (kind === 'cmp') { rhs = { k: 'cmp', op: 'three', ty: ty.params[0], args }; registerOrd(ty.params[0]); }
+    else if (kind === 'unreachable') rhs = null;
     else rhs = { k: 'builtin', name: target, args, ty: ty.ret, argTys: ty.params };
-    const fn = { name, env: true, params: [{ v: 'env', ty: ty }, ...params], ret: ty.ret, body: { k: 'ret', rhs }, vars: new Map() };
+    const fn = { name, env: true, params: [{ v: 'env', ty: ty }, ...params], ret: ty.ret, body: rhs ? { k: 'ret', rhs } : { k: 'unreachable' }, vars: new Map() };
     fn.params.forEach((p) => fn.vars.set(p.v, p.ty));
     out.set(name, fn);
     return name;
+  }
+
+  // A trait method at a concrete type: the impl's function, or for `compare`
+  // on a type without an `impl Ord`, the structural comparison.
+  function resolveMethod(ref, fty) {
+    const self = fty.params[0];
+    const impl = program.impls.get(ref.trait)?.get(headOf(self));
+    if (impl) return { kind: 'fn', name: instance(impl.keys.get(ref.method), fty) };
+    if (ref.trait === 'Ord') return { kind: 'cmp' };
+    // Only reachable for a type left undetermined by inference (defaulted to
+    // ()), whose values never exist, so the method can never be called.
+    return { kind: 'unreachable' };
+  }
+
+  // The functions of user `impl Ord`s that structural comparison at type t
+  // can reach, by type: comparing a List<Version> calls Version's compare.
+  const ordImpls = new Map();
+  const ordSeen = new Set();
+  function registerOrd(t) {
+    const key = tkey(t);
+    if (ordSeen.has(key)) return;
+    ordSeen.add(key);
+    if (t.k === 'tuple') { t.elems.forEach(registerOrd); return; }
+    if (t.k !== 'con') return;
+    const impl = program.impls.get('Ord')?.get(t.name);
+    if (impl) { ordImpls.set(key, instance(impl.keys.get('compare'), tfun([t, t], INT, row([])))); return; }
+    t.args.forEach(registerOrd);
+    const decl = program.adts.get(t.name);
+    if (!decl) return;
+    const sub = new Map(decl.params.map((p, i) => [p, t.args[i]]));
+    for (const c of decl.ctors) for (const f of c.fieldTypes) registerOrd(substParams(f, sub));
   }
 
   // ------------------------------------------------------------ functions --
@@ -206,6 +241,11 @@ export function lowerProgram(program) {
       case 'var': {
         if (e.ref.k === 'local') return k(ctx.atoms.get(e.ref.id));
         const t = ty();
+        if (e.ref.k === 'method') {
+          const m = resolveMethod(e.ref, t);
+          const w = m.kind === 'fn' ? wrapper('fn', m.name, t) : wrapper(m.kind, `${e.ref.trait}.${e.ref.method}`, t);
+          return bind({ k: 'staticfn', fn: w, ty: t }, t, ctx, k);
+        }
         const target = e.ref.k === 'global' ? instance(e.ref.key, t) : e.ref.name;
         return bind({ k: 'staticfn', fn: wrapper(e.ref.k === 'global' ? 'fn' : 'builtin', target, t), ty: t }, t, ctx, k);
       }
@@ -228,6 +268,15 @@ export function lowerProgram(program) {
 
   function lowerCall(e, ctx, k) {
     const f = e.fn;
+    if (f.k === 'var' && f.ref.k === 'method') {
+      const fty = conc(f.ty, ctx.S);
+      const m = resolveMethod(f.ref, fty);
+      return lowerValues(e.args, ctx, (args) => {
+        if (m.kind === 'fn') return k({ k: 'call', fn: m.name, args });
+        if (m.kind === 'cmp') { registerOrd(fty.params[0]); return k({ k: 'cmp', op: 'three', ty: fty.params[0], args }); }
+        return { k: 'unreachable' };
+      });
+    }
     if (f.k === 'var' && f.ref.k === 'global') {
       const name = instance(f.ref.key, conc(f.ty, ctx.S));
       return lowerValues(e.args, ctx, (args) => k({ k: 'call', fn: name, args }));
@@ -256,6 +305,7 @@ export function lowerProgram(program) {
       if (e.op === '++') return bind({ k: 'builtin', name: 'concat', args: [l, r], ty: STRING, argTys: [STRING, STRING] }, ty, ctx, k);
       const CMP = { '==': 'eq', '!=': 'ne', '<': 'lt', '<=': 'le', '>': 'gt', '>=': 'ge' };
       const native = opTy.k === 'con' && ['Int', 'Bool', 'Unit'].includes(opTy.name);
+      if (!native) registerOrd(opTy);
       return bind(native ? { k: 'prim', op: CMP[e.op], args: [l, r], ty: opTy } : { k: 'cmp', op: CMP[e.op], ty: opTy, args: [l, r] }, BOOL, ctx, k);
     }));
   }
@@ -375,5 +425,5 @@ export function lowerProgram(program) {
     const { decl, S, name } = work.shift();
     lowerFn(decl, S, name);
   }
-  return { fns: [...out.values()], main: mainName, adts: program.adts };
+  return { fns: [...out.values()], main: mainName, adts: program.adts, ordImpls };
 }

@@ -1,11 +1,34 @@
 // The prelude, written in Lumen 2 and checked like any other code. Every
 // higher-order function here is effect-polymorphic: `map` performs exactly
 // the effects of the function it is given.
+//
+// Two traits are built in. `Ord` orders values; every type without functions
+// in it is ordered structurally unless the program gives it an `impl Ord`.
+// `Show` turns values into text; the impls for built-in types are here, and
+// the checker derives one for every other type without functions in it.
 
 export const PRELUDE = `
 type Option<a> { None, Some(a) }
 type Result<a, e> { Ok(a), Err(e) }
 type List<a> { Nil, Cons(a, List<a>) }
+
+trait Ord { fn compare(a: Self, b: Self) -> Int }
+trait Show { fn show(x: Self) -> String }
+
+impl Show for Int { fn show(n) { int_to_string(n) } }
+impl Show for String { fn show(s) { "\\"" ++ s ++ "\\"" } }
+impl Show for Bool { fn show(b) { if b { "true" } else { "false" } } }
+impl Show for () { fn show(u) { "()" } }
+impl Show for List<a> where a: Show { fn show(xs) { "[" ++ join(map(xs, show), ", ") ++ "]" } }
+impl Show for (a, b) where a: Show, b: Show {
+  fn show(p) { match p { (x, y) -> "(" ++ show(x) ++ ", " ++ show(y) ++ ")" } }
+}
+impl Show for (a, b, c) where a: Show, b: Show, c: Show {
+  fn show(p) { match p { (x, y, z) -> "(" ++ show(x) ++ ", " ++ show(y) ++ ", " ++ show(z) ++ ")" } }
+}
+impl Show for (a, b, c, d) where a: Show, b: Show, c: Show, d: Show {
+  fn show(p) { match p { (x, y, z, w) -> "(" ++ show(x) ++ ", " ++ show(y) ++ ", " ++ show(z) ++ ", " ++ show(w) ++ ")" } }
+}
 
 fn fold(xs, acc, f) {
   match xs { [] -> acc, [x, ..rest] -> fold(rest, f(acc, x), f) }
@@ -70,9 +93,10 @@ fn sort_by(xs, less) {
   go(xs)
 }
 fn sort(xs) { sort_by(xs, |a, b| a < b) }
-fn join(xs, sep) {
-  match xs { [] -> "", [x] -> x, [x, ..rest] -> x ++ sep ++ join(rest, sep) }
+fn intersperse(xs, sep) {
+  match xs { [] -> [], [x, ..rest] -> reverse(fold(rest, [x], |acc, y| [y, sep, ..acc])) }
 }
+fn join(xs, sep) { concat_strings(intersperse(xs, sep)) }
 fn show_list(xs, show) { "[" ++ join(map(xs, show), ", ") ++ "]" }
 fn repeat_string(s, n) { if n <= 0 { "" } else { s ++ repeat_string(s, n - 1) } }
 fn array_from_list(xs) {

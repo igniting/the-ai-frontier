@@ -376,11 +376,71 @@ export function parse(src) {
     return { k: 'typedecl', name: name.v, params, ctors, span: sp(t.s, end.e), nameSpan: sp(name.s, name.e) };
   }
 
-  const types = [], fns = [];
+  // trait Name { fn method(x: Self, ...) -> T ! effects ... }
+  function traitDecl() {
+    const t = expect('trait');
+    const name = expect('upper', 'a trait name');
+    expect('{');
+    const methods = [];
+    while (!at('}')) {
+      const f = expect('fn');
+      const mname = expect('lower', 'a method name');
+      expect('(');
+      const params = [];
+      while (!at(')')) { params.push(param()); if (!accept(',')) break; }
+      const close = expect(')');
+      const ret = accept('->') ? type() : null;
+      const eff = at('!') ? effect() : null;
+      methods.push({ name: mname.v, params, ret, eff, span: sp(f.s, (eff ?? ret ?? close).span?.e ?? close.e), nameSpan: sp(mname.s, mname.e) });
+      accept(';'); accept(',');
+    }
+    const end = expect('}');
+    return { k: 'trait', name: name.v, methods, span: sp(t.s, end.e), nameSpan: sp(name.s, name.e) };
+  }
+
+  // impl Trait for Type<a, b> where a: Show + Ord, b: Show { fn ... }
+  function implDecl() {
+    const t = expect('impl');
+    const trait = expect('upper', 'a trait name');
+    expect('for');
+    const forType = type();
+    const where = [];
+    if (accept('where')) {
+      do {
+        const v = expect('lower', 'a type parameter');
+        expect(':');
+        const traits = [expect('upper', 'a trait name')];
+        while (accept('+')) traits.push(expect('upper', 'a trait name'));
+        where.push({ param: v.v, traits: traits.map((x) => ({ name: x.v, span: sp(x.s, x.e) })), span: sp(v.s, v.e) });
+      } while (accept(','));
+    }
+    expect('{');
+    const methods = [];
+    while (!at('}')) methods.push(fnDecl());
+    const end = expect('}');
+    return { k: 'impl', trait: trait.v, traitSpan: sp(trait.s, trait.e), forType, where, methods, span: sp(t.s, end.e) };
+  }
+
+  // property name(x: T, ...) { boolean expression }
+  function propertyDecl() {
+    const t = expect('property');
+    const name = expect('lower', 'a property name');
+    expect('(');
+    const params = [];
+    while (!at(')')) { params.push(param()); if (!accept(',')) break; }
+    expect(')');
+    const body = block();
+    return { k: 'fn', property: true, name: name.v, params, ret: null, eff: null, body, span: sp(t.s, body.span.e), nameSpan: sp(name.s, name.e) };
+  }
+
+  const types = [], fns = [], traits = [], impls = [], properties = [];
   while (!at('eof')) {
     if (at('type')) types.push(typeDecl());
     else if (at('fn')) fns.push(fnDecl());
-    else fail(`expected \`fn\` or \`type\` at the top level, found ${describe(peek())}`);
+    else if (at('trait')) traits.push(traitDecl());
+    else if (at('impl')) impls.push(implDecl());
+    else if (at('property')) properties.push(propertyDecl());
+    else fail(`expected \`fn\`, \`type\`, \`trait\`, \`impl\` or \`property\` at the top level, found ${describe(peek())}`);
   }
-  return { types, fns };
+  return { types, fns, traits, impls, properties };
 }

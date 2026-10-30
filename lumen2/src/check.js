@@ -8,6 +8,14 @@
 // annotation on a function (`! {}`, `! output`, `! {output, fail}`) closes its
 // row, so an undeclared effect is a compile error at the call that causes it.
 //
+// Traits: a trait declares method signatures in terms of `Self`; an impl
+// gives the methods for one type head. A method's type is its signature with
+// `Self` a type variable constrained by the trait, so using a method on a
+// type with no impl is a type error, and generic code that uses one is
+// generalized with the constraint (`where a: Show`). Impl methods are checked
+// against the signature after all ordinary functions. Every type without
+// functions in it gets a derived `impl Show` unless the program writes one.
+//
 // Capabilities: the effects other than `fail` are granted to `main` by
 // whoever runs the program. With a grant, `main` is checked as if it were
 // annotated with the granted effects, so a program that would use an
@@ -24,7 +32,7 @@ import { PRELUDE } from './prelude.js';
 import { LumenError } from './diagnostics.js';
 import { makeExhaustiveness } from './exhaust.js';
 import {
-  GENERIC, newVar, newRowVar, tcon, tfun, ttuple, row, prune, pruneRow, makeUnifier, UnifyError, EffectError,
+  GENERIC, newVar, newRowVar, tcon, tfun, ttuple, row, prune, pruneRow, makeUnifier, UnifyError, EffectError, TraitError,
   generalize, instantiate, openEffect, substParams, TypePrinter, INT, BOOL, STRING, UNIT, LABELS,
 } from './types.js';
 
@@ -42,6 +50,7 @@ function builtinTable() {
   t.clock_ms = fn([], INT, ['clock']);
   t.random_int = fn([INT, INT], INT, ['random']);
   t.int_to_string = fn([INT], STRING);
+  t.concat_strings = fn([tcon('List', [STRING])], STRING);
   t.string_length = fn([STRING], INT);
   t.substring = fn([STRING, INT, INT], STRING);
   t.char_code_at = fn([STRING, INT], INT, ['fail']);
@@ -76,7 +85,8 @@ export function check(source, { grants = null } = {}) {
   const adts = new Map(); // name -> { name, params, ctors: [{ name, key, idx, fieldTypes, adt }] }
   const ctors = { prelude: new Map(), user: new Map() };
   const BUILTIN_TYPES = new Map([['Int', 0], ['Bool', 0], ['String', 0], ['Unit', 0], ['Array', 1]]);
-  const { unify, unifyRows, requireCmp } = makeUnifier(adts);
+  const impls = new Map(); // trait name -> Map(type head -> impl)
+  const { unify, unifyRows, requireTrait } = makeUnifier(adts, impls);
   const exhaust = makeExhaustiveness(adts);
   const warnings = [];
   let nextId = 0;
@@ -133,7 +143,12 @@ export function check(source, { grants = null } = {}) {
       case 'tvar':
         if (!ctx.tvars.has(te.name)) ctx.tvars.set(te.name, newVar(ctx.level));
         return ctx.tvars.get(te.name);
-      case 'tcon': return tcon(checkTypeName(te), te.args.map((a) => sigType(a, ctx)));
+      case 'tcon':
+        if (te.name === 'Self') {
+          if (!ctx.self) throw new LumenError('`Self` can only be used in a trait', te.span);
+          return ctx.self;
+        }
+        return tcon(checkTypeName(te), te.args.map((a) => sigType(a, ctx)));
       case 'ttuple': return ttuple(te.elems.map((a) => sigType(a, ctx)));
       case 'tfun': return tfun(te.params.map((a) => sigType(a, ctx)), sigType(te.ret, ctx), sigEffect(te.eff, ctx));
       default: throw new Error(te.k);
@@ -149,6 +164,116 @@ export function check(source, { grants = null } = {}) {
     return row(ee.labels, tail);
   }
 
+  // ---------------------------------------------------------------- traits --
+  const traits = new Map(); // name -> { name, scope, methods: Map(name -> method) }
+  const methods = { prelude: new Map(), user: new Map() }; // method name -> method
+  function declareTrait(d, scope) {
+    if (traits.has(d.name)) throw new LumenError(`trait \`${d.name}\` is already defined`, d.nameSpan);
+    const tr = { name: d.name, scope, methods: new Map() };
+    traits.set(d.name, tr);
+    impls.set(d.name, new Map());
+    for (const m of d.methods) {
+      if (methods.prelude.has(m.name) || methods.user.has(m.name)) throw new LumenError(`\`${m.name}\` is already a trait method`, m.nameSpan);
+      const ctx = { level: 1, tvars: new Map(), rvars: new Map(), self: newVar(1, new Set([d.name])) };
+      if (!m.params.length || m.params.some((p) => !p.ann)) throw new LumenError(`the parameters of trait method \`${m.name}\` need types, and the first must be \`Self\``, m.nameSpan);
+      const params = m.params.map((p) => sigType(p.ann, ctx));
+      if (params[0] !== ctx.self) throw new LumenError(`the first parameter of trait method \`${m.name}\` must have type \`Self\``, m.params[0].span);
+      const ty = tfun(params, m.ret ? sigType(m.ret, ctx) : UNIT, sigEffect(m.eff, ctx));
+      generalize(ty, 0);
+      const method = { name: m.name, trait: d.name, scheme: ty, self: ctx.self };
+      tr.methods.set(m.name, method);
+      methods[scope].set(m.name, method);
+    }
+  }
+
+  // An impl: its trait, its type head and parameters, and its `where` constraints.
+  function declareImpl(d, scope) {
+    const tr = traits.get(d.trait);
+    if (!tr) throw new LumenError(`unknown trait \`${d.trait}\``, d.traitSpan);
+    const te = d.forType;
+    let head, args, display;
+    if (te.k === 'tcon') {
+      if (te.name !== 'Self') checkTypeName(te);
+      head = te.name; args = te.args;
+      display = args.length ? `${te.name}<${args.map((a) => a.name).join(', ')}>` : te.name;
+    } else if (te.k === 'ttuple') {
+      head = `(${te.elems.length})`; args = te.elems;
+      display = `(${args.map((a) => a.name).join(', ')})`;
+    } else throw new LumenError('an impl is for a named type or a tuple type', te.span);
+    if (head === 'Unit') display = '()';
+    const params = args.map((a) => {
+      if (a.k !== 'tvar') throw new LumenError('the type in an impl takes distinct type variables as arguments, like `List<a>`', a.span);
+      return a.name;
+    });
+    if (new Set(params).size !== params.length) throw new LumenError('the type variables of an impl must be distinct', te.span);
+    const builtin = tr.scope === 'prelude' && scope === 'user' && !(adts.has(head) && ctorsDeclaredIn(head) === 'user');
+    if (builtin) throw new LumenError(`only types declared in this program can have their own \`impl ${d.trait}\``, te.span, `${display} already has one`);
+    if (impls.get(d.trait).has(head)) throw new LumenError(`\`${display}\` already implements \`${d.trait}\``, te.span);
+    const where = new Map();
+    for (const w of d.where) {
+      if (!params.includes(w.param)) throw new LumenError(`\`${w.param}\` is not a type variable of this impl`, w.span);
+      for (const c of w.traits) if (!traits.has(c.name)) throw new LumenError(`unknown trait \`${c.name}\``, c.span);
+      where.set(w.param, [...(where.get(w.param) ?? []), ...w.traits.map((c) => c.name)]);
+    }
+    const given = new Map();
+    for (const f of d.methods) {
+      if (!tr.methods.has(f.name)) throw new LumenError(`\`${f.name}\` is not a method of \`${d.trait}\``, f.nameSpan);
+      if (given.has(f.name)) throw new LumenError(`\`${f.name}\` is defined twice in this impl`, f.nameSpan);
+      given.set(f.name, f);
+    }
+    for (const m of tr.methods.keys()) if (!given.has(m)) throw new LumenError(`\`impl ${d.trait} for ${display}\` is missing the method \`${m}\``, te.span);
+    const impl = { trait: d.trait, head, params, where, scope, display, decl: d, keys: new Map([...given.keys()].map((m) => [m, `impl:${d.trait}:${head}:${m}`])) };
+    impls.get(d.trait).set(head, impl);
+  }
+  const ctorsDeclaredIn = (name) => (userAst.types.some((t) => t.name === name) ? 'user' : 'prelude');
+
+  for (const d of preludeAst.traits) declareTrait(d, 'prelude');
+  for (const d of userAst.traits) declareTrait(d, 'user');
+  for (const d of preludeAst.impls) declareImpl(d, 'prelude');
+  for (const d of userAst.impls) declareImpl(d, 'user');
+
+  // Derived `impl Show` for every type without functions in it that does not
+  // have one: `Some(3)`, `Node(Leaf, 1, Leaf)`. A type qualifies when all its
+  // fields are showable, given the types that qualify (a greatest fixed point).
+  const derivedAsts = [];
+  {
+    const shows = impls.get('Show');
+    const derive = new Set([...adts.keys()].filter((n) => !shows.has(n)));
+    const showable = (t) => {
+      switch (t.k) {
+        case 'param': return true;
+        case 'fun': return false;
+        case 'tuple': {
+          const impl = shows.get(`(${t.elems.length})`);
+          return !!impl && t.elems.every(showable);
+        }
+        case 'con': {
+          const impl = shows.get(t.name);
+          if (impl) return impl.params.every((p, i) => (impl.where.get(p) ?? []).every((c) => c === 'Show') && showable(t.args[i]));
+          return derive.has(t.name) && t.args.every(showable);
+        }
+        default: return false;
+      }
+    };
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const n of derive) if (adts.get(n).ctors.some((c) => c.fieldTypes.some((f) => !showable(f)))) { derive.delete(n); changed = true; }
+    }
+    for (const n of derive) {
+      const d = adts.get(n);
+      const ty = d.params.length ? `${n}<${d.params.join(', ')}>` : n;
+      const where = d.params.length ? ` where ${d.params.map((p) => `${p}: Show`).join(', ')}` : '';
+      const arms = d.ctors.map((c) => {
+        if (!c.fieldTypes.length) return `${c.name} -> "${c.name}"`;
+        const xs = c.fieldTypes.map((_, i) => `a${i}`);
+        return `${c.name}(${xs.join(', ')}) -> "${c.name}(" ++ ${xs.map((x) => `show(${x})`).join(' ++ ", " ++ ')} ++ ")"`;
+      });
+      const ast = parse(`impl Show for ${ty}${where} { fn show(x) { match x { ${arms.join(', ')} } } }`);
+      derivedAsts.push(ast.impls[0]);
+      declareImpl(ast.impls[0], 'derived');
+    }
+  }
+
   // ------------------------------------------------------- functions & SCC --
   const globals = { prelude: new Map(), user: new Map() };
   const allFns = [];
@@ -160,7 +285,8 @@ export function check(source, { grants = null } = {}) {
   }
   for (const f of userAst.fns) {
     if (globals.user.has(f.name)) throw new LumenError(`function \`${f.name}\` is defined twice`, f.nameSpan);
-    f.key = globals.prelude.has(f.name) || f.name in builtins ? `${f.name}'` : f.name;
+    if (methods.user.has(f.name)) throw new LumenError(`\`${f.name}\` is already a method of trait \`${methods.user.get(f.name).trait}\``, f.nameSpan);
+    f.key = globals.prelude.has(f.name) || f.name in builtins || methods.prelude.has(f.name) ? `${f.name}'` : f.name;
     f.scope = 'user';
     globals.user.set(f.name, f);
     allFns.push(f);
@@ -193,10 +319,16 @@ export function check(source, { grants = null } = {}) {
         throw new LumenError(`${what ?? 'type mismatch'}: expected ${p.show(expected)}, found ${p.show(found)}`, span,
           `the two differ in their effects (${e.labels.join(', ')})`);
       }
-      if (e.message === 'functions cannot be compared') throw new LumenError('functions cannot be compared', span, 'equality and ordering need a type without functions in it');
+      if (e instanceof TraitError) throw traitError(e, span);
       if (e.message === 'infinite type') throw new LumenError(`${what ?? 'type mismatch'}: this would need an infinite type`, span);
       throw new LumenError(`${what ? `${what}: ` : ''}expected ${p.show(expected)}, found ${p.show(found)}`, span);
     }
+  }
+
+  function traitError(e, span) {
+    const t = new TypePrinter().show(e.type);
+    if (e.trait === 'Ord') return new LumenError(`values of type ${t} cannot be compared`, span, 'equality and ordering need a type without functions in it, or an `impl Ord`');
+    return new LumenError(`\`${t}\` does not implement \`${e.trait}\``, span, `add \`impl ${e.trait} for ...\` for it`);
   }
 
   // The current function may perform the effects in `labels` (because of the expression at `span`).
@@ -216,10 +348,15 @@ export function check(source, { grants = null } = {}) {
       `add the effect to the signature (for example \`! {${[...new Set([...pruneRow(ctx.eff).labels, ...labels])].sort().join(', ')}}\`), or remove the cause`);
   }
 
+  // Names: locals, then the program's functions and methods, then the prelude's, then builtins.
   function lookup(name, ctx) {
     for (let s = ctx.scope; s; s = s.parent) if (s.vars.has(name)) return s.vars.get(name);
-    const g = resolveGlobal(name, ctx.scopeName);
-    if (g) return { k: 'global', fn: g };
+    if (ctx.scopeName === 'user') {
+      if (globals.user.has(name)) return { k: 'global', fn: globals.user.get(name) };
+      if (methods.user.has(name)) return { k: 'method', method: methods.user.get(name) };
+    }
+    if (globals.prelude.has(name)) return { k: 'global', fn: globals.prelude.get(name) };
+    if (methods.prelude.has(name)) return { k: 'method', method: methods.prelude.get(name) };
     if (name in builtins) return { k: 'builtin', name };
     return null;
   }
@@ -247,6 +384,11 @@ export function check(source, { grants = null } = {}) {
         if (!b) throw new LumenError(`unknown variable \`${e.name}\``, e.span);
         if (b.k === 'local') { e.ref = { k: 'local', id: b.id }; return openEffect(b.ty, ctx.level); }
         const inst = new Map();
+        if (b.k === 'method') {
+          e.ref = { k: 'method', trait: b.method.trait, method: b.method.name };
+          e.inst = inst;
+          return openEffect(instantiate(b.method.scheme, ctx.level, inst), ctx.level);
+        }
         if (b.k === 'global') {
           e.ref = { k: 'global', key: b.fn.key };
           if (!b.fn.scheme) {
@@ -382,9 +524,9 @@ export function check(source, { grants = null } = {}) {
         return STRING;
       default: // comparisons
         unifyAt(l, r, e.r.span, `both sides of \`${e.op}\` must have the same type`);
-        try { requireCmp(l); } catch (err) {
+        try { requireTrait('Ord', l); } catch (err) {
           if (!(err instanceof UnifyError)) throw err;
-          throw new LumenError(`values of type ${show(l)} cannot be compared`, e.span, 'equality and ordering need a type without functions in it');
+          throw new LumenError(`values of type ${show(l)} cannot be compared`, e.span, 'equality and ordering need a type without functions in it, or an `impl Ord`');
         }
         return BOOL;
     }
@@ -442,7 +584,7 @@ export function check(source, { grants = null } = {}) {
   // Infers a function declaration's type in its own scope and ambient effect.
   function fnType(f, ctx, owner) {
     const inner = { ...ctx, scope: { vars: new Map(), parent: ctx.scope }, owner };
-    inner.eff = f.eff ? sigEffect(f.eff, ctx) : row([], newRowVar(ctx.level));
+    inner.eff = f.eff ? sigEffect(f.eff, ctx) : f.presetEff ?? row([], newRowVar(ctx.level));
     if (f === main && grants && !f.eff) { inner.eff = row([...grants, 'fail']); inner.granted = true; }
     const params = f.params.map((p) => {
       const ty = p.ann ? sigType(p.ann, ctx) : newVar(ctx.level);
@@ -464,6 +606,37 @@ export function check(source, { grants = null } = {}) {
     for (const f of comp) unifyAt(f.ty, fnType(f, f.ctx, `\`${f.name}\``), f.nameSpan);
     for (const f of comp) { generalize(f.ty, 0); f.scheme = f.ty; }
   }
+  // Impl methods, checked against their trait's signature with Self = the impl's type.
+  for (const traitImpls of impls.values()) {
+    for (const impl of traitImpls.values()) {
+      const tr = traits.get(impl.trait);
+      for (const f of impl.decl.methods) {
+        const method = tr.methods.get(f.name);
+        f.key = impl.keys.get(f.name);
+        f.scope = impl.scope;
+        const owner = `\`${f.name}\` in \`impl ${impl.trait} for ${impl.display}\``;
+        const ctx = { level: 1, tvars: new Map(), rvars: new Map(), scope: null, scopeName: impl.scope, owner };
+        const vars = impl.params.map(() => newVar(1));
+        const selfTy = impl.head.startsWith('(') ? ttuple(vars) : tcon(impl.head, vars);
+        const expected = instantiate(method.scheme, 1, new Map([[prune(method.self), selfTy]]));
+        if (f.params.length !== expected.params.length) throw new LumenError(`\`${f.name}\` takes ${expected.params.length} parameter${expected.params.length === 1 ? '' : 's'} in trait \`${impl.trait}\``, f.nameSpan);
+        f.presetEff = expected.eff;
+        const ty = fnType(f, ctx, owner);
+        unifyAt(expected, ty, f.nameSpan, `${owner} does not match the trait`);
+        vars.forEach((v, i) => {
+          const p = prune(v);
+          if (p.k !== 'var' || vars.some((w, j) => j !== i && prune(w) === p)) throw new LumenError(`${owner} only works for some types \`${impl.params[i]}\`, but the impl is for all of them`, f.nameSpan);
+          const declared = impl.where.get(impl.params[i]) ?? [];
+          const missing = [...p.traits].filter((c) => !declared.includes(c));
+          if (missing.length) throw new LumenError(`${owner} needs \`${impl.params[i]}: ${missing.join(' + ')}\``, f.nameSpan, `add \`where ${impl.params[i]}: ${missing.join(' + ')}\` to the impl`);
+        });
+        generalize(ty, 0);
+        f.ty = ty; f.scheme = ty;
+        allFns.push(f);
+      }
+    }
+  }
+
   // An annotated `main` must not claim more than it was granted.
   if (grants && main.eff) {
     const extra = main.eff.labels.filter((l) => l !== 'fail' && !grants.includes(l));
@@ -474,7 +647,7 @@ export function check(source, { grants = null } = {}) {
   const printer = (f) => new TypePrinter().signature(f.scheme);
   const signatures = userAst.fns.map((f) => ({ name: f.name, type: printer(f), span: f.nameSpan }));
   return {
-    adts, fns: allFns, main, builtins, signatures, warnings,
+    adts, fns: allFns, main, builtins, signatures, warnings, impls, traits,
     preludeFns: preludeAst.fns, userFns: userAst.fns,
   };
 }
