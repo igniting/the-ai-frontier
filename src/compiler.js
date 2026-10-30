@@ -82,6 +82,10 @@ function makeImports(state) {
         state.output += s;
         state.onOutput?.(s);
       },
+      input_len: () => state.input.length,
+      input_copy(ptr) {
+        new Uint8Array(state.memory.buffer, ptr, state.input.length).set(state.input);
+      },
       error(code, ptr) {
         if (code === 3) throw new LumenRuntimeError(`panic: ${decodeBytes(readString(ptr))}`);
         throw new LumenRuntimeError(ERR_MESSAGES[code] ?? `runtime error ${code}`);
@@ -117,16 +121,19 @@ function finish(state, instance, run) {
   };
 }
 
+// Program input for read_input(): a Uint8Array, or a string of bytes.
+const inputBytes = (input = '') => (typeof input === 'string' ? Uint8Array.from(input, (ch) => ch.charCodeAt(0) & 255) : input);
+
 // Synchronous run (Node, Web Workers).
-export function runWasm(wasm, { onOutput } = {}) {
-  const state = { output: '', memory: null, onOutput };
+export function runWasm(wasm, { onOutput, input } = {}) {
+  const state = { output: '', memory: null, onOutput, input: inputBytes(input) };
   const instance = new WebAssembly.Instance(new WebAssembly.Module(wasm), makeImports(state));
   return finish(state, instance, () => instance.exports.run());
 }
 
 // Asynchronous run (browser main thread, where sync compilation of large modules is disallowed).
-export async function runWasmAsync(wasm, { onOutput } = {}) {
-  const state = { output: '', memory: null, onOutput };
+export async function runWasmAsync(wasm, { onOutput, input } = {}) {
+  const state = { output: '', memory: null, onOutput, input: inputBytes(input) };
   const { instance } = await WebAssembly.instantiate(wasm, makeImports(state));
   return finish(state, instance, () => instance.exports.run());
 }

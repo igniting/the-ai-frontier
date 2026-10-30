@@ -5,12 +5,12 @@ import { compile, runWasm, interpretSource, checkSource, formatDiagnostic, decod
 // they agree exactly, and returns { output, error } with output decoded.
 // GC stress collects on every allocation, which is quadratic for programs
 // with large live data, so those pass { stress: false }.
-export function run(src, { stress = true } = {}) {
-  const ref = interpretSource(src);
+export function run(src, { stress = true, input = '' } = {}) {
+  const ref = interpretSource(src, { input });
   if (!ref.ok) assert.fail(`program rejected:\n${formatDiagnostic(src, ref.errors[0])}`);
   for (const gcStress of stress ? [false, true] : [false]) {
     const c = compile(src, { gcStress });
-    const r = runWasm(c.wasm);
+    const r = runWasm(c.wasm, { input });
     assert.equal(decodeBytes(r.output), decodeBytes(ref.output), `wasm output differs (gcStress=${gcStress})`);
     assert.equal(r.error, ref.error, `wasm error differs (gcStress=${gcStress})`);
   }

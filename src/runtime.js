@@ -78,6 +78,8 @@ export function addRuntime(mod, layout, opts) {
 
   mod.addImport('env', 'print', '$host:print', ['i32', 'i32'], []);
   mod.addImport('env', 'error', '$host:error', ['i32', 'i32'], []);
+  mod.addImport('env', 'input_len', '$host:input_len', [], ['i32']);
+  mod.addImport('env', 'input_copy', '$host:input_copy', ['i32'], []);
 
   fn('$rt:trap', ['$code'], [], [], [lg('$code'), c(0), call('$host:error'), o('unreachable')],
     'Reports a runtime error to the host, which throws; never returns.');
@@ -318,6 +320,13 @@ export function addRuntime(mod, layout, opts) {
   fn('$rt:print', ['$s'], ['i32'], [], [lg('$s'), c(0), call('$host:print'), c(1)]);
   fn('$rt:println', ['$s'], ['i32'], [], [lg('$s'), c(1), call('$host:print'), c(1)]);
   fn('$rt:panic', ['$s'], ['i32'], [], [c(ERR.PANIC), lg('$s'), call('$host:error'), o('unreachable')]);
+
+  fn('$rt:read_input', [], ['i32'], ['$n', '$p'], [
+    call('$host:input_len'), lt('$n'), c(MAX_STRING), o('i32.gt_u'), if_(null, trap(ERR.STR_LEN)),
+    newString('$n'),
+    lg('$p'), c(4), o('i32.add'), call('$host:input_copy'),
+    lg('$p'),
+  ], 'Returns the input the host supplied, as one string.');
 }
 
 export const BUILTIN_RUNTIME = {
@@ -329,4 +338,5 @@ export const BUILTIN_RUNTIME = {
   char_code_at: '$rt:char_code_at',
   char_from_code: '$rt:char_from_code',
   panic: '$rt:panic',
+  read_input: '$rt:read_input',
 };

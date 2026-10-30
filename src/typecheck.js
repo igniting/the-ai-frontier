@@ -26,6 +26,7 @@ export const BUILTIN_SIGNATURES = (() => {
     char_code_at: tfun([STRING, INT], INT),
     char_from_code: tfun([INT], STRING),
     panic: tfun([STRING], a),
+    read_input: tfun([], STRING),
   };
 })();
 

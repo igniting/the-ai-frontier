@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Lumen command-line interface.
 //
-//   lumen run   <file.lm> [--interp] [--gc-stress] [--stats]
+//   lumen run   <file.lm> [--interp] [--gc-stress] [--stats] [--input <file>]
 //   lumen build <file.lm> [-o out.wasm]
 //   lumen wat   <file.lm>          print the generated WebAssembly text
 //   lumen ir    <file.lm>          print the A-normal-form IR
@@ -19,6 +19,8 @@ const usage = () => {
 if (!cmd || !file) usage();
 
 const src = readFileSync(file, 'utf8');
+const inputAt = rest.indexOf('--input');
+const input = inputAt >= 0 ? readFileSync(rest[inputAt + 1]).toString('latin1') : '';
 const color = process.stderr.isTTY ? (code, s) => `\x1b[${code}m${s}\x1b[0m` : (_, s) => s;
 
 function report(result) {
@@ -34,7 +36,7 @@ const out = (s) => process.stdout.write(decodeBytes(s));
 switch (cmd) {
   case 'run': {
     if (flag('--interp')) {
-      const r = interpretSource(src);
+      const r = interpretSource(src, { input });
       report(r);
       out(r.output);
       if (r.error) { console.error(color(31, `runtime error: ${r.error}`)); process.exit(1); }
@@ -42,7 +44,7 @@ switch (cmd) {
     }
     const c = compile(src, { gcStress: flag('--gc-stress') });
     report(c);
-    const r = runWasm(c.wasm, { onOutput: (s) => process.stdout.write(decodeBytes(s)) });
+    const r = runWasm(c.wasm, { input, onOutput: (s) => process.stdout.write(decodeBytes(s)) });
     if (flag('--stats')) {
       const t = c.timings;
       const ms = (x) => `${x.toFixed(1)}ms`;

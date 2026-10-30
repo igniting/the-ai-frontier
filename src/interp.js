@@ -73,7 +73,7 @@ export function compareValues(a, b) {
   }
 }
 
-export function interpret(checked, { maxSteps = Infinity } = {}) {
+export function interpret(checked, { maxSteps = Infinity, input = '' } = {}) {
   let out = '';
   let steps = 0;
   const globals = new Map();
@@ -91,6 +91,7 @@ export function interpret(checked, { maxSteps = Infinity } = {}) {
     char_code_at: (s, i) => (i >= 0 && i < s.length ? s.charCodeAt(i) : fail('index out of bounds')),
     char_from_code: (c) => String.fromCharCode(c & 255),
     panic: (s) => fail(`panic: ${decodeBytes(s)}`),
+    read_input: () => input,
   };
   const builtinValues = new Map(Object.entries(builtins).map(([k, f]) => [k, new Builtin(k, f)]));
 

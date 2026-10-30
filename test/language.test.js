@@ -40,6 +40,11 @@ describe('strings', () => {
     assert.equal(run(main(show('char_code_at("abc", 3)'))).error, 'index out of bounds');
     assert.equal(run(main(show('char_code_at("abc", -1)'))).error, 'index out of bounds');
   });
+  test('read_input returns the host-supplied bytes', () => {
+    const src = main('let s = read_input(); println(int_to_string(string_length(s)) ++ ":" ++ s ++ ":" ++ int_to_string(char_code_at(s, 1)));');
+    assert.equal(run(src, { input: 'h\xc3\xa9!' }).output, '4:hé!:195\n');
+    assert.equal(run(src, { input: '' }).error, 'index out of bounds');
+  });
   test('parse_int is written in Lumen', () => {
     assert.equal(output(main('println(show_list(map(["42", "-7", "", "12x", "-"], |s| unwrap_or(parse_int(s), 999)), int_to_string));')),
       '[42, -7, 999, 999, 999]\n');
