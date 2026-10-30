@@ -2,7 +2,7 @@
 // its own counter, runs the program, and reports dynamic instruction counts
 // per function and per opcode.
 //
-//   node bench/profile.js <program> [-O] [--top N]      (program: a bench name or a .lm file)
+//   node bench/profile.js <program> [-O] [--top N] [--input FILE]   (program: a bench name or a .lm file)
 
 import { readFileSync } from 'node:fs';
 import { parse } from '../src/parser.js';
@@ -17,7 +17,9 @@ const args = process.argv.slice(2);
 const target = args[0];
 const topAt = args.indexOf('--top');
 const TOP = topAt >= 0 ? +args[topAt + 1] : 25;
-const p = PROGRAMS.find((q) => q.name === target) ?? { name: target, source: () => readFileSync(target, 'utf8') };
+const inputAt = args.indexOf('--input');
+const p = PROGRAMS.find((q) => q.name === target)
+  ?? { name: target, source: () => readFileSync(target, 'utf8'), input: inputAt >= 0 ? () => readFileSync(args[inputAt + 1], 'latin1') : null };
 
 const { mod } = codegen(lower(typecheck(parse(PRELUDE), parse(p.source()))), { optimize: args.includes('-O') });
 const ENDS = new Set(['block', 'loop', 'if', 'else', 'end', 'br', 'br_if', 'br_table', 'return', 'unreachable', 'call', 'call_indirect', 'return_call', 'return_call_indirect']);

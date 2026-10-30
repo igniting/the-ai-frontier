@@ -22,6 +22,46 @@ import { optimize, prePasses, nonCollecting, slotsNeedingZero } from './optimize
 import { instrumentModule } from './instrument.js';
 
 const o = (name) => [name];
+const INLINE_ARRAY_OPS = new Set(['array_get', 'array_set', 'array_length']);
+
+// The functions during whose activation no collection can happen, so they
+// need no shadow-stack frame. Two properties are involved:
+//   never(g):     calling g can never collect, even through g's tail calls;
+//   frameless(f): nothing collects while f is active: no allocation, and
+//     every non-tail call is to a `never` function. A tail call may collect
+//     (f's activation has ended by then), which is not enough for `never`:
+//     a caller of g is still waiting while g's tail callee runs.
+// Both are greatest fixed points over the call graph.
+export function collectionFree(funcs, safeCallees) {
+  const fixpoint = (bad) => {
+    const set = new Set(funcs.map((f) => f.name));
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const f of funcs) if (set.has(f.name) && bad(f.body, true, set)) { set.delete(f.name); changed = true; }
+    }
+    return set;
+  };
+  // `onCall(fn, tail, set)` decides whether a direct call may collect.
+  const walker = (onCall, callcCollects) => {
+    const mayCollect = (e, tail, set) => {
+      switch (e.k) {
+        case 'atom': return false;
+        case 'let': return mayCollect(e.rhs, false, set) || mayCollect(e.body, tail, set);
+        case 'seq': return mayCollect(e.first, false, set) || mayCollect(e.rest, tail, set);
+        case 'prim': return e.op === 'concat';
+        case 'builtin': return !safeCallees.has(BUILTIN_RUNTIME[e.name]);
+        case 'call': return onCall(e.fn, tail, set);
+        case 'callc': return callcCollects(tail);
+        case 'if': return mayCollect(e.t, tail, set) || mayCollect(e.e, tail, set);
+        case 'match': return e.arms.some((arm) => (arm.guard && mayCollect(arm.guard, false, set)) || mayCollect(arm.body, tail, set));
+        default: return true; // alloc, closure, and anything new
+      }
+    };
+    return mayCollect;
+  };
+  const never = fixpoint(walker((fn, tail, set) => !set.has(fn), () => true));
+  return fixpoint(walker((fn, tail) => !tail && !never.has(fn), (tail) => !tail));
+}
 const align = (n, a) => Math.ceil(n / a) * a;
 
 export const DEFAULTS = {
@@ -99,6 +139,7 @@ export function codegen(ir, options = {}) {
 
   // --------------------------------------------------------- functions --
   const funcs = reachableFunctions(ir);
+  const gcFree = opts.optimize ? collectionFree(funcs, safeCallees) : new Set();
   for (const f of funcs) genFunction(f);
 
   mod.addFunc({
@@ -113,16 +154,20 @@ export function codegen(ir, options = {}) {
     const locals = [];
     const storage = new Map();
     const varName = (v) => `$${v.name.replace(/[^A-Za-z0-9_]/g, '_')}_${v.id}`;
+    // -O: a function in which no collection can happen needs no shadow-stack
+    // frame; its pointers live in wasm locals like everything else.
+    const frameless = opts.optimize && gcFree.has(f.name);
+    const traced = (v) => v.traced && !frameless;
     let slots = 0;
-    if (f.env) storage.set(f.env.id, { slot: slots++ });
-    for (const v of f.params) if (v.traced) storage.set(v.id, { slot: slots++ });
+    if (f.env) storage.set(f.env.id, frameless ? { local: '$env' } : { slot: slots++ });
+    for (const v of f.params) if (traced(v)) storage.set(v.id, { slot: slots++ });
     const paramSlots = slots;
-    for (const v of f.params) if (!v.traced) storage.set(v.id, { local: varName(v) });
+    for (const v of f.params) if (!traced(v)) storage.set(v.id, { local: varName(v), odd: !v.traced });
     for (const v of f.vars) {
       if (storage.has(v.id)) continue;
-      if (v.traced) storage.set(v.id, { slot: slots++ });
+      if (traced(v)) storage.set(v.id, { slot: slots++ });
       else {
-        storage.set(v.id, { local: varName(v) });
+        storage.set(v.id, { local: varName(v), odd: !v.traced });
         locals.push({ name: varName(v), type: 'i32' });
       }
     }
@@ -158,11 +203,12 @@ export function codegen(ir, options = {}) {
       }
       if (f.env) emit(lg('$fp'), lg('$env'), slotStore(storage.get(f.env.id).slot));
       for (const v of f.params) {
-        if (v.traced) emit(lg('$fp'), lg(varName(v)), slotStore(storage.get(v.id).slot));
+        if (traced(v)) emit(lg('$fp'), lg(varName(v)), slotStore(storage.get(v.id).slot));
       }
     }
 
     // ----------------------------------------------------------- atoms --
+    const envPtr = () => { const s = storage.get(f.env.id); return s.local ? lg(s.local) : seq(lg('$fp'), ld(s.slot * 4)); };
     function genAtom(a) {
       switch (a.k) {
         case 'var': {
@@ -173,8 +219,8 @@ export function codegen(ir, options = {}) {
         case 'imm': return emit(c(a.n));
         case 'str': return emit(c(stringAddr(a.idx)));
         case 'sclo': return emit(c(staticClosure(a.fn)));
-        case 'envf': return emit(lg('$fp'), ld(storage.get(f.env.id).slot * 4), ld(8 + 4 * a.i));
-        case 'self': return emit(lg('$fp'), ld(storage.get(f.env.id).slot * 4));
+        case 'envf': return emit(envPtr(), ld(8 + 4 * a.i));
+        case 'self': return emit(envPtr());
       }
       throw new Error(`codegen: unknown atom ${a.k}`);
     }
@@ -219,6 +265,23 @@ export function codegen(ir, options = {}) {
     }
 
     const toBool = () => emit(c(1), o('i32.shl'), c(1), o('i32.or'));
+
+    // -O: array access inline (bounds check, then a load or store) instead of
+    // a call into the runtime. Atoms are pure, so re-emitting them is safe.
+    let needsIndex = false;
+    function genArrayOp(name, [a, i, x]) {
+      if (name === 'array_length') { genAtom(a); emit(ld(0), c(9), o('i32.shr_u')); return toBool(); }
+      needsIndex = true;
+      genAtom(i);
+      emit(c(1), o('i32.shr_s'), lt('$ix'));
+      genAtom(a);
+      emit(ld(0), c(9), o('i32.shr_u'), o('i32.ge_u'), ['if', null, null], c(ERR.INDEX), call('$rt:trap'), ['end']);
+      genAtom(a);
+      emit(lg('$ix'), c(2), o('i32.shl'), o('i32.add'));
+      if (name === 'array_get') return emit(ld(4));
+      genAtom(x);
+      return emit(st(4), c(1));
+    }
     const untagBool = () => emit(c(1), o('i32.shr_u'));
 
     function genPrim(e) {
@@ -317,6 +380,7 @@ export function codegen(ir, options = {}) {
           return genExpr(e.rest, tail);
         case 'prim': return genPrim(e);
         case 'builtin':
+          if (opts.optimize && INLINE_ARRAY_OPS.has(e.name)) return genArrayOp(e.name, e.args);
           e.args.forEach(genAtom);
           return emit(call(BUILTIN_RUNTIME[e.name]));
         case 'call':
@@ -371,6 +435,7 @@ export function codegen(ir, options = {}) {
     }
     popFrame();
     if (needsTmp) locals.push({ name: '$tmp', type: 'i32' });
+    if (needsIndex) locals.push({ name: '$ix', type: 'i32' });
     if (opts.optimize && zeroAt >= 0) {
       // Zero only the slots that a GC point could see before they are written.
       const candidates = Array.from({ length: slots - paramSlots }, (_, k) => paramSlots + k);
@@ -387,7 +452,7 @@ export function codegen(ir, options = {}) {
     const params = [{ name: '$env', type: 'i32' }, ...f.params.map((v) => ({ name: storage.get(v.id).local ?? varName(v), type: 'i32' }))];
     // Locals holding untraced variables always contain tagged immediates (odd
     // values); the superoptimizer may rely on that.
-    const oddLocals = [...storage.values()].filter((s) => s.local).map((s) => s.local);
+    const oddLocals = [...storage.values()].filter((s) => s.odd).map((s) => s.local);
     mod.addFunc({
       name: wasmName(f.name), params, results: ['i32'], locals, body, oddLocals,
       comment: `${f.name}(${f.params.map((v) => v.name).join(', ')})  frame: ${slots} slot${slots === 1 ? '' : 's'}`,

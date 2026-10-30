@@ -11,7 +11,7 @@
 // each lemma's assumptions are pushed on top of it and undone afterwards.
 // (test/superopt.test.js cross-checks this against a naive implementation.)
 
-export function checkRup(numVars, clauses, proof) {
+export function checkRup(numVars, clauses, proof, { onProgress = null } = {}) {
   if (!proof.length || proof[proof.length - 1].length !== 0) return { ok: false, reason: 'proof does not end with the empty clause' };
   const code = (l) => (l > 0 ? 2 * l : -2 * l + 1);
   const val = new Int8Array(numVars + 1); // per variable: 1 true, -1 false, 0 unassigned
@@ -65,6 +65,7 @@ export function checkRup(numVars, clauses, proof) {
   for (const c of clauses) add(c);
   for (let i = 0; i < proof.length; i++) {
     const lemma = proof[i];
+    if (onProgress && i % 4096 === 0) onProgress(i, proof.length);
     if (!inconsistent) {
       const mark = trail.length;
       let conflict = false;

@@ -1,0 +1,44 @@
+// Encodes "split 1..n into k sum-free groups" as CNF.
+//
+// Input (read_input): "k n". Output: DIMACS. Variable (i - 1) * k + c says
+// "number i is in group c". The formula is satisfiable exactly when 1..n
+// can be split into k groups, none containing x, y and x + y (x = y allowed).
+//
+// Clauses:
+//   every number is in some group:          (i,1) ∨ … ∨ (i,k)
+//   no group contains x, y and x + y:       ¬(x,c) ∨ ¬(y,c) ∨ ¬(x+y,c)   for x ≤ y
+// A number in several groups can simply be given one of them, so "at most
+// one group" is not needed. One symmetry is broken, without loss of
+// generality: groups are interchangeable, so 1 may be put in group 1; then
+// 2 = 1 + 1 cannot be in group 1, so it may be put in group 2.
+
+fn var(k, i, c) { (i - 1) * k + c }
+
+fn clause(lits) { join(map(lits, int_to_string), " ") ++ " 0" }
+
+fn parse_two(s) {
+  let n = string_length(s);
+  fn digits(i, acc) {
+    if i < n && char_code_at(s, i) >= 48 && char_code_at(s, i) <= 57 { digits(i + 1, acc * 10 + char_code_at(s, i) - 48) } else { (acc, i) }
+  }
+  fn skip(i) { if i < n && (char_code_at(s, i) < 48 || char_code_at(s, i) > 57) { skip(i + 1) } else { i } }
+  let (a, i) = digits(skip(0), 0);
+  let (b, _) = digits(skip(i), 0);
+  (a, b)
+}
+
+fn main() {
+  let (k, n) = parse_two(read_input());
+  let groups = range(1, k + 1);
+  let cover = map(range(1, n + 1), |i| clause(map(groups, |c| var(k, i, c))));
+  let sum_free = flat_map(groups, |c|
+    flat_map(range(1, n + 1), |x|
+      map(range(x, n - x + 1), |y|
+        if x == y { clause([0 - var(k, x, c), 0 - var(k, 2 * x, c)]) }
+        else { clause([0 - var(k, x, c), 0 - var(k, y, c), 0 - var(k, x + y, c)]) })));
+  let symmetry = if n >= 2 && k >= 2 { [clause([var(k, 1, 1)]), clause([var(k, 2, 2)])] } else if n >= 1 { [clause([var(k, 1, 1)])] } else { [] };
+  let all = append(cover, append(sum_free, symmetry));
+  println("c Schur: split 1.." ++ int_to_string(n) ++ " into " ++ int_to_string(k) ++ " sum-free groups");
+  println("p cnf " ++ int_to_string(n * k) ++ " " ++ int_to_string(length(all)));
+  each(all, println)
+}

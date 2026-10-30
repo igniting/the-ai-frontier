@@ -16,12 +16,12 @@ jobs:
       - name: Unit, golden and five-way semantic tests
         run: npm test
       - name: Re-prove every superoptimizer rule (SAT, independent RUP check, random testing)
-        run: node superopt/verify.js --emit proofs
+        run: node superopt/verify.js --emit superopt-proofs
       - name: Upload the proofs (DIMACS + DRUP, checkable with drat-trim)
         uses: actions/upload-artifact@v4
         with:
           name: superopt-proofs
-          path: proofs/
+          path: superopt-proofs/
       - name: Self-hosted bootstrap (stage 1 = stage 2 = stage 3, plus parity on fuzz programs)
         run: node selfhost/bootstrap.js --programs 100
       - name: Benchmarks (every -O build must print exactly what the default build prints)
@@ -32,3 +32,19 @@ jobs:
         run: node fuzz/mutants.js --budget 400
       - name: Spec conformance
         run: node challenge/score.js --fuzz 200 -- node bin/lumen.js run
+
+  schur:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Prove S(4) = 44 with the Lumen SAT solver (checked by the independent RUP checker)
+        run: node proofs/prove-schur.js 4 44 --out schur-proof
+      - name: Upload the formulas and the refutation (DIMACS + DRUP, checkable with drat-trim)
+        uses: actions/upload-artifact@v4
+        with:
+          name: schur-proof
+          path: schur-proof/

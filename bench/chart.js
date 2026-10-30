@@ -19,9 +19,13 @@ const pct = (x) => `${x < 0 ? '−' : ''}${Math.abs(x).toFixed(1)}%`;
 const geomean = (xs) => Math.exp(xs.reduce((s, x) => s + Math.log(x), 0) / xs.length);
 
 // Instructions relative to the default build, per step (geometric mean over all benchmarks).
+// The campaign's original eleven benchmarks: programs added later (such as
+// the SAT solver) would otherwise shift the average of the later steps.
+const ORIGINAL = Object.keys(history[0].results);
+
 export function instructionSeries() {
   return history.map((e, i) => {
-    const names = Object.keys(e.results);
+    const names = ORIGINAL;
     const ratio = geomean(names.map((n) => e.results[n].instructions / e.base[n].instructions));
     return { step: i, label: e.label, short: SHORT[i] ?? String(i), change: (ratio - 1) * 100 };
   });
@@ -61,7 +65,7 @@ function lineChart(points) {
   <desc id="d1">${esc(points.map((p) => `step ${p.step} (${p.short}): ${pct(p.change)}`).join('; '))}</desc>${STYLE}
   <rect width="${W}" height="${H}" fill="var(--surface)"/>
   <text class="title" x="${L - 40}" y="26">Executed wasm instructions with -O, relative to the default build</text>
-  <text class="sub" x="${L - 40}" y="46">Geometric mean over ${Object.keys(history[0].results).length} benchmarks; each step passed the gate before it was kept. Lower is better.</text>
+  <text class="sub" x="${L - 40}" y="46">Geometric mean over the original ${ORIGINAL.length} benchmarks; each step passed the gate before it was kept. Lower is better.</text>
   ${ticks.map((v) => `<line class="${v === 0 ? 'axis' : 'grid'}" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/>
   <text class="tick" x="${L - 8}" y="${y(v) + 4}" text-anchor="end">${pct(v).replace('.0%', '%')}</text>`).join('\n  ')}
   ${points.map((p) => `<text class="tick" x="${x(p.step)}" y="${H - B + 20}" text-anchor="middle">${p.step}</text>

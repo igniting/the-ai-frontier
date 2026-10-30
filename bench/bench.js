@@ -33,8 +33,15 @@ function lumencInput() {
   return input;
 }
 
+// The SAT solver written in Lumen, on "split 1..42 into 4 sum-free groups".
+function schurInput() {
+  const enc = compile(readFileSync('proofs/schur.lm', 'utf8'));
+  return runWasm(enc.wasm, { input: '4 42' }).output;
+}
+
 export const PROGRAMS = [
   { name: 'lumenc', what: 'the self-hosted compiler compiling itself', source: () => buildSource().source, input: lumencInput },
+  { name: 'sat', what: 'proofs/sat.lm (a SAT solver in Lumen) on Schur(4, 42)', source: () => readFileSync('proofs/sat.lm', 'utf8'), input: schurInput },
   ...['fib', 'sort', 'strings'].map((n) => ({ name: n, what: `bench/programs/${n}.lm`, source: () => readFileSync(`bench/programs/${n}.lm`, 'utf8') })),
   ...['gc_torture', 'red_black_tree', 'tail_calls', 'nqueens', 'life', 'mandelbrot', 'huffman'].map((n) => ({ name: n, what: `examples/${n}.lm`, source: () => readFileSync(`examples/${n}.lm`, 'utf8') })),
 ];

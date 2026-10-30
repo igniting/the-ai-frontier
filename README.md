@@ -11,7 +11,7 @@ garbage collector inside the binaries it emits. The compiler is about 4,000
 lines of JavaScript with zero dependencies: no parser generator, no wasm
 toolchain, no GC library.
 
-Three things are built on top of it:
+Four things are built on top of it:
 
 - **[The compiler compiles itself.](#self-hosting)** `selfhost/lumenc.lm` is
   the whole compiler rewritten in Lumen (3,300 lines). Compiled by the
@@ -31,6 +31,14 @@ Three things are built on top of it:
     benchmarks;
   - up to 2.9× the memory;
   - the default build unchanged byte for byte.
+- **[A theorem, proved by the language.](#proving-s4--44-in-lumen)** A SAT
+  solver written in Lumen proves the Schur number S(4) = 44:
+  - it splits 1…44 into four sum-free groups;
+  - it refutes 1…45 with a 255,663-step proof, which the independent checker
+    validates.
+
+  Lumen gained mutable arrays for this, with the value restriction that keeps
+  them sound.
 
 Claude built this end to end in Claude Code, as a demonstration of
 long-horizon, self-verifying software engineering. The repository also
@@ -331,6 +339,46 @@ experiments that were rejected, and the costs.
 
 ![Executed instructions per campaign step](bench/campaign-instructions.svg)
 
+## Proving S(4) = 44 in Lumen
+
+A Schur number S(k) is the largest n for which 1…n can be split into k groups
+with no group containing x, y and x + y. S(4) = 44 was found by computer search
+in 1965. S(5) = 160 was proved in 2017 with a SAT proof of about two petabytes.
+`proofs/` proves S(4) = 44 with Lumen programs and checks every step with
+something independent of it:
+
+1. **Encoding.** `proofs/schur.lm` (Lumen) writes both formulas, and a second
+   encoder in JavaScript must produce the identical clauses.
+2. **The split.** `proofs/sat.lm`, a CDCL SAT solver written in Lumen, splits
+   1…44 into four groups. The groups are checked against the definition
+   directly, not against the formula.
+3. **The refutation.** The same solver refutes 1…45 and prints each learned
+   clause, 255,663 in all. `superopt/rup.js` re-derives every one by unit
+   propagation.
+
+The one step a reader has to accept is "without loss of generality": groups
+are interchangeable, so 1 can be put in group 1, and 2 = 1 + 1 then in
+group 2.
+
+```sh
+node proofs/prove-schur.js 4 44 --out schur-proof/   # about 5 minutes; writes the CNFs and the DRUP proof
+node proofs/prove-schur.js 3 13                      # under a second
+```
+
+CI runs the S(4) proof on every push and uploads the two formulas and the
+refutation as the `schur-proof` artifact, in DIMACS and DRUP, the formats that
+standard checkers such as drat-trim read (`drat-trim schur-4-45.cnf schur-4-45.drup`).
+
+The proof needed the language to change. A SAT solver needs arrays it can
+update in place, so Lumen gained `Array`, in both compilers, the interpreter,
+the spec, the fuzzer and the planted bugs. Mutation then required ML's value
+restriction: without it, `let a = array_make(1, [])` could be written as a list
+of numbers and read back as a list of strings.
+
+The solver also became a benchmark, and its profile set two more `-O` steps:
+inline array access, and no shadow-stack frame for functions that provably
+cannot reach the allocator. Both are described in [CAMPAIGN.md](CAMPAIGN.md).
+
 ## Compare models
 
 [CHALLENGE.md](CHALLENGE.md) turns this project into a reproducible
@@ -357,6 +405,7 @@ reports `stack overflow`.
 ```
 src/         compiler, runtime, -O passes and reference interpreter
 selfhost/    the compiler written in Lumen, its build and bootstrap checks
+proofs/      a SAT solver and a Schur encoder written in Lumen; S(4) = 44
 superopt/    superoptimizer: SAT solver, RUP checker, bit-blaster, search
 bench/       benchmarks, profiler, A/B timer, the campaign's gate and charts
 examples/    example programs and their expected output

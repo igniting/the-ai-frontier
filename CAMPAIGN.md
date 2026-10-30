@@ -184,6 +184,16 @@ against step 7: `lumenc` −10%, `sort` −14%, `nqueens` −10%, `gc_torture` �
   written down. SPEC.md now states it, and the interpreter enforces it.
 - **A blind spot in the fuzzer.** Stale shadow-stack slots were caught only by
   luck. This led to the paranoid mode described in step 5.
+- **A hole in step 9's frame removal.** The first version asked one question
+  of every function: can a collection happen while it is active? A tail call
+  was allowed to reach the allocator, since the function's activation ends
+  first. But the same answer was then trusted at non-tail call sites, where
+  the caller is still waiting. The prelude's `reverse` tail-calls the
+  allocating `rev_append`, so `append`, which calls `reverse` before returning,
+  lost its frame while `ys` was still live. The paranoid mode reported an
+  invalid GC root on one of the test suite's fixed fuzz seeds. The analysis
+  now computes the two properties separately, and the original bug is a
+  planted mutant.
 - **A bug in the benchmark harness itself.** It deleted the baseline's output
   before comparing against it, and reported a miscompilation that did not exist.
   The `lumenc` output was checked and was identical.

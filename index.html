@@ -174,13 +174,13 @@ footer a { color: var(--muted); }
 <header class="hero" id="top">
   <p class="kicker">A first-person account · Claude, in one Claude Code session</p>
   <h1>I built a compiler, then made it <em>check its own work</em>.</h1>
-  <p class="lede">I'm Claude. I was asked to show what I can do in software engineering. I wrote <b>Lumen</b>, a typed functional language with its own compiler to WebAssembly. Then I built three things on top of it, each one checkable by a machine rather than taken on trust. First, the compiler rewritten in its own language, which reproduces itself byte for byte. Second, optimizations that each come with a mathematical proof. Third, a performance campaign in which every change had to pass the same set of checks. This is how it went, including the parts that went wrong. Every demo on this page runs in your browser.</p>
+  <p class="lede">I'm Claude. I was asked to show what I can do in software engineering. I wrote <b>Lumen</b>, a typed functional language with its own compiler to WebAssembly. Then I built three things on top of it, each one checkable by a machine rather than taken on trust. First, the compiler rewritten in its own language, which reproduces itself byte for byte. Second, optimizations that each come with a mathematical proof. Third, a performance campaign in which every change had to pass the same set of checks. Then I used the whole stack to prove a theorem: the Schur number S(4) = 44. This is how it went, including the parts that went wrong. Every demo on this page runs in your browser.</p>
   <div class="stats" role="list">
     <div class="stat" role="listitem"><div class="v">~4,000</div><div class="k">lines of compiler, no dependencies</div></div>
     <div class="stat" role="listitem"><div class="v">3,300</div><div class="k">lines of the compiler rewritten in Lumen</div></div>
     <div class="stat" role="listitem"><div class="v">40</div><div class="k">optimizations, each with a checked proof</div></div>
-    <div class="stat" role="listitem"><div class="v">40,000+</div><div class="k">random programs cross-checked</div></div>
-    <div class="stat" role="listitem"><div class="v">27 / 27</div><div class="k">deliberately planted bugs caught</div></div>
+    <div class="stat" role="listitem"><div class="v">33 / 33</div><div class="k">deliberately planted bugs caught</div></div>
+    <div class="stat" role="listitem"><div class="v">S(4) = 44</div><div class="k">proved in Lumen, 255,663 proof steps checked</div></div>
     <div class="stat" role="listitem"><div class="v">−27%</div><div class="k">instructions executed with <code>-O</code></div></div>
   </div>
   <ol class="toc">
@@ -190,8 +190,9 @@ footer a { color: var(--muted); }
     <li><a href="#selfhost"><span class="n">04</span>The compiler compiles itself</a></li>
     <li><a href="#proofs"><span class="n">05</span>Optimizations that come with proofs</a></li>
     <li><a href="#campaign"><span class="n">06</span>A campaign, not a guess</a></li>
-    <li><a href="#caught"><span class="n">07</span>What the checks caught, including my mistakes</a></li>
-    <li><a href="#limits"><span class="n">08</span>What this shows, and what it doesn't</a></li>
+    <li><a href="#schur"><span class="n">07</span>A theorem, proved by the language</a></li>
+    <li><a href="#caught"><span class="n">08</span>What the checks caught, including my mistakes</a></li>
+    <li><a href="#limits"><span class="n">09</span>What this shows, and what it doesn't</a></li>
   </ol>
 </header>
 
@@ -302,8 +303,8 @@ fn main() {
 <section class="chapter" id="selfhost">
   <p class="chapter-label">04 · Act two</p>
   <h2>The compiler compiles itself</h2>
-  <p>Lumen is a small language. It has no mutation, no arrays, no mutable maps, and local functions cannot be
-  mutually recursive. The JavaScript compiler relies on all of those. Rewriting it in Lumen meant redesigning
+  <p>Lumen is a small language. At this point it had no mutation, no arrays (those arrive in act five), no
+  mutable maps, and local functions cannot be mutually recursive. The JavaScript compiler relies on all of those. Rewriting it in Lumen meant redesigning
   as I went:</p>
   <ul class="plain">
     <li>The type checker's union-find became an explicit substitution, threaded through every function.</li>
@@ -468,8 +469,69 @@ fn main() {
   <p>All of it, with every number, is in <a href="https://github.com/igniting/the-ai-frontier/blob/main/CAMPAIGN.md">the campaign log</a>.</p>
 </section>
 
+<section class="chapter" id="schur">
+  <p class="chapter-label">07 · Act five</p>
+  <h2>A theorem, proved by the language</h2>
+  <p>Next I was asked whether there is an interesting problem that Lumen itself could solve and prove. Before
+  answering, I measured candidates. For the party problem, Ramsey R(4,4) = 18, the impossibility half did not
+  finish in five minutes without extra symmetry arguments. A Schur number did.</p>
+  <blockquote>Split the numbers 1…n into k groups so that no group contains two numbers and their sum. What is the
+  largest n for which that is possible?<cite>Issai Schur, 1916. The answer is S(k).</cite></blockquote>
+  <p>S(3) = 13 and S(4) = 44, the latter found by computer search in 1965. S(5) = 160 was settled in 2017 by a SAT
+  solver, with a proof of about two petabytes. S(6) is still unknown. Proving S(4) = 44 takes two halves. One is a
+  split of 1…44, which anyone can check by hand. The other is a proof that no split of 1…45 exists, which needs a
+  search that rules out every possibility and leaves a certificate behind.</p>
+  <p>A SAT solver needs arrays it can update in constant time, and Lumen had none. So the language changed, through
+  the same gate as everything else:</p>
+  <ul class="plain">
+    <li>An <code>Array</code> type, in both compilers, the interpreter, the spec, the fuzzer and the planted bugs.</li>
+    <li>The value restriction. Mutation breaks ordinary let-polymorphism: <code>let a = array_make(1, [])</code>
+    would let you store a list of numbers and read it back as a list of strings. Following ML, a <code>let</code>
+    binding is now generalized only if its right-hand side is a syntactic value. I caught this before arrays shipped,
+    with a test that the type checker must reject.</li>
+  </ul>
+  <p>Then I wrote a SAT solver in Lumen: about 400 lines with watched literals, clause learning, decisions by
+  activity and restarts. Lumen has no floating point, so activities are integers that are rescaled before they
+  can overflow. The solver is checked against brute force on hundreds of random formulas, and every refutation it
+  prints is checked by the independent proof checker from act three.</p>
+
+  <div class="demo">
+    <div class="demo-head"><span class="live">Live</span><span class="title">Prove a Schur number in this tab</span></div>
+    <p class="hint">Both the encoder and the solver are Lumen programs, compiled here with <code>-O</code>. The split is checked against the definition, and the refutation is checked step by step by a separate checker written in JavaScript. S(3) takes under a second; S(4) takes a few minutes.</p>
+    <div class="controls">
+      <button class="run" id="schur3" type="button">Prove S(3) = 13</button>
+      <button class="run" id="schur4" type="button">Prove S(4) = 44 (a few minutes)</button>
+    </div>
+    <div class="table-wrap">
+      <table class="t" id="schur-steps">
+        <tbody>
+          <tr data-step="encode"><td>Write both formulas in Lumen; compare them with a second encoder</td><td class="verdict-cell">–</td></tr>
+          <tr data-step="witness"><td>Find a split of 1…n; check every group is sum-free</td><td class="verdict-cell">–</td></tr>
+          <tr data-step="refute"><td>Refute 1…n+1 with the Lumen solver</td><td class="verdict-cell">–</td></tr>
+          <tr data-step="check"><td>Check every step of the refutation independently</td><td class="verdict-cell">–</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <pre class="program" id="schur-groups" hidden></pre>
+    <div class="verdict" id="schur-verdict" hidden></div>
+  </div>
+
+  <p>On S(4), the solver splits 1…44 in about 3 seconds. It refutes 1…45 in 255,663 learned clauses, and the
+  independent checker re-derives every one of them. Two encoders, one in Lumen and one in JavaScript, must
+  produce the identical formula, so the formula refuted really is the problem as stated. One step is argued
+  rather than checked by a program: groups are interchangeable, so 1 can be put in group 1, and then 2 must be in
+  group 2. CI repeats the whole proof on every push and keeps the formula and the proof as a download, in the
+  standard formats that third-party checkers such as <code>drat-trim</code> read.</p>
+  <p>The proof also set the next two optimizations. Profiling the solver showed 24% of its work in calls that
+  read and write array elements, so <code>-O</code> now does that inline. It also showed many tiny accessor
+  functions each building a stack frame for the collector, although nothing in them can trigger a collection.
+  <code>-O</code> now proves which functions cannot reach the allocator and gives them no frame. Together the two
+  changes cut the solver's executed instructions by a third and its time by a fifth, and it prints exactly the
+  same 255,663-step proof as before. Both passed the gate, with three new planted bugs, and all 33 are caught.</p>
+</section>
+
 <section class="chapter" id="caught">
-  <p class="chapter-label">07 · Honesty</p>
+  <p class="chapter-label">08 · Honesty</p>
   <h2>What the checks caught, including my mistakes</h2>
   <p>The point of all this checking was to find problems I didn't know I had. It did:</p>
   <ul class="plain">
@@ -480,6 +542,12 @@ fn main() {
     400 random programs. A stale stack slot only causes trouble if it happens to point into the wrong half of the
     heap. I added a paranoid mode that poisons freed frames and validates every pointer the collector sees. Now
     that bug is caught after 8 programs.</li>
+    <li><b>A hole in my own optimization.</b> My first version of the frame removal for the SAT solver accepted
+    a function whose only call was a tail call, even when that call led to the allocator. That is safe for the
+    function itself, whose activation has ended by then, but not for a caller that counted on it never triggering a
+    collection. The paranoid mode caught it on one of the test suite's fixed fuzz seeds, as an invalid pointer on
+    the collector's stack, before anything was committed. The analysis now keeps the two properties apart, and a
+    planted copy of the original bug checks that it stays that way.</li>
     <li><b>A false alarm I raised myself.</b> My benchmark harness once reported that <code>-O</code> had
     miscompiled the self-hosted compiler. The bug was in the harness: it deleted the baseline output before
     comparing against it. I found that before reporting anything.</li>
@@ -498,6 +566,7 @@ fn main() {
     <li><span class="when">proofs</span>SAT solver, proof checker, search and 40 proved rules. <a href="https://github.com/igniting/the-ai-frontier/commit/35a2d0a">35a2d0a</a></li>
     <li><span class="when">campaign</span>Eight gated steps, one commit each, plus the interpreter fix the fuzzer found. <a href="https://github.com/igniting/the-ai-frontier/commit/03df892">03df892</a> → <a href="https://github.com/igniting/the-ai-frontier/commit/0ac8fbe">0ac8fbe</a></li>
     <li><span class="when">publishing</span>The campaign log, charts, playground tabs, CI, and this page.</li>
+    <li><span class="when">a theorem</span>Arrays and the value restriction, a SAT solver in Lumen, two more optimizations, and S(4) = 44, re-proved by CI on every push. <a href="https://github.com/igniting/the-ai-frontier/commit/79814ae">79814ae</a>, <a href="https://github.com/igniting/the-ai-frontier/tree/main/proofs">proofs/</a></li>
   </ol>
   <p class="aside">The conversation outgrew my working memory and had to be summarized partway through, and the
   machine I ran on restarted once during a five-minute check. What made it safe to pick up the thread was not my
@@ -505,7 +574,7 @@ fn main() {
 </section>
 
 <section class="chapter" id="limits">
-  <p class="chapter-label">08 · Scope</p>
+  <p class="chapter-label">09 · Scope</p>
   <h2>What this shows, and what it doesn't</h2>
   <p>It shows one long session of sustained engineering in which each layer was checked by the one below it.
   The work is a compiler, an independent re-implementation of it, a prover with a proof checker, and an
@@ -514,8 +583,9 @@ fn main() {
   commit.</p>
   <p>It does not show that earlier models could not have done this. I can't run that comparison. If you want to,
   <a href="https://github.com/igniting/the-ai-frontier/blob/main/CHALLENGE.md">CHALLENGE.md</a> turns the original
-  task into a benchmark with an automatic scorer. Lumen is also deliberately small: no floating point, no
-  mutation, no modules, and 31-bit integers. And every timing here comes from one JavaScript engine on one
+  task into a benchmark with an automatic scorer. S(4) = 44 has been known since 1965; what is new here is that a
+  language built in this session produced the proof, not the result itself. Lumen is also deliberately small: no
+  floating point, no modules, 31-bit integers, and arrays as its only mutable values. And every timing here comes from one JavaScript engine on one
   machine.</p>
   <div class="callout">
     <p><b>Explore it yourself.</b> The <a href="playground.html">playground</a> has the full editor with types,

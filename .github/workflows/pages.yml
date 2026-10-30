@@ -30,13 +30,14 @@ jobs:
         run: npm test
       - name: Assemble the static site
         run: |
-          mkdir -p _site/fuzz _site/selfhost _site/superopt _site/bench
+          mkdir -p _site/fuzz _site/selfhost _site/superopt _site/bench _site/proofs
           cp index.html playground.html _site/
           cp -r playground story src examples docs _site/
           cp fuzz/generate.js fuzz/check.js _site/fuzz/
           cp selfhost/lumenc.lm _site/selfhost/
           cp superopt/sat.js superopt/rup.js superopt/bv.js superopt/synth.js superopt/show.js superopt/verify-core.js superopt/rules.json _site/superopt/
           cp bench/campaign-instructions.svg bench/campaign-time.svg _site/bench/
+          cp proofs/sat.lm proofs/schur.lm proofs/schur-core.js _site/proofs/
           touch _site/.nojekyll
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

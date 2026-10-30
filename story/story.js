@@ -178,3 +178,40 @@ $('count-run').addEventListener('click', async () => {
       + `${r.same ? `Both builds printed the same ${num(r.outputBytes)} bytes` : 'The outputs DIFFER'}; binaries ${kib(r.base.bytes)} and ${kib(r.opt.bytes)}.`;
   } catch { unsupported($('count-note')); } finally { btn.disabled = false; }
 });
+
+// --------------------------------------------------------- Schur numbers --
+let schur = null;
+function proveSchur(k, n) {
+  const buttons = [$('schur3'), $('schur4')];
+  schur?.terminate();
+  schur = worker('./schur-worker.js');
+  const cell = (step) => document.querySelector(`#schur-steps tr[data-step="${step}"] td:last-child`);
+  const verdict = $('schur-verdict'), groupsEl = $('schur-groups');
+  if (!schur) { unsupported(cell('encode')); return; }
+  buttons.forEach((b) => { b.disabled = true; });
+  for (const td of document.querySelectorAll('#schur-steps td:last-child')) { td.className = 'verdict-cell'; td.textContent = '…'; }
+  verdict.hidden = true;
+  groupsEl.hidden = true;
+  const mark = (step, ok, text) => { const c = cell(step); c.className = `verdict-cell ${ok ? 'ok' : 'bad'}`; c.textContent = text; };
+  schur.onmessage = ({ data: m }) => {
+    if (m.step === 'encode') mark('encode', m.agree, `${m.agree ? '✓' : '✗'} ${num(m.clauses[0])} and ${num(m.clauses[1])} clauses, ${m.agree ? 'identical' : 'DIFFERENT'}`);
+    else if (m.step === 'witness' && !m.done) cell('witness').textContent = `searching… ${num(m.progress)} clauses learnt`;
+    else if (m.step === 'witness') {
+      mark('witness', m.ok, m.ok ? `✓ found in ${ms(m.ms)}; every group is sum-free` : `✗ ${m.error}`);
+      if (m.groups) { groupsEl.hidden = false; groupsEl.textContent = m.groups.map((g, i) => `group ${i + 1}: ${g.join(' ')}`).join('\n'); }
+    } else if (m.step === 'refute' && !m.done) cell('refute').textContent = `${num(m.progress)} clauses learnt so far…`;
+    else if (m.step === 'refute') mark('refute', !m.sat, m.sat ? '✗ a split exists?!' : `✓ refuted: ${num(m.lemmas)} learnt clauses in ${(m.ms / 1000).toFixed(1)} s`);
+    else if (m.step === 'check' && !m.done) cell('check').textContent = `checked ${num(m.progress)} of ${num(m.total)}…`;
+    else if (m.step === 'check') mark('check', m.ok, m.ok ? `✓ all ${num(m.lemmas)} steps valid (${(m.ms / 1000).toFixed(1)} s)` : `✗ rejected: ${m.reason}`);
+    else if (m.step === 'done' || m.step === 'failed') {
+      buttons.forEach((b) => { b.disabled = false; });
+      verdict.hidden = false;
+      verdict.className = `verdict ${m.proved ? 'ok' : 'bad'}`;
+      verdict.textContent = m.step === 'failed' ? `Failed: ${m.message}`
+        : m.proved ? `✓ Proved: S(${k}) = ${n}. 1…${n} can be split into ${k} sum-free groups, and 1…${n + 1} cannot.` : 'Not proved.';
+    }
+  };
+  schur.postMessage({ k, n });
+}
+$('schur3').addEventListener('click', () => proveSchur(3, 13));
+$('schur4').addEventListener('click', () => proveSchur(4, 44));

@@ -155,6 +155,24 @@ export const MUTANTS = [
     replace: '"rhs":[["i32.const",1],["i32.lt_u"]]',
   },
   {
+    name: '-O: inline array access skips the bounds check',
+    file: 'codegen.js',
+    find: "emit(ld(0), c(9), o('i32.shr_u'), o('i32.ge_u'), ['if', null, null], c(ERR.INDEX), call('$rt:trap'), ['end']);",
+    replace: "emit(ld(0), c(9), o('i32.shr_u'), o('i32.ge_u'), o('drop'));",
+  },
+  {
+    name: '-O: frame elision treats an allocating function as collection-free',
+    file: 'codegen.js',
+    find: "        default: return true; // alloc, closure, and anything new",
+    replace: "        default: return false;",
+  },
+  {
+    name: '-O: frame elision ignores non-tail calls that may collect',
+    file: 'codegen.js',
+    find: "  return fixpoint(walker((fn, tail) => !tail && !never.has(fn), (tail) => !tail));",
+    replace: "  return fixpoint(walker(() => false, (tail) => !tail));",
+  },
+  {
     name: '-O: a self tail call assigns the new arguments to the wrong parameters',
     file: 'codegen.js',
     find: 'for (const v of [...f.params].reverse()) emit(ls(storage.get(v.id).local ?? varName(v)));',

@@ -1,0 +1,476 @@
+// A CDCL SAT solver, written in Lumen.
+//
+// Input (read_input): a formula in DIMACS CNF.
+// Output: every clause the solver learns, one per line in DRUP form
+// ("lits... 0"), then either
+//   s UNSATISFIABLE      after the empty clause "0", so the lines form a
+//                        refutation that an independent checker can verify, or
+//   s SATISFIABLE        followed by "v lits... 0", a satisfying assignment.
+//
+// The algorithm follows superopt/sat.js: two watched literals, first-UIP
+// clause learning, activity-ordered decisions kept in a binary heap, phase
+// saving and Luby restarts. Lumen has no floating point, so activities are
+// integers that grow by 1/19 per conflict (about the usual 0.95 decay) and
+// are rescaled before they can overflow.
+//
+// Literals: variable v is 2v when true and 2v + 1 when false.
+
+fn neg(x) { if x % 2 == 0 { x + 1 } else { x - 1 } }
+fn to_dimacs(x) { if x % 2 == 0 { x / 2 } else { 0 - x / 2 } }
+fn from_dimacs(l) { if l > 0 { 2 * l } else { 2 * (0 - l) + 1 } }
+
+// ------------------------------------------------------------------ state --
+// Scalar state lives in one Int array, at these indices.
+fn i_qhead() { 0 }      // next trail position to propagate
+fn i_trail() { 1 }      // trail length
+fn i_level() { 2 }      // current decision level
+fn i_nclauses() { 3 }   // clauses in the table
+fn i_inc() { 4 }        // activity increment
+fn i_heap() { 5 }       // heap size
+fn i_conflicts() { 6 }
+fn i_restarts() { 7 }
+fn i_budget() { 8 }     // conflicts left before the next restart
+fn i_nvars() { 9 }
+fn i_learnt() { 10 }    // literals in the learnt-clause buffer
+
+type Solver {
+  Solver(
+    Array<Int>,               // ints: the scalars above
+    Array<Int>,               // assign: per variable, 1 true, -1 false, 0 unassigned
+    Array<Int>,               // level: per variable
+    Array<Int>,               // reason: per variable, the clause that implied it, or -1
+    Array<Int>,               // phase: per variable, its last value
+    Array<Int>,               // activity: per variable
+    Array<Int>,               // trail: assigned literals in order
+    Array<Int>,               // trail_lim: trail length at the start of each level
+    Array<Array<Int>>,        // watches: per literal L, [count, clauses...] of clauses watching neg(L)
+    Array<Array<Array<Int>>>, // a one-element cell holding the clause table
+    Array<Int>,               // heap: variables, highest activity first
+    Array<Int>,               // pos: per variable, its index in the heap or -1
+    Array<Int>,               // seen: per variable, scratch for conflict analysis
+    Array<Int>)               // learnt: scratch buffer for the clause being learnt
+}
+
+fn ints(s) { match s { Solver(x, _, _, _, _, _, _, _, _, _, _, _, _, _) -> x } }
+fn assigns(s) { match s { Solver(_, x, _, _, _, _, _, _, _, _, _, _, _, _) -> x } }
+fn levels(s) { match s { Solver(_, _, x, _, _, _, _, _, _, _, _, _, _, _) -> x } }
+fn reasons(s) { match s { Solver(_, _, _, x, _, _, _, _, _, _, _, _, _, _) -> x } }
+fn phases(s) { match s { Solver(_, _, _, _, x, _, _, _, _, _, _, _, _, _) -> x } }
+fn activity(s) { match s { Solver(_, _, _, _, _, x, _, _, _, _, _, _, _, _) -> x } }
+fn trail(s) { match s { Solver(_, _, _, _, _, _, x, _, _, _, _, _, _, _) -> x } }
+fn trail_lim(s) { match s { Solver(_, _, _, _, _, _, _, x, _, _, _, _, _, _) -> x } }
+fn watches(s) { match s { Solver(_, _, _, _, _, _, _, _, x, _, _, _, _, _) -> x } }
+fn table_cell(s) { match s { Solver(_, _, _, _, _, _, _, _, _, x, _, _, _, _) -> x } }
+fn heap(s) { match s { Solver(_, _, _, _, _, _, _, _, _, _, x, _, _, _) -> x } }
+fn heap_pos(s) { match s { Solver(_, _, _, _, _, _, _, _, _, _, _, x, _, _) -> x } }
+fn seen(s) { match s { Solver(_, _, _, _, _, _, _, _, _, _, _, _, x, _) -> x } }
+fn learnt_buf(s) { match s { Solver(_, _, _, _, _, _, _, _, _, _, _, _, _, x) -> x } }
+
+fn get(s, k) { array_get(ints(s), k) }
+fn put(s, k, v) { array_set(ints(s), k, v) }
+fn table(s) { array_get(table_cell(s), 0) }
+
+fn value(s, x) {
+  let a = array_get(assigns(s), x / 2);
+  if x % 2 == 0 { a } else { 0 - a }
+}
+
+fn new_solver(n) {
+  let ints = array_make(11, 0);
+  array_set(ints, i_nvars(), n);
+  array_set(ints, i_inc(), 1024);
+  array_set(ints, i_budget(), 100);
+  let watches = array_make(2 * n + 2, array_make(1, 0));
+  fn init_watches(l) {
+    if l < 2 * n + 2 { array_set(watches, l, array_make(4, 0)); init_watches(l + 1) } else { () }
+  }
+  init_watches(0);
+  let s = Solver(ints, array_make(n + 1, 0), array_make(n + 1, 0), array_make(n + 1, -1), array_make(n + 1, -1),
+    array_make(n + 1, 0), array_make(n + 1, 0), array_make(n + 2, 0), watches,
+    array_make(1, array_make(64, array_make(0, 0))), array_make(n + 1, 0), array_make(n + 1, -1),
+    array_make(n + 1, 0), array_make(n + 2, 0));
+  fn fill_heap(v) { if v <= n { heap_insert(s, v); fill_heap(v + 1) } else { () } }
+  fill_heap(1);
+  s
+}
+
+// ---------------------------------------------------------- growable data --
+fn grow(a, size, dflt) {
+  let b = array_make(size, dflt);
+  fn copy(i) { if i < array_length(a) { array_set(b, i, array_get(a, i)); copy(i + 1) } else { () } }
+  copy(0);
+  b
+}
+
+// Appends clause c to the watch list of literal l.
+fn watch(s, l, c) {
+  let ws = array_get(watches(s), l);
+  let n = array_get(ws, 0) + 1;
+  let ws2 = if n < array_length(ws) { ws } else { let b = grow(ws, 2 * array_length(ws), 0); array_set(watches(s), l, b); b };
+  array_set(ws2, n, c);
+  array_set(ws2, 0, n)
+}
+
+// Adds a clause (at least two literals) to the table and watches its first two literals.
+fn add_clause(s, cl) {
+  let n = get(s, i_nclauses());
+  let t = table(s);
+  let t2 = if n < array_length(t) { t } else { let b = grow(t, 2 * array_length(t), array_make(0, 0)); array_set(table_cell(s), 0, b); b };
+  array_set(t2, n, cl);
+  put(s, i_nclauses(), n + 1);
+  watch(s, neg(array_get(cl, 0)), n);
+  watch(s, neg(array_get(cl, 1)), n);
+  n
+}
+
+// ------------------------------------------------------------------- heap --
+fn heap_less(s, a, b) { array_get(activity(s), a) > array_get(activity(s), b) }
+
+fn heap_swap(s, i, j) {
+  let h = heap(s);
+  let a = array_get(h, i);
+  let b = array_get(h, j);
+  array_set(h, i, b);
+  array_set(h, j, a);
+  array_set(heap_pos(s), b, i);
+  array_set(heap_pos(s), a, j)
+}
+
+fn heap_up(s, i) {
+  if i > 0 {
+    let p = (i - 1) / 2;
+    if heap_less(s, array_get(heap(s), i), array_get(heap(s), p)) { heap_swap(s, i, p); heap_up(s, p) } else { () }
+  } else { () }
+}
+
+fn heap_down(s, i) {
+  let size = get(s, i_heap());
+  let l = 2 * i + 1;
+  let r = l + 1;
+  let h = heap(s);
+  let m1 = if l < size && heap_less(s, array_get(h, l), array_get(h, i)) { l } else { i };
+  let m = if r < size && heap_less(s, array_get(h, r), array_get(h, m1)) { r } else { m1 };
+  if m != i { heap_swap(s, i, m); heap_down(s, m) } else { () }
+}
+
+fn heap_insert(s, v) {
+  if array_get(heap_pos(s), v) < 0 {
+    let size = get(s, i_heap());
+    array_set(heap(s), size, v);
+    array_set(heap_pos(s), v, size);
+    put(s, i_heap(), size + 1);
+    heap_up(s, size)
+  } else { () }
+}
+
+// The unassigned variable with the highest activity, or 0 if none is left.
+fn pick_branch(s) {
+  let size = get(s, i_heap());
+  if size == 0 { 0 }
+  else {
+    let h = heap(s);
+    let top = array_get(h, 0);
+    let last = array_get(h, size - 1);
+    put(s, i_heap(), size - 1);
+    array_set(heap_pos(s), top, -1);
+    if size > 1 { array_set(h, 0, last); array_set(heap_pos(s), last, 0); heap_down(s, 0) } else { () };
+    if array_get(assigns(s), top) == 0 { top } else { pick_branch(s) }
+  }
+}
+
+fn bump(s, v) {
+  let act = activity(s);
+  let a = array_get(act, v) + get(s, i_inc());
+  array_set(act, v, a);
+  if a > 268435456 { rescale(s) } else { () };
+  if array_get(heap_pos(s), v) >= 0 { heap_up(s, array_get(heap_pos(s), v)) } else { () }
+}
+
+// Divides every activity (and the increment) by 1024; the order is unchanged.
+fn rescale(s) {
+  let act = activity(s);
+  fn go(v) { if v < array_length(act) { array_set(act, v, array_get(act, v) / 1024); go(v + 1) } else { () } }
+  go(0);
+  put(s, i_inc(), get(s, i_inc()) / 1024 + 1)
+}
+
+fn decay(s) {
+  let inc = get(s, i_inc());
+  put(s, i_inc(), inc + inc / 19 + 1);
+  if get(s, i_inc()) > 16777216 { rescale(s) } else { () }
+}
+
+// ------------------------------------------------------------ propagation --
+fn enqueue(s, x, from) {
+  let v = x / 2;
+  array_set(assigns(s), v, if x % 2 == 0 { 1 } else { -1 });
+  array_set(levels(s), v, get(s, i_level()));
+  array_set(reasons(s), v, from);
+  let n = get(s, i_trail());
+  array_set(trail(s), n, x);
+  put(s, i_trail(), n + 1)
+}
+
+// Unit propagation; returns a conflicting clause, or -1.
+fn propagate(s) {
+  let qh = get(s, i_qhead());
+  if qh >= get(s, i_trail()) { -1 }
+  else {
+    put(s, i_qhead(), qh + 1);
+    let c = visit(s, array_get(trail(s), qh));
+    if c >= 0 { c } else { propagate(s) }
+  }
+}
+
+// Literal x just became true; visit the clauses that watch neg(x).
+fn visit(s, x) {
+  let ws = array_get(watches(s), x);
+  let n = array_get(ws, 0);
+  let nx = neg(x);
+  let t = table(s);
+  // The first k >= 2 whose literal is not false, or -1.
+  fn other(cl, k) {
+    if k >= array_length(cl) { -1 } else if value(s, array_get(cl, k)) != -1 { k } else { other(cl, k + 1) }
+  }
+  fn keep_rest(i, j) {
+    if i <= n { array_set(ws, j, array_get(ws, i)); keep_rest(i + 1, j + 1) } else { array_set(ws, 0, j - 1) }
+  }
+  fn go(i, j) {
+    if i > n { array_set(ws, 0, j - 1); -1 }
+    else {
+      let c = array_get(ws, i);
+      let cl = array_get(t, c);
+      if array_get(cl, 0) == nx { array_set(cl, 0, array_get(cl, 1)); array_set(cl, 1, nx) } else { () };
+      let first = array_get(cl, 0);
+      if value(s, first) == 1 { array_set(ws, j, c); go(i + 1, j + 1) }
+      else {
+        let k = other(cl, 2);
+        if k >= 0 {
+          let w = array_get(cl, k);
+          array_set(cl, 1, w);
+          array_set(cl, k, nx);
+          watch(s, neg(w), c);
+          go(i + 1, j)
+        } else {
+          array_set(ws, j, c);
+          if value(s, first) == -1 { keep_rest(i + 1, j + 1); c }
+          else { enqueue(s, first, c); go(i + 1, j + 1) }
+        }
+      }
+    }
+  }
+  go(1, 1)
+}
+
+// --------------------------------------------------------------- learning --
+// First-UIP conflict analysis. Leaves the learnt clause in the learnt buffer
+// (asserting literal first, a literal of the backjump level second) and
+// returns the level to jump back to.
+fn analyze(s, confl) {
+  let buf = learnt_buf(s);
+  let sn = seen(s);
+  let lv = levels(s);
+  let dl = get(s, i_level());
+  put(s, i_learnt(), 1);
+  fn add_lits(cl, k, counter) {
+    if k >= array_length(cl) { counter }
+    else {
+      let q = array_get(cl, k);
+      let v = q / 2;
+      if array_get(sn, v) == 0 && array_get(lv, v) > 0 {
+        array_set(sn, v, 1);
+        bump(s, v);
+        if array_get(lv, v) >= dl { add_lits(cl, k + 1, counter + 1) }
+        else {
+          let m = get(s, i_learnt());
+          array_set(buf, m, q);
+          put(s, i_learnt(), m + 1);
+          add_lits(cl, k + 1, counter)
+        }
+      } else { add_lits(cl, k + 1, counter) }
+    }
+  }
+  fn back_to_seen(idx) { if array_get(sn, array_get(trail(s), idx) / 2) == 0 { back_to_seen(idx - 1) } else { idx } }
+  fn walk(c, start, counter, idx) {
+    let counter2 = add_lits(array_get(table(s), c), start, counter);
+    let at = back_to_seen(idx);
+    let p = array_get(trail(s), at);
+    array_set(sn, p / 2, 0);
+    if counter2 - 1 > 0 { walk(array_get(reasons(s), p / 2), 1, counter2 - 1, at - 1) } else { p }
+  }
+  let p = walk(confl, 0, 0, get(s, i_trail()) - 1);
+  array_set(buf, 0, neg(p));
+  let m = get(s, i_learnt());
+  fn clear(k) { if k < m { array_set(sn, array_get(buf, k) / 2, 0); clear(k + 1) } else { () } }
+  clear(1);
+  if m == 1 { 0 }
+  else {
+    fn max_at(k, best) {
+      if k >= m { best }
+      else if array_get(lv, array_get(buf, k) / 2) > array_get(lv, array_get(buf, best) / 2) { max_at(k + 1, k) }
+      else { max_at(k + 1, best) }
+    }
+    let b = max_at(2, 1);
+    let tmp = array_get(buf, 1);
+    array_set(buf, 1, array_get(buf, b));
+    array_set(buf, b, tmp);
+    array_get(lv, array_get(buf, 1) / 2)
+  }
+}
+
+fn cancel_until(s, lvl) {
+  if get(s, i_level()) > lvl {
+    let stop = array_get(trail_lim(s), lvl);
+    fn undo(k) {
+      if k >= stop {
+        let v = array_get(trail(s), k) / 2;
+        array_set(phases(s), v, array_get(assigns(s), v));
+        array_set(assigns(s), v, 0);
+        array_set(reasons(s), v, -1);
+        heap_insert(s, v);
+        undo(k - 1)
+      } else { () }
+    }
+    undo(get(s, i_trail()) - 1);
+    put(s, i_trail(), stop);
+    put(s, i_qhead(), stop);
+    put(s, i_level(), lvl)
+  } else { () }
+}
+
+fn luby(i) {
+  fn up(size, sq) { if size < i + 1 { up(2 * size + 1, sq + 1) } else { (size, sq) } }
+  fn down(size, sq, i) { if size - 1 != i { let s2 = (size - 1) / 2; down(s2, sq - 1, i % s2) } else { sq } }
+  let (size, sq) = up(1, 0);
+  pow(2, down(size, sq, i))
+}
+
+// -------------------------------------------------------------------- I/O --
+fn print_clause(lits) {
+  each(lits, |l| { print(int_to_string(l)); print(" ") });
+  println("0")
+}
+
+fn print_learnt(s) {
+  let buf = learnt_buf(s);
+  let m = get(s, i_learnt());
+  fn go(k) { if k < m { print(int_to_string(to_dimacs(array_get(buf, k)))); print(" "); go(k + 1) } else { println("0") } }
+  go(0)
+}
+
+// Parses DIMACS: returns (number of variables, clauses as lists of DIMACS literals).
+fn parse_dimacs(src) {
+  let n = string_length(src);
+  fn skip_line(i) { if i < n && char_code_at(src, i) != 10 { skip_line(i + 1) } else { i + 1 } }
+  fn number(i, sign, acc) {
+    if i < n && char_code_at(src, i) >= 48 && char_code_at(src, i) <= 57 { number(i + 1, sign, acc * 10 + char_code_at(src, i) - 48) }
+    else { (sign * acc, i) }
+  }
+  fn ws(i) { if i < n && (char_code_at(src, i) == 32 || char_code_at(src, i) == 10 || char_code_at(src, i) == 9 || char_code_at(src, i) == 13) { ws(i + 1) } else { i } }
+  fn go(i, nvars, cur, acc) {
+    let j = ws(i);
+    if j >= n { (nvars, reverse(acc)) }
+    else {
+      let ch = char_code_at(src, j);
+      if ch == 99 { go(skip_line(j), nvars, cur, acc) }                     // "c ..." comment
+      else if ch == 112 {                                                   // "p cnf V C"
+        let (v, k) = number(ws(j + 5), 1, 0);
+        go(skip_line(k), v, cur, acc)
+      } else {
+        let (x, k) = if ch == 45 { number(j + 1, -1, 0) } else { number(j, 1, 0) };
+        if x == 0 { go(k, nvars, [], [reverse(cur), ..acc]) } else { go(k, nvars, [x, ..cur], acc) }
+      }
+    }
+  }
+  go(0, 0, [], [])
+}
+
+// ------------------------------------------------------------------- main --
+// Loads the input clauses; returns false if they are already contradictory
+// at level 0 (then the refutation is just the empty clause).
+fn load(s, clauses) {
+  fn dedupe(lits, acc) {
+    match lits {
+      [] -> Some(reverse(acc)),
+      [l, ..rest] -> if contains(acc, 0 - l) { None } else if contains(acc, l) { dedupe(rest, acc) } else { dedupe(rest, [l, ..acc]) },
+    }
+  }
+  fn go(cs) {
+    match cs {
+      [] -> true,
+      [c, ..rest] -> match dedupe(c, []) {
+        None -> go(rest),                                                   // a tautology
+        Some([]) -> false,
+        Some([l]) -> {
+          let x = from_dimacs(l);
+          let v = value(s, x);
+          if v == -1 { false } else { if v == 0 { enqueue(s, x, -1) } else { () }; go(rest) }
+        },
+        Some(lits) -> {
+          let cl = array_make(length(lits), 0);
+          each(indexed(lits), |p| match p { (i, l) -> array_set(cl, i, from_dimacs(l)) });
+          add_clause(s, cl);
+          go(rest)
+        },
+      },
+    }
+  }
+  go(clauses)
+}
+
+fn indexed(xs) { zip(range(0, length(xs)), xs) }
+
+fn search(s) {
+  let confl = propagate(s);
+  if confl >= 0 {
+    put(s, i_conflicts(), get(s, i_conflicts()) + 1);
+    if get(s, i_level()) == 0 { println("0"); false }
+    else {
+      let back = analyze(s, confl);
+      print_learnt(s);
+      cancel_until(s, back);
+      let m = get(s, i_learnt());
+      let buf = learnt_buf(s);
+      if m == 1 { enqueue(s, array_get(buf, 0), -1) }
+      else {
+        let cl = array_make(m, 0);
+        fn copy(k) { if k < m { array_set(cl, k, array_get(buf, k)); copy(k + 1) } else { () } }
+        copy(0);
+        enqueue(s, array_get(cl, 0), add_clause(s, cl))
+      };
+      decay(s);
+      let budget = get(s, i_budget()) - 1;
+      if budget <= 0 {
+        let r = get(s, i_restarts()) + 1;
+        put(s, i_restarts(), r);
+        put(s, i_budget(), 100 * luby(r));
+        cancel_until(s, 0)
+      } else { put(s, i_budget(), budget) };
+      search(s)
+    }
+  } else {
+    let v = if get(s, i_trail()) == get(s, i_nvars()) { 0 } else { pick_branch(s) };
+    if v == 0 { true }
+    else {
+      let lvl = get(s, i_level());
+      array_set(trail_lim(s), lvl, get(s, i_trail()));
+      put(s, i_level(), lvl + 1);
+      enqueue(s, if array_get(phases(s), v) == 1 { 2 * v } else { 2 * v + 1 }, -1);
+      search(s)
+    }
+  }
+}
+
+fn main() {
+  let (n, clauses) = parse_dimacs(read_input());
+  let s = new_solver(n);
+  let sat = if !load(s, clauses) { println("0"); false } else if propagate(s) >= 0 { println("0"); false } else { search(s) };
+  if sat {
+    println("s SATISFIABLE");
+    print("v ");
+    print_clause(map(range(1, n + 1), |v| if array_get(assigns(s), v) == 1 { v } else { 0 - v }))
+  } else {
+    println("s UNSATISFIABLE")
+  };
+  println("c " ++ int_to_string(get(s, i_conflicts())) ++ " conflicts, " ++ int_to_string(get(s, i_restarts())) ++ " restarts")
+}
