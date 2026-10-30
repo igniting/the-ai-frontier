@@ -54,6 +54,7 @@ fn main() {
 | `(T1, T2, …)` | tuples |
 | `fn(T1, …) -> R` | functions of a fixed number of arguments (not curried) |
 | `Name<T1, …>` | algebraic data types declared with `type` |
+| `Array<T>` | mutable fixed-length arrays (see below); the only mutable values |
 
 Type declarations: `type Name<a, b> { Ctor1, Ctor2(T, …), … }`. Type
 parameters are lowercase. Constructors may be nullary. Types may be
@@ -62,9 +63,13 @@ recursive and mutually recursive.
 ### Type inference
 
 Types are inferred with Hindley–Milner: no annotations are required, and
-every binding gets its most general type. `let`-bound values and local
-functions are generalized (the language has no mutation, so there is no value
-restriction). Top-level functions may be used before they are defined; they
+every binding gets its most general type. Local functions are generalized.
+A `let` binding is generalized only when its right-hand side is a *syntactic
+value*: a literal, a variable, a lambda, or a constructor, tuple or operator
+applied to syntactic values (the value restriction). Otherwise its type stays
+monomorphic. Arrays are mutable, and without this rule
+`let a = array_make(1, [])` could be written as a list of `Int`s and read as a
+list of `String`s. Top-level functions may be used before they are defined; they
 are type-checked in dependency order (strongly connected components of the
 call graph), so a function is polymorphic for every function that does not
 belong to its own recursive group. Recursion is monomorphic within a group.
@@ -133,7 +138,8 @@ never match produce a warning.
   - `Int` numerically, `Bool` with `false < true`, `()` equals itself;
   - strings by bytes, lexicographically, where a proper prefix is smaller;
   - tuples field by field, left to right;
-  - constructors first by their declaration index, then field by field.
+  - constructors first by their declaration index, then field by field;
+  - arrays first by length (shorter is smaller), then element by element.
   Comparison stops at the first difference. Reaching a function value during
   a comparison is the runtime error `cannot compare functions`, even if the
   two functions are the same; `(1, f) == (2, f)` is `false` with no error.
@@ -155,6 +161,10 @@ never match produce a warning.
 | `char_code_at(s, i)` | `fn(String, Int) -> Int` | the byte at index `i` (0–255); `index out of bounds` if `i < 0` or `i >= len` |
 | `char_from_code(c)` | `fn(Int) -> String` | the one-byte string containing byte `c & 255` |
 | `panic(msg)` | `fn(String) -> a` | stops with the runtime error `panic: <msg>` |
+| `array_make(n, x)` | `fn(Int, a) -> Array<a>` | a new array of `n` elements, each `x` (the same value, not a copy); `index out of bounds` if `n < 0`, `out of memory` if `n > 8388607` |
+| `array_get(a, i)` | `fn(Array<a>, Int) -> a` | element `i`; `index out of bounds` unless `0 <= i < array_length(a)` |
+| `array_set(a, i, x)` | `fn(Array<a>, Int, a) -> ()` | replaces element `i` with `x`, visibly to every holder of `a`; same bounds rule |
+| `array_length(a)` | `fn(Array<a>) -> Int` | the number of elements |
 | `read_input()` | `fn() -> String` | the program's input: bytes supplied by the host (`lumen run file.lm --input data.txt`), or `""` if there are none |
 
 ## The prelude

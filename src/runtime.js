@@ -19,10 +19,12 @@
 // forwarding each field. When a collection leaves the heap more than half
 // full, both semispaces are reallocated at twice the size.
 
+export const TAG_ARRAY = 253;
 export const TAG_CLOSURE = 254;
 export const TAG_STRING = 255;
 export const header = (kind, size) => ((size << 9) | (kind << 1) | 1) | 0;
 export const MAX_STRING = (1 << 23) - 1;
+export const MAX_ARRAY = (1 << 23) - 1; // elements; the header's size field has 23 bits
 
 export const ERR = {
   DIV_ZERO: 1, COMPARE_FN: 2, PANIC: 3, INDEX: 4, STACK: 5, OOM: 6, FUEL: 7, MATCH: 8, STR_LEN: 9, BAD_ROOT: 10,
@@ -249,6 +251,9 @@ export function addRuntime(mod, layout, opts) {
     lg('$ka'), c(TAG_STRING), o('i32.eq'), if_(null, ret(lg('$a'), lg('$b'), call('$rt:str_cmp'))),
     kindOf(lg('$b')), lt('$kb'), lg('$ka'), o('i32.ne'),
     if_(null, ret(lg('$ka'), lg('$kb'), o('i32.lt_s'), if_('i32', c(-1), c(1)))),
+    // Same kind, different size: only arrays; the shorter one is smaller.
+    lenOf(lg('$a')), lenOf(lg('$b')), o('i32.ne'),
+    if_(null, ret(lenOf(lg('$a')), lenOf(lg('$b')), o('i32.lt_u'), if_('i32', c(-1), c(1)))),
     lenOf(lg('$a')), lt('$n'), o('i32.eqz'), if_(null, ret(c(0))),
     c(0), ls('$i'),
     loop('fields', [lg('$i'), lg('$n'), c(1), o('i32.sub'), o('i32.ge_s')], [
@@ -262,7 +267,7 @@ export function addRuntime(mod, layout, opts) {
     ['br', '$top'],
     ['end'],
     o('unreachable'),
-  ], 'Structural ordering: constructor index, then fields left to right. Returns raw -1/0/1.');
+  ], 'Structural ordering: constructor index (arrays: length), then fields left to right. Returns raw -1/0/1.');
 
   // ------------------------------------------------------------- strings --
   fn('$rt:str_eq', ['$a', '$b'], ['i32'], ['$n', '$i'], [
@@ -363,6 +368,30 @@ export function addRuntime(mod, layout, opts) {
     lg('$p'), c(4), o('i32.add'), call('$host:input_copy'),
     lg('$p'),
   ], 'Returns the input the host supplied, as one string.');
+
+  // -------------------------------------------------------------- arrays --
+  // An array is a heap block of kind TAG_ARRAY whose fields are its elements,
+  // so the collector scans and copies it like any constructor. Arrays are
+  // the only mutable values.
+  const checkIndex = seq(lg('$i'), c(1), o('i32.shr_s'), lt('$i'), lenOf(lg('$a')), o('i32.ge_u'), if_(null, trap(ERR.INDEX)));
+  const element = seq(lg('$a'), lg('$i'), c(2), o('i32.shl'), o('i32.add'));
+  fn('$rt:array_make', ['$n', '$x'], ['i32'], ['$len', '$p', '$i', '$fp'], [
+    lg('$n'), c(1), o('i32.shr_s'), lt('$len'), c(0), o('i32.lt_s'), if_(null, trap(ERR.INDEX)),
+    lg('$len'), c(MAX_ARRAY), o('i32.gt_s'), if_(null, trap(ERR.OOM)),
+    pushRoots('$x'),
+    lg('$len'), c(2), o('i32.shl'), c(4), o('i32.add'), call('$rt:alloc'), ls('$p'),
+    popRoots('$x'),
+    lg('$p'), lg('$len'), c(9), o('i32.shl'), c(TAG_ARRAY * 2 + 1), o('i32.or'), st(0),
+    c(0), ls('$i'),
+    loop('fill', [lg('$i'), lg('$len'), o('i32.ge_s')], [
+      lg('$p'), lg('$i'), c(2), o('i32.shl'), o('i32.add'), lg('$x'), st(4),
+      lg('$i'), c(1), o('i32.add'), ls('$i'),
+    ]),
+    lg('$p'),
+  ], 'array_make(n, x): a new array holding n copies of x.');
+  fn('$rt:array_get', ['$a', '$i'], ['i32'], [], [checkIndex, element, ld(4)]);
+  fn('$rt:array_set', ['$a', '$i', '$x'], ['i32'], [], [checkIndex, element, lg('$x'), st(4), c(1)]);
+  fn('$rt:array_length', ['$a'], ['i32'], [], [lenOf(lg('$a')), toBool()]);
 }
 
 export const BUILTIN_RUNTIME = {
@@ -375,4 +404,8 @@ export const BUILTIN_RUNTIME = {
   char_from_code: '$rt:char_from_code',
   panic: '$rt:panic',
   read_input: '$rt:read_input',
+  array_make: '$rt:array_make',
+  array_get: '$rt:array_get',
+  array_set: '$rt:array_set',
+  array_length: '$rt:array_length',
 };

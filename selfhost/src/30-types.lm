@@ -105,6 +105,20 @@ fn generalize(st, t, lvl) {
   }
 }
 
+// Keeps t's variables from being generalized beyond lvl (a `let` whose
+// right-hand side is not a syntactic value).
+fn pin_levels(st, t, lvl) {
+  match prune(st, t) {
+    TV(id) -> {
+      let l = level_of(st, id);
+      if l > lvl && l != generic_level() { set_level(st, id, lvl) } else { st }
+    },
+    TC(_, args) -> fold(args, st, |s, a| pin_levels(s, a, lvl)),
+    TF(ps, r) -> pin_levels(fold(ps, st, |s, p| pin_levels(s, p, lvl)), r, lvl),
+    TT(xs) -> fold(xs, st, |s, x| pin_levels(s, x, lvl)),
+  }
+}
+
 // Copies t, replacing generic variables with fresh ones (shared within one call).
 fn inst_ty(st, memo, lvl, t) {
   match prune(st, t) {

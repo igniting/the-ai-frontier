@@ -973,6 +973,20 @@ fn generalize(st, t, lvl) {
   }
 }
 
+// Keeps t's variables from being generalized beyond lvl (a `let` whose
+// right-hand side is not a syntactic value).
+fn pin_levels(st, t, lvl) {
+  match prune(st, t) {
+    TV(id) -> {
+      let l = level_of(st, id);
+      if l > lvl && l != generic_level() { set_level(st, id, lvl) } else { st }
+    },
+    TC(_, args) -> fold(args, st, |s, a| pin_levels(s, a, lvl)),
+    TF(ps, r) -> pin_levels(fold(ps, st, |s, p| pin_levels(s, p, lvl)), r, lvl),
+    TT(xs) -> fold(xs, st, |s, x| pin_levels(s, x, lvl)),
+  }
+}
+
 // Copies t, replacing generic variables with fresh ones (shared within one call).
 fn inst_ty(st, memo, lvl, t) {
   match prune(st, t) {
@@ -1211,7 +1225,20 @@ fn convert_types(g, kind, st, tvars, allow_fresh, lvl, tes) {
 }
 
 // ------------------------------------------------------------ declarations --
-fn is_builtin_type(name) { name == "Int" || name == "Bool" || name == "String" || name == "Unit" }
+// A syntactic value: evaluating it cannot create an array (no calls, no blocks).
+fn is_value(e) {
+  match e {
+    EInt(_, _) -> true, EStr(_, _) -> true, EBool(_, _) -> true, EUnit(_) -> true, EVar(_, _) -> true, ELam(_, _, _, _) -> true,
+    ECtor(_, Some(args), _, _, _, _) -> all(args, is_value),
+    ECtor(_, None, _, _, _, _) -> true,
+    ETuple(xs, _) -> all(xs, is_value),
+    EBin(_, l, r, _) -> is_value(l) && is_value(r),
+    EUn(_, x, _) -> is_value(x),
+    _ -> false,
+  }
+}
+
+fn is_builtin_type(name) { name == "Int" || name == "Bool" || name == "String" || name == "Unit" || name == "Array" }
 
 fn declare_types(g, decls, kind, suffix, st) {
   let tdecls = filter(decls, |d| match d { DType(_, _, _, _, _) -> true, _ -> false });
@@ -1638,7 +1665,9 @@ fn infer(g, env, lvl, st, e) {
             None -> s1,
           };
           let (q, en2, _, bs, s3) = infer_pattern(g, env_kind(en), lvl + 1, s2, en, Tip, p, xt);
-          let s4 = fold(bs, s3, |s, b| match b { BL(_, _, t) -> generalize(s, t, lvl), _ -> s });
+          // The value restriction: arrays are mutable, so only a syntactic value may be polymorphic.
+          let general = is_value(x);
+          let s4 = fold(bs, s3, |s, b| match b { BL(_, _, t) -> if general { generalize(s, t, lvl) } else { pin_levels(s, t, lvl) }, _ -> s });
           ([XSLet(q, x2, pat_span(p)), ..out], en2, s4)
         },
         ((out, en, s0), SFn(FnD(name, nsp, ps, ret, body, _))) -> {
@@ -1676,6 +1705,10 @@ fn builtin_signatures(a) {
     ("char_from_code", TF([t_int()], t_string())),
     ("panic", TF([t_string()], a)),
     ("read_input", TF([], t_string())),
+    ("array_make", TF([t_int(), a], TC("Array", [a]))),
+    ("array_get", TF([TC("Array", [a]), t_int()], a)),
+    ("array_set", TF([TC("Array", [a]), t_int(), a], t_unit())),
+    ("array_length", TF([TC("Array", [a])], t_int())),
   ]
 }
 
@@ -1691,7 +1724,7 @@ fn typecheck(prelude_decls, user_decls) {
   let (bvals, st1) = fold(builtin_signatures(a), (Tip, st0), |acc, p| match (acc, p) {
     ((m, s), (name, t)) -> { let (_, s2) = new_binding_id(s); (m_set(m, name, BB(name, t)), s2) },
   });
-  let btypes = m_of_list(map(["Int", "Bool", "String", "Unit"], |n| (n, TInfo(n, n, [], [], []))));
+  let btypes = m_of_list([("Array", TInfo("Array", "Array", ["a"], [], [])), ..map(["Int", "Bool", "String", "Unit"], |n| (n, TInfo(n, n, [], [], [])))]);
   let g0 = G(GScope(bvals, btypes, Tip), GScope(Tip, Tip, Tip), GScope(Tip, Tip, Tip), Tip);
   let (g1, st2) = declare_types(g0, prelude_decls, "prelude", "prelude", st1);
   let (g2, st3) = declare_types(g1, user_decls, "user", "user", st2);
@@ -2649,9 +2682,11 @@ fn wm_encode(m) {
 // equality/ordering and string primitives, emitted as wasm instructions.
 // Instruction for instruction identical to the reference.
 
+fn tag_array() { 253 }
 fn tag_closure() { 254 }
 fn tag_string() { 255 }
 fn max_string() { 8388607 }
+fn max_array() { 8388607 }
 fn header(kind, size) { size * 512 + kind * 2 + 1 }
 
 fn kind_of(ptr) { code([ptr, ld(0), ic(1), op("i32.shr_u"), ic(255), op("i32.and")]) }
@@ -2800,6 +2835,8 @@ fn add_runtime(m0, stack_base, scratch_end, empty_string, char_table, gc_stress)
     lget("$ka"), ic(tag_string()), op("i32.eq"), if_(false, ret(code([lget("$a"), lget("$b"), icall("$rt:str_cmp")])), None),
     kind_of(lget("$b")), ltee("$kb"), lget("$ka"), op("i32.ne"),
     if_(false, ret(code([lget("$ka"), lget("$kb"), op("i32.lt_s"), if_(true, ic(-1), Some(ic(1)))])), None),
+    len_of(lget("$a")), len_of(lget("$b")), op("i32.ne"),
+    if_(false, ret(code([len_of(lget("$a")), len_of(lget("$b")), op("i32.lt_u"), if_(true, ic(-1), Some(ic(1)))])), None),
     len_of(lget("$a")), ltee("$n"), op("i32.eqz"), if_(false, ret(ic(0)), None),
     ic(0), lset("$i"),
     loop_("fields", code([lget("$i"), lget("$n"), ic(1), op("i32.sub"), op("i32.ge_s")]), code([
@@ -2893,12 +2930,33 @@ fn add_runtime(m0, stack_base, scratch_end, empty_string, char_table, gc_stress)
   let m20 = fnd(m19, "$rt:print", ["$s"], 1, [], code([lget("$s"), ic(0), icall("$host:print"), ic(1)]));
   let m21 = fnd(m20, "$rt:println", ["$s"], 1, [], code([lget("$s"), ic(1), icall("$host:print"), ic(1)]));
   let m22 = fnd(m21, "$rt:panic", ["$s"], 1, [], code([ic(3), lget("$s"), icall("$host:error"), op("unreachable")]));
-  fnd(m22, "$rt:read_input", [], 1, ["$n", "$p"], code([
+  let m23 = fnd(m22, "$rt:read_input", [], 1, ["$n", "$p"], code([
     icall("$host:input_len"), ltee("$n"), ic(max_string()), op("i32.gt_u"), if_(false, trap(9), None),
     new_string("$n"),
     lget("$p"), ic(4), op("i32.add"), icall("$host:input_copy"),
     lget("$p"),
-  ]))
+  ]));
+
+  // Arrays: heap blocks of kind tag_array() whose fields are the elements.
+  let check_index = code([lget("$i"), ic(1), op("i32.shr_s"), ltee("$i"), len_of(lget("$a")), op("i32.ge_u"), if_(false, trap(4), None)]);
+  let element = code([lget("$a"), lget("$i"), ic(2), op("i32.shl"), op("i32.add")]);
+  let m24 = fnd(m23, "$rt:array_make", ["$n", "$x"], 1, ["$len", "$p", "$i", "$fp"], code([
+    lget("$n"), ic(1), op("i32.shr_s"), ltee("$len"), ic(0), op("i32.lt_s"), if_(false, trap(4), None),
+    lget("$len"), ic(max_array()), op("i32.gt_s"), if_(false, trap(6), None),
+    push_roots(["$x"]),
+    lget("$len"), ic(2), op("i32.shl"), ic(4), op("i32.add"), icall("$rt:alloc"), lset("$p"),
+    pop_roots(["$x"]),
+    lget("$p"), lget("$len"), ic(9), op("i32.shl"), ic(tag_array() * 2 + 1), op("i32.or"), st(0),
+    ic(0), lset("$i"),
+    loop_("fill", code([lget("$i"), lget("$len"), op("i32.ge_s")]), code([
+      lget("$p"), lget("$i"), ic(2), op("i32.shl"), op("i32.add"), lget("$x"), st(4),
+      lget("$i"), ic(1), op("i32.add"), lset("$i"),
+    ])),
+    lget("$p"),
+  ]));
+  let m25 = fnd(m24, "$rt:array_get", ["$a", "$i"], 1, [], code([check_index, element, ld(4)]));
+  let m26 = fnd(m25, "$rt:array_set", ["$a", "$i", "$x"], 1, [], code([check_index, element, lget("$x"), st(4), ic(1)]));
+  fnd(m26, "$rt:array_length", ["$a"], 1, [], code([len_of(lget("$a")), to_bool_ins()]))
 }
 
 fn builtin_runtime(name) { "$rt:" ++ name }

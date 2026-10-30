@@ -16,7 +16,7 @@
 
 import { LumenRuntimeError, LumenError } from './diagnostics.js';
 import { decodeBytes } from './lexer.js';
-import { MAX_STRING } from './runtime.js';
+import { MAX_STRING, MAX_ARRAY } from './runtime.js';
 
 export const wrap31 = (x) => (x << 1) >> 1;
 
@@ -63,6 +63,7 @@ export function compareValues(a, b) {
     if (!(a instanceof Block)) return fail('cannot compare functions');
     if (a.tag !== b.tag) return a.tag < b.tag ? -1 : 1;
     const n = a.fields.length;
+    if (n !== b.fields.length) return n < b.fields.length ? -1 : 1; // arrays: shorter first
     if (n === 0) return 0;
     for (let i = 0; i < n - 1; i++) {
       const c = compareValues(a.fields[i], b.fields[i]);
@@ -93,6 +94,15 @@ export function interpret(checked, { maxSteps = Infinity, input = '' } = {}) {
     char_from_code: (c) => String.fromCharCode(c & 255),
     panic: (s) => fail(`panic: ${decodeBytes(s)}`),
     read_input: () => (input.length > MAX_STRING ? fail('string too long') : input),
+    // Arrays are Blocks too (tag 'array'), so equality and ordering treat them structurally.
+    array_make: (n, x) => (n < 0 ? fail('index out of bounds') : n > MAX_ARRAY ? fail('out of memory') : new Block('array', Array(n).fill(x))),
+    array_get: (a, i) => (i >= 0 && i < a.fields.length ? a.fields[i] : fail('index out of bounds')),
+    array_set: (a, i, x) => {
+      if (!(i >= 0 && i < a.fields.length)) fail('index out of bounds');
+      a.fields[i] = x;
+      return UNIT;
+    },
+    array_length: (a) => a.fields.length,
   };
   const builtinValues = new Map(Object.entries(builtins).map(([k, f]) => [k, new Builtin(k, f)]));
 

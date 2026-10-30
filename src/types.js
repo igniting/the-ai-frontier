@@ -105,6 +105,26 @@ export function generalize(t, level) {
   }
 }
 
+// Keeps a type's variables from being generalized beyond `level` (for a
+// `let` whose right-hand side is not a syntactic value).
+export function pinLevels(t, level) {
+  t = prune(t);
+  switch (t.k) {
+    case 'var':
+      if (t.level > level && t.level !== GENERIC) t.level = level;
+      return;
+    case 'con':
+      t.args.forEach((a) => pinLevels(a, level));
+      return;
+    case 'fun':
+      t.params.forEach((p) => pinLevels(p, level));
+      pinLevels(t.ret, level);
+      return;
+    case 'tuple':
+      t.elems.forEach((x) => pinLevels(x, level));
+  }
+}
+
 export function instantiate(t, level, subst = new Map()) {
   t = prune(t);
   switch (t.k) {

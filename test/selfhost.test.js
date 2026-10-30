@@ -46,6 +46,9 @@ test('lumenc reports the same compile errors as the reference', () => {
     main('match Some(1) { Some(_) -> 1 }'), main('match [1] { [] -> 0, [x] -> x }'), main('match 3 { 0 -> 0, 1 -> 1 }'),
     main('match Some(1) { Some(x) if x > 0 -> 1, None -> 0 }'), main('let Some(x) = Some(1);'),
     main('match (Some(1), [2]) { (None, _) -> 0, (Some(_), []) -> 1 }'), 'fn f() { 1 }', main('let = 3;'),
+    // arrays, and the value restriction that keeps them sound
+    main('let a = array_make(1, []); array_set(a, 0, [1]); match array_get(a, 0) { [s] -> println(s), _ -> () }'),
+    main('array_get(array_make(2, 0), "x")'), main('let a: Array<Int, Int> = array_make(1, 0);'), 'type Array { A }\nfn main() { () }',
   ];
   for (const text of cases) {
     const ref = compile(text);

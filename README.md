@@ -343,8 +343,9 @@ node challenge/score.js -- node /path/to/their/cli.js
 
 ## Limitations
 
-Lumen is deliberately small. It has no floating point, no mutation, no
-arrays, no modules, and no type classes; ordering is structural, and
+Lumen is deliberately small. It has no floating point, no modules, and no
+type classes, and its only mutable values are arrays (added so that Lumen
+could run a SAT solver); ordering is structural, and
 comparing functions is a runtime error. Integers are 31 bits and strings are
 bytes. Recursion within a group of mutually recursive functions is
 monomorphic. The collector is a simple two-space copier, not a generational

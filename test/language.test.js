@@ -195,3 +195,60 @@ test('strings longer than 2^23 - 1 bytes are a runtime error, in the interpreter
   assert.equal(r.output, '4194304\n');
   assert.equal(r.error, 'string too long');
 });
+
+describe('arrays', () => {
+  test('make, get, set, length; mutation is visible through every reference', () => {
+    assert.equal(output(`
+      fn fill(a, i) { if i == array_length(a) { a } else { array_set(a, i, i * i); fill(a, i + 1) } }
+      fn main() {
+        let a = fill(array_make(5, 0), 0);
+        let b = a;
+        array_set(b, 0, 99);
+        println(int_to_string(array_get(a, 0)) ++ " " ++ int_to_string(array_get(a, 4)) ++ " " ++ int_to_string(array_length(a)));
+        let rows = array_make(2, array_make(2, 0));
+        array_set(array_get(rows, 0), 1, 7);
+        println(int_to_string(array_get(array_get(rows, 1), 1)));
+      }
+    `), '99 16 5\n7\n');
+  });
+
+  test('arrays of heap values survive collections, including values stored after allocation', () => {
+    // GC stress (a collection on every allocation) moves every object many times.
+    assert.equal(output(`
+      fn go(a, i) {
+        if i == array_length(a) { () }
+        else { array_set(a, i, int_to_string(i) ++ "!"); go(a, i + 1) }
+      }
+      fn main() {
+        let a = array_make(50, "");
+        go(a, 0);
+        let parts = array_make(3, [Some(1)]);
+        array_set(parts, 2, [None, Some(3)]);
+        println(array_get(a, 0) ++ array_get(a, 49) ++ " " ++ int_to_string(length(array_get(parts, 2))));
+      }
+    `), '0!49! 2\n');
+  });
+
+  test('ordering is by length, then element by element; equality is structural', () => {
+    assert.equal(output(`
+      fn show(b) { if b { "t" } else { "f" } }
+      fn main() {
+        let a = array_make(2, 1);
+        println(show(a == array_make(2, 1)) ++ show(a < array_make(3, 0)) ++ show(array_make(2, 0) < a) ++ show(a != array_make(1, 1)));
+      }
+    `), 'tttt\n');
+  });
+
+  test('index and size errors are runtime errors', () => {
+    assert.equal(run('fn main() { println(int_to_string(array_get(array_make(3, 0), 3))) }').error, 'index out of bounds');
+    assert.equal(run('fn main() { array_set(array_make(3, 0), -1, 5) }').error, 'index out of bounds');
+    assert.equal(run('fn main() { let a = array_make(-1, 0); () }').error, 'index out of bounds');
+    assert.equal(run('fn main() { let a = array_make(8388608, 0); () }', { stress: false }).error, 'out of memory');
+  });
+
+  test('the value restriction keeps mutable arrays sound', () => {
+    assert.match(compileError('fn main() { let a = array_make(1, []); array_set(a, 0, [1]); match array_get(a, 0) { [s] -> println(s), _ -> () } }'), /expected String, found Int/);
+    // Syntactic values are still polymorphic.
+    assert.equal(output('fn main() { let id = |x| x; let e = []; println(id("ok") ++ int_to_string(id(length(e)) + length([1, ..e]))) }'), 'ok1\n');
+  });
+});

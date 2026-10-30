@@ -131,6 +131,24 @@ export const MUTANTS = [
     replace: "lg('$la'), lg('$lb'), o('i32.lt_u'), lg('$la'), lg('$lb'), o('i32.gt_u'), o('i32.sub'),",
   },
   {
+    name: 'array_get skips the bounds check',
+    file: 'runtime.js',
+    find: "fn('$rt:array_get', ['$a', '$i'], ['i32'], [], [checkIndex, element, ld(4)]);",
+    replace: "fn('$rt:array_get', ['$a', '$i'], ['i32'], [], [lg('$i'), c(1), o('i32.shr_s'), ls('$i'), element, ld(4)]);",
+  },
+  {
+    name: 'array_make forgets to root its fill value before allocating',
+    file: 'runtime.js',
+    find: "    pushRoots('$x'),\n    lg('$len'), c(2), o('i32.shl'), c(4), o('i32.add'), call('$rt:alloc'), ls('$p'),\n    popRoots('$x'),",
+    replace: "    lg('$len'), c(2), o('i32.shl'), c(4), o('i32.add'), call('$rt:alloc'), ls('$p'),",
+  },
+  {
+    name: 'ordering ignores the length of arrays',
+    file: 'runtime.js',
+    find: "    lenOf(lg('$a')), lenOf(lg('$b')), o('i32.ne'),\n    if_(null, ret(lenOf(lg('$a')), lenOf(lg('$b')), o('i32.lt_u'), if_('i32', c(-1), c(1)))),\n",
+    replace: '',
+  },
+  {
     name: '-O: a superoptimizer rule is off by one (x >>> 1 == 0 rewritten to x <u 1)',
     file: 'rules.js',
     find: '"rhs":[["i32.const",1],["i32.le_u"]]',

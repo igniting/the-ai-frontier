@@ -220,7 +220,7 @@ export function generateProgram(seed, { size = 1 } = {}) {
     // ---------------------------------------------------- type-specific
     switch (t) {
       case 'Int': {
-        const k = R.int(0, 15);
+        const k = R.int(0, 17);
         const a = () => gen('Int', env, d - 1);
         if (k <= 4) return `(${a()} ${R.pick(['+', '-', '*', '+', '-'])} ${a()})`;
         if (k === 5) return R.chance(0.15) ? `(${a()} ${R.pick(['/', '%'])} ${a()})` : `(${a()} ${R.pick(['/', '%'])} ${safeDivisor(env, d - 1)})`;
@@ -238,13 +238,31 @@ export function generateProgram(seed, { size = 1 } = {}) {
             : `char_code_at(${gen('String', env, d - 1)}, ${a()})`;
         }
         if (k === 14) return `match ${gen('Pair', env, d - 1)} { (${fresh()}, _) -> ${'v' + (counter - 1)} }`;
+        if (k === 16) {
+          // An array of some element type: made, updated, read (indices occasionally out of range).
+          const arr = fresh('arr'), n = R.chance(0.03) ? 0 : R.int(1, 4);
+          const at = () => (R.chance(0.985) ? R.int(0, Math.max(0, n - 1)) : R.int(-1, n + 1));
+          const et = R.pick(['Int', 'String', 'List', 'Shape']);
+          const read = { Int: (x) => x, String: (x) => `string_length(${x})`, List: (x) => `length(${x})`, Shape: (x) => `string_length(show_shape(${x}))` }[et];
+          return `{ let ${arr} = array_make(${n}, ${gen(et, env, d - 1)}); array_set(${arr}, ${at()}, ${gen(et, env, d - 1)}); ${read(`array_get(${arr}, ${at()})`)} + array_length(${arr}) }`;
+        }
+        if (k === 17) {
+          // A local recursive function fills an array it captures, so later reads see the writes.
+          const arr = fresh('arr'), fill = fresh('fill'), i = fresh('i'), n = R.int(1, 6);
+          const elem = gen('Int', [...env, { name: i, type: 'Int' }], d - 1);
+          return `{ let ${arr} = array_make(${n}, ${a()}); fn ${fill}(${i}) { if ${i} < ${n} { array_set(${arr}, ${i}, ${elem}); ${fill}(${i} + 1) } else { () } } ${fill}(${R.int(0, n)}); array_get(${arr}, ${R.int(0, n - 1)}) }`;
+        }
         return `abs(${a()})`;
       }
       case 'Bool': {
         const k = R.int(0, 7);
         if (k <= 2) {
           // Comparing functions is a runtime error; exercise that path occasionally.
-          const ct = R.chance(0.01) ? 'Fn' : R.pick(['Int', 'Int', 'String', 'List', 'Opt', 'Pair', 'Shape', 'Bool']);
+          const ct = R.chance(0.01) ? 'Fn' : R.pick(['Int', 'Int', 'String', 'List', 'Opt', 'Pair', 'Shape', 'Bool', 'Array']);
+          if (ct === 'Array') {
+            const arr = () => `array_make(${R.int(0, 3)}, ${gen('Int', env, d - 2)})`;
+            return `(${arr()} ${R.pick(['==', '!=', '<', '<=', '>', '>='])} ${arr()})`;
+          }
           return `(${gen(ct, env, d - 1)} ${R.pick(['==', '!=', '<', '<=', '>', '>='])} ${gen(ct, env, d - 1)})`;
         }
         if (k === 3) return `(${gen('Bool', env, d - 1)} ${R.pick(['&&', '||'])} ${gen('Bool', env, d - 1)})`;

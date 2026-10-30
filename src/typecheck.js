@@ -11,7 +11,7 @@
 import { LumenError } from './diagnostics.js';
 import {
   GENERIC, newVar, tcon, tfun, ttuple, prune, unify, generalize, instantiate,
-  UnifyError, TypePrinter, INT, BOOL, STRING, UNIT,
+  UnifyError, TypePrinter, INT, BOOL, STRING, UNIT, pinLevels,
 } from './types.js';
 import { checkMatch, checkIrrefutable } from './exhaustive.js';
 
@@ -27,10 +27,27 @@ export const BUILTIN_SIGNATURES = (() => {
     char_from_code: tfun([INT], STRING),
     panic: tfun([STRING], a),
     read_input: tfun([], STRING),
+    array_make: tfun([INT, a], tcon('Array', [a])),
+    array_get: tfun([tcon('Array', [a]), INT], a),
+    array_set: tfun([tcon('Array', [a]), INT, a], UNIT),
+    array_length: tfun([tcon('Array', [a])], INT),
   };
 })();
 
-const BUILTIN_TYPES = ['Int', 'Bool', 'String', 'Unit'];
+// Built-in types and their type parameters.
+const BUILTIN_TYPES = { Int: [], Bool: [], String: [], Unit: [], Array: ['a'] };
+
+// A syntactic value: evaluating it cannot create an array (no calls, no blocks).
+function isValue(e) {
+  switch (e.k) {
+    case 'int': case 'str': case 'bool': case 'unit': case 'var': case 'lambda': return true;
+    case 'ctor': return (e.args ?? []).every(isValue);
+    case 'tuple': return e.elems.every(isValue);
+    case 'binop': return isValue(e.l) && isValue(e.r);
+    case 'unop': return isValue(e.e);
+    default: return false;
+  }
+}
 const MAX_CTORS = 240; // constructor tags must fit in the 8-bit heap header field
 
 function editDistance(a, b) {
@@ -89,7 +106,7 @@ export function typecheck(preludeAst, userAst) {
 
   // -------------------------------------------------------------- scopes --
   const builtinScope = new Scope(null, 'builtin');
-  for (const name of BUILTIN_TYPES) builtinScope.types.set(name, { name, params: [], builtin: true });
+  for (const [name, params] of Object.entries(BUILTIN_TYPES)) builtinScope.types.set(name, { name, params, builtin: true });
   for (const [name, type] of Object.entries(BUILTIN_SIGNATURES)) {
     builtinScope.values.set(name, { id: bindingIds++, name, kind: 'builtin', type });
   }
@@ -151,7 +168,7 @@ export function typecheck(preludeAst, userAst) {
   // ---------------------------------------------------------- declarations --
   function declareTypes(decls, scope, suffix) {
     for (const d of decls.filter((d) => d.k === 'type')) {
-      if (BUILTIN_TYPES.includes(d.name)) fail(`cannot redefine built-in type \`${d.name}\``, d.nameSpan);
+      if (Object.hasOwn(BUILTIN_TYPES, d.name)) fail(`cannot redefine built-in type \`${d.name}\``, d.nameSpan);
       if (scope.types.has(d.name)) fail(`type \`${d.name}\` is defined twice`, d.nameSpan);
       if (d.ctors.length > MAX_CTORS) fail(`type \`${d.name}\` has too many constructors (max ${MAX_CTORS})`, d.nameSpan);
       const internal = typeInfos.has(d.name) ? `${d.name}#${suffix}` : d.name;
@@ -491,7 +508,10 @@ export function typecheck(preludeAst, userAst) {
             const next = new Scope(cur);
             inferPattern(s.pat, t, next, new Set());
             level--;
-            for (const b of next.values.values()) generalize(b.type, level);
+            // The value restriction: arrays are mutable, so only a syntactic
+            // value may be polymorphic (`let a = array_make(1, [])` must not be).
+            const general = isValue(s.e);
+            for (const b of next.values.values()) (general ? generalize : pinLevels)(b.type, level);
             lets.push(s);
             cur = next;
           } else if (s.k === 'fn') {

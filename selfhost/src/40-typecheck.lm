@@ -148,7 +148,20 @@ fn convert_types(g, kind, st, tvars, allow_fresh, lvl, tes) {
 }
 
 // ------------------------------------------------------------ declarations --
-fn is_builtin_type(name) { name == "Int" || name == "Bool" || name == "String" || name == "Unit" }
+// A syntactic value: evaluating it cannot create an array (no calls, no blocks).
+fn is_value(e) {
+  match e {
+    EInt(_, _) -> true, EStr(_, _) -> true, EBool(_, _) -> true, EUnit(_) -> true, EVar(_, _) -> true, ELam(_, _, _, _) -> true,
+    ECtor(_, Some(args), _, _, _, _) -> all(args, is_value),
+    ECtor(_, None, _, _, _, _) -> true,
+    ETuple(xs, _) -> all(xs, is_value),
+    EBin(_, l, r, _) -> is_value(l) && is_value(r),
+    EUn(_, x, _) -> is_value(x),
+    _ -> false,
+  }
+}
+
+fn is_builtin_type(name) { name == "Int" || name == "Bool" || name == "String" || name == "Unit" || name == "Array" }
 
 fn declare_types(g, decls, kind, suffix, st) {
   let tdecls = filter(decls, |d| match d { DType(_, _, _, _, _) -> true, _ -> false });
@@ -575,7 +588,9 @@ fn infer(g, env, lvl, st, e) {
             None -> s1,
           };
           let (q, en2, _, bs, s3) = infer_pattern(g, env_kind(en), lvl + 1, s2, en, Tip, p, xt);
-          let s4 = fold(bs, s3, |s, b| match b { BL(_, _, t) -> generalize(s, t, lvl), _ -> s });
+          // The value restriction: arrays are mutable, so only a syntactic value may be polymorphic.
+          let general = is_value(x);
+          let s4 = fold(bs, s3, |s, b| match b { BL(_, _, t) -> if general { generalize(s, t, lvl) } else { pin_levels(s, t, lvl) }, _ -> s });
           ([XSLet(q, x2, pat_span(p)), ..out], en2, s4)
         },
         ((out, en, s0), SFn(FnD(name, nsp, ps, ret, body, _))) -> {
@@ -613,6 +628,10 @@ fn builtin_signatures(a) {
     ("char_from_code", TF([t_int()], t_string())),
     ("panic", TF([t_string()], a)),
     ("read_input", TF([], t_string())),
+    ("array_make", TF([t_int(), a], TC("Array", [a]))),
+    ("array_get", TF([TC("Array", [a]), t_int()], a)),
+    ("array_set", TF([TC("Array", [a]), t_int(), a], t_unit())),
+    ("array_length", TF([TC("Array", [a])], t_int())),
   ]
 }
 
@@ -628,7 +647,7 @@ fn typecheck(prelude_decls, user_decls) {
   let (bvals, st1) = fold(builtin_signatures(a), (Tip, st0), |acc, p| match (acc, p) {
     ((m, s), (name, t)) -> { let (_, s2) = new_binding_id(s); (m_set(m, name, BB(name, t)), s2) },
   });
-  let btypes = m_of_list(map(["Int", "Bool", "String", "Unit"], |n| (n, TInfo(n, n, [], [], []))));
+  let btypes = m_of_list([("Array", TInfo("Array", "Array", ["a"], [], [])), ..map(["Int", "Bool", "String", "Unit"], |n| (n, TInfo(n, n, [], [], [])))]);
   let g0 = G(GScope(bvals, btypes, Tip), GScope(Tip, Tip, Tip), GScope(Tip, Tip, Tip), Tip);
   let (g1, st2) = declare_types(g0, prelude_decls, "prelude", "prelude", st1);
   let (g2, st3) = declare_types(g1, user_decls, "user", "user", st2);
