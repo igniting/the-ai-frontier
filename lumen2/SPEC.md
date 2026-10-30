@@ -467,8 +467,9 @@ the compiler checks them, and so does the test suite.
     checked by a RUP checker that shares no code with the SAT solver;
   - the WebAssembly engine validates the module.
 
-  `lumen2 certify` reports these checks and writes the proofs as DIMACS
-  and DRUP files that external checkers such as drat-trim can verify.
+  `lumen2 certify` reports these checks and writes the proofs in the
+  standard DIMACS and DRUP formats, which external checkers such as
+  drat-trim read.
 
 ## 12. Conformance
 

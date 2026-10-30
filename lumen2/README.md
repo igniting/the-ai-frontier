@@ -123,7 +123,9 @@ wide enough that no sum overflows. A CDCL SAT solver written for this
 project refutes the formula's negation and writes a DRUP proof. A separate
 RUP checker, which shares no code with the solver, checks the proof before
 the operation is treated as safe. `lumen2 certify --out DIR` writes every
-formula and proof as DIMACS and DRUP files, which drat-trim can also check.
+formula and proof in the standard DIMACS and DRUP formats that external
+checkers such as drat-trim read (this repository's tests use its own
+checker; drat-trim was not run).
 The prelude uses refinements too: `array_to_list` is pure because a
 refinement on its loop index proves every access in bounds.
 

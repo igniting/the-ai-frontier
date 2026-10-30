@@ -107,7 +107,7 @@ function main() {
         writeFileSync(join(out, 'proofs', 'MANIFEST'), `${manifest.join('\n')}\n`);
         writeFileSync(join(out, 'ir.txt'), r.ir.fns.map((f) => showIR(f)).join('\n\n') + '\n');
         writeFileSync(join(out, 'program.wasm'), r.bytes);
-        console.log(`wrote ${out}/proofs (DIMACS + DRUP, checkable with drat-trim), ${out}/ir.txt and ${out}/program.wasm`);
+        console.log(`wrote ${out}/proofs (DIMACS + DRUP), ${out}/ir.txt and ${out}/program.wasm`);
       }
       return 0;
     }
