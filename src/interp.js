@@ -16,6 +16,7 @@
 
 import { LumenRuntimeError, LumenError } from './diagnostics.js';
 import { decodeBytes } from './lexer.js';
+import { MAX_STRING } from './runtime.js';
 
 export const wrap31 = (x) => (x << 1) >> 1;
 
@@ -91,7 +92,7 @@ export function interpret(checked, { maxSteps = Infinity, input = '' } = {}) {
     char_code_at: (s, i) => (i >= 0 && i < s.length ? s.charCodeAt(i) : fail('index out of bounds')),
     char_from_code: (c) => String.fromCharCode(c & 255),
     panic: (s) => fail(`panic: ${decodeBytes(s)}`),
-    read_input: () => input,
+    read_input: () => (input.length > MAX_STRING ? fail('string too long') : input),
   };
   const builtinValues = new Map(Object.entries(builtins).map(([k, f]) => [k, new Builtin(k, f)]));
 
@@ -180,7 +181,7 @@ export function interpret(checked, { maxSteps = Infinity, input = '' } = {}) {
         const a = evaluate(e.l, env, false);
         const b = evaluate(e.r, env, false);
         switch (op) {
-          case '++': return a + b;
+          case '++': return a.length + b.length > MAX_STRING ? fail('string too long') : a + b;
           case '==': return compareValues(a, b) === 0;
           case '!=': return compareValues(a, b) !== 0;
           case '<': return compareValues(a, b) < 0;

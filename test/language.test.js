@@ -186,3 +186,12 @@ describe('exhaustiveness', () => {
     assert.equal(output(main('println(match "b" { "a" -> "A", s -> s ++ "!" });')), 'b!\n');
   });
 });
+
+test('strings longer than 2^23 - 1 bytes are a runtime error, in the interpreter too', () => {
+  const r = run(`
+    fn grow(s, n) { if n == 0 { s } else { grow(s ++ s, n - 1) } }
+    fn main() { println(int_to_string(string_length(grow("ab", 21)))); println(int_to_string(string_length(grow("ab", 22)))); }
+  `, { stress: false });
+  assert.equal(r.output, '4194304\n');
+  assert.equal(r.error, 'string too long');
+});

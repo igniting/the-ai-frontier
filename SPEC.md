@@ -139,7 +139,9 @@ never match produce a warning.
   two functions are the same; `(1, f) == (2, f)` is `false` with no error.
 - **Tail calls** do not grow the stack, including calls through closures and
   mutual recursion. Deep non-tail recursion may fail with `stack overflow`.
-- Strings are immutable; `++` concatenates bytes.
+- Strings are immutable; `++` concatenates bytes. A string holds at most
+  2^23 − 1 bytes: a `++` (or `read_input()`) that would produce a longer one
+  is the runtime error `string too long`.
 
 ## Built-in functions
 
@@ -174,7 +176,7 @@ A runtime error stops the program. Output written before the error is kept.
 The messages are exactly:
 
 `division by zero` · `cannot compare functions` · `index out of bounds` ·
-`panic: <message>` · `stack overflow` · `out of memory`
+`panic: <message>` · `string too long` · `stack overflow` · `out of memory`
 
 The reference CLI (`node bin/lumen.js run file.lm`) writes program output to
 standard output. On a runtime error it writes `runtime error: <message>` to
