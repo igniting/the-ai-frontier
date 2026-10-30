@@ -161,8 +161,8 @@ ok      sort_is_sorted (100 cases; compiled code agrees)
 ok      sort_keeps_length (100 cases; compiled code agrees)
 ok      tree_stays_sorted (100 cases; compiled code agrees)
 ok      join_length (100 cases; compiled code agrees)
-FAILED  insert_keeps_order: returned false on case 15; compiled code agrees
-        counterexample, shrunk in 57 steps: t = Node(Node(Leaf, 0, Leaf), -1, Leaf)
+FAILED  insert_keeps_order: returned false on case 16; compiled code agrees
+        counterexample, shrunk in 8 steps: t = Node(Leaf, 0, Node(Leaf, -1, Leaf))
 FAILED  average_exists: stopped with division by zero on case 1; compiled code agrees
         counterexample, shrunk in 0 steps: xs = []
 ```
