@@ -1,0 +1,56 @@
+// Allocation-heavy list code: merge sort and the prelude's sort on
+// pseudo-random data, checked against each other.
+
+fn lcg(seed) { (seed * 75 + 74) % 65537 }
+
+fn randoms(n, seed) {
+  fn go(i, s, acc) { if i == 0 { acc } else { go(i - 1, lcg(s), [s, ..acc]) } }
+  go(n, seed, [])
+}
+
+fn split(xs) {
+  fn go(xs, l, r) {
+    match xs {
+      [] -> (l, r),
+      [x] -> ([x, ..l], r),
+      [a, b, ..rest] -> go(rest, [a, ..l], [b, ..r]),
+    }
+  }
+  go(xs, [], [])
+}
+
+fn merge(a, b) {
+  fn go(a, b, acc) {
+    match (a, b) {
+      ([], _) -> rev_append(acc, b),
+      (_, []) -> rev_append(acc, a),
+      ([x, ..xs], [y, ..ys]) -> if x <= y { go(xs, b, [x, ..acc]) } else { go(a, ys, [y, ..acc]) },
+    }
+  }
+  go(a, b, [])
+}
+
+fn merge_sort(xs) {
+  match xs {
+    [] -> [],
+    [x] -> [x],
+    _ -> { let (l, r) = split(xs); merge(merge_sort(l), merge_sort(r)) },
+  }
+}
+
+fn sorted(xs) {
+  match xs {
+    [a, b, ..rest] -> a <= b && sorted([b, ..rest]),
+    _ -> true,
+  }
+}
+
+fn main() {
+  let xs = randoms(40000, 42);
+  let a = merge_sort(xs);
+  let b = sort(xs);
+  println("sorted: " ++ (if sorted(a) && a == b { "yes" } else { "no" }));
+  println("min " ++ int_to_string(head_or(a)) ++ ", max " ++ int_to_string(head_or(reverse(a))) ++ ", n " ++ int_to_string(length(a)));
+}
+
+fn head_or(xs) { match xs { [x, .._] -> x, [] -> 0 } }

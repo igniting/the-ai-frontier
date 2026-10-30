@@ -137,6 +137,12 @@ export const MUTANTS = [
     replace: '"rhs":[["i32.const",1],["i32.lt_u"]]',
   },
   {
+    name: '-O: temporary forwarding deletes a store whose local is read again later',
+    file: 'optimize.js',
+    find: 'if (uses.get(ins[1]) !== 2) out.push',
+    replace: 'if (uses.get(ins[1]) > 3) out.push',
+  },
+  {
     name: '-O: the constant folder swaps the operands of subtraction',
     file: 'peephole.js',
     find: "case 'i32.sub': return (a - b) | 0;",

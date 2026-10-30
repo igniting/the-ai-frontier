@@ -117,6 +117,7 @@ function finish(state, instance, run) {
       heapBytes: ex.from_end.value - ex.from_start.value,
       liveBytes: ex.hp.value - ex.from_start.value,
       memoryBytes: ex.memory.buffer.byteLength,
+      ...(ex.icount ? { instructions: Number(ex.icount.value) } : {}),
     },
   };
 }

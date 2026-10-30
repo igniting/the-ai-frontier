@@ -1,0 +1,14 @@
+// Call-heavy integer code: naive Fibonacci and Ackermann.
+
+fn fib(n) { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } }
+
+fn ack(m, n) {
+  if m == 0 { n + 1 }
+  else if n == 0 { ack(m - 1, 1) }
+  else { ack(m - 1, ack(m, n - 1)) }
+}
+
+fn main() {
+  println("fib(30) = " ++ int_to_string(fib(30)));
+  println("ack(2, 300) = " ++ int_to_string(ack(2, 300)));
+}

@@ -1,0 +1,238 @@
+[
+ {
+  "label": "0. starting point: -O = superoptimizer rules + constant folding",
+  "commit": "35a2d0a",
+  "results": {
+   "lumenc": {
+    "instructions": 3028876666,
+    "ms": 702.02,
+    "bytes": 278534
+   },
+   "fib": {
+    "instructions": 69812416,
+    "ms": 7.35,
+    "bytes": 3651
+   },
+   "sort": {
+    "instructions": 949998104,
+    "ms": 124.92,
+    "bytes": 8451
+   },
+   "strings": {
+    "instructions": 275749618,
+    "ms": 37.64,
+    "bytes": 7142
+   },
+   "gc_torture": {
+    "instructions": 1866115515,
+    "ms": 249.18,
+    "bytes": 6303
+   },
+   "red_black_tree": {
+    "instructions": 560799067,
+    "ms": 84.12,
+    "bytes": 10710
+   },
+   "tail_calls": {
+    "instructions": 796183202,
+    "ms": 85.31,
+    "bytes": 5294
+   },
+   "nqueens": {
+    "instructions": 309770359,
+    "ms": 47.79,
+    "bytes": 8196
+   },
+   "life": {
+    "instructions": 72190316,
+    "ms": 15.14,
+    "bytes": 10329
+   },
+   "mandelbrot": {
+    "instructions": 11137413,
+    "ms": 2.37,
+    "bytes": 6696
+   },
+   "huffman": {
+    "instructions": 1029310,
+    "ms": 0.53,
+    "bytes": 12138
+   }
+  },
+  "base": {
+   "lumenc": {
+    "instructions": 3104348933,
+    "ms": 795.38,
+    "bytes": 280769
+   },
+   "fib": {
+    "instructions": 75743500,
+    "ms": 7.57,
+    "bytes": 3669
+   },
+   "sort": {
+    "instructions": 975728419,
+    "ms": 116.05,
+    "bytes": 8545
+   },
+   "strings": {
+    "instructions": 279633925,
+    "ms": 38.69,
+    "bytes": 7184
+   },
+   "gc_torture": {
+    "instructions": 1886016845,
+    "ms": 247.5,
+    "bytes": 6352
+   },
+   "red_black_tree": {
+    "instructions": 578604750,
+    "ms": 97.9,
+    "bytes": 10818
+   },
+   "tail_calls": {
+    "instructions": 851699575,
+    "ms": 86.73,
+    "bytes": 5345
+   },
+   "nqueens": {
+    "instructions": 318967128,
+    "ms": 49.14,
+    "bytes": 8236
+   },
+   "life": {
+    "instructions": 73452932,
+    "ms": 11.28,
+    "bytes": 10359
+   },
+   "mandelbrot": {
+    "instructions": 11476510,
+    "ms": 1.42,
+    "bytes": 6750
+   },
+   "huffman": {
+    "instructions": 1080496,
+    "ms": 0.44,
+    "bytes": 12268
+   }
+  }
+ },
+ {
+  "label": "1. forward single-use temporaries (local.set/local.get pairs)",
+  "commit": "35a2d0a",
+  "results": {
+   "lumenc": {
+    "instructions": 2919742478,
+    "ms": 652.42,
+    "bytes": 271005
+   },
+   "fib": {
+    "instructions": 46085652,
+    "ms": 7.52,
+    "bytes": 3603
+   },
+   "sort": {
+    "instructions": 937992108,
+    "ms": 111.07,
+    "bytes": 8331
+   },
+   "strings": {
+    "instructions": 266068904,
+    "ms": 37.13,
+    "bytes": 7032
+   },
+   "gc_torture": {
+    "instructions": 1843880691,
+    "ms": 242.97,
+    "bytes": 6215
+   },
+   "red_black_tree": {
+    "instructions": 551019703,
+    "ms": 80.91,
+    "bytes": 10551
+   },
+   "tail_calls": {
+    "instructions": 683075680,
+    "ms": 80.18,
+    "bytes": 5160
+   },
+   "nqueens": {
+    "instructions": 278020568,
+    "ms": 48.34,
+    "bytes": 8040
+   },
+   "life": {
+    "instructions": 71141217,
+    "ms": 10.54,
+    "bytes": 10111
+   },
+   "mandelbrot": {
+    "instructions": 10139089,
+    "ms": 1.33,
+    "bytes": 6586
+   },
+   "huffman": {
+    "instructions": 1008522,
+    "ms": 0.25,
+    "bytes": 11974
+   }
+  },
+  "base": {
+   "lumenc": {
+    "instructions": 3104348933,
+    "ms": 636.32,
+    "bytes": 280769
+   },
+   "fib": {
+    "instructions": 75743500,
+    "ms": 7.24,
+    "bytes": 3669
+   },
+   "sort": {
+    "instructions": 975728419,
+    "ms": 112.25,
+    "bytes": 8545
+   },
+   "strings": {
+    "instructions": 279633925,
+    "ms": 59.85,
+    "bytes": 7184
+   },
+   "gc_torture": {
+    "instructions": 1886016845,
+    "ms": 242.12,
+    "bytes": 6352
+   },
+   "red_black_tree": {
+    "instructions": 578604750,
+    "ms": 82.06,
+    "bytes": 10818
+   },
+   "tail_calls": {
+    "instructions": 851699575,
+    "ms": 85.8,
+    "bytes": 5345
+   },
+   "nqueens": {
+    "instructions": 318967128,
+    "ms": 46.7,
+    "bytes": 8236
+   },
+   "life": {
+    "instructions": 73452932,
+    "ms": 10.39,
+    "bytes": 10359
+   },
+   "mandelbrot": {
+    "instructions": 11476510,
+    "ms": 1.24,
+    "bytes": 6750
+   },
+   "huffman": {
+    "instructions": 1080496,
+    "ms": 0.25,
+    "bytes": 12268
+   }
+  }
+ }
+]

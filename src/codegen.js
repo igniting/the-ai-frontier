@@ -18,8 +18,8 @@ import { reachableFunctions } from './lower.js';
 import {
   addRuntime, seq, c, lg, ls, lt, gg, gs, ld, st, call, header, TAG_CLOSURE, TAG_STRING, ERR, BUILTIN_RUNTIME,
 } from './runtime.js';
-import { optimizeModule } from './peephole.js';
-import { RULES } from './rules.js';
+import { optimize } from './optimize.js';
+import { instrumentModule } from './instrument.js';
 
 const o = (name) => [name];
 const align = (n, a) => Math.ceil(n / a) * a;
@@ -30,7 +30,8 @@ export const DEFAULTS = {
   maxMemoryPages: 32768, // 2 GiB
   gcStress: false,
   fuel: 0, // 0 = unlimited; otherwise max number of function calls
-  optimize: false, // -O: apply the superoptimizer's proved rewrite rules
+  optimize: false, // -O: the optimization pipeline of src/optimize.js
+  countInstructions: false, // export `icount`, the number of wasm instructions executed
 };
 
 export function codegen(ir, options = {}) {
@@ -363,7 +364,8 @@ export function codegen(ir, options = {}) {
   mod.addGlobal('$alloc_bytes', 'i64', true, 0, 'alloc_bytes');
   if (opts.fuel) mod.addGlobal('$fuel', 'i32', true, opts.fuel);
 
-  const peephole = opts.optimize ? optimizeModule(mod, RULES) : null;
+  const peephole = opts.optimize ? optimize(mod) : null;
   mod.prune();
+  if (opts.countInstructions) instrumentModule(mod);
   return { mod, layout, functionCount: funcs.length, peephole };
 }

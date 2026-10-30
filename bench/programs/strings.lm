@@ -1,0 +1,22 @@
+// String-heavy code: building, slicing and comparing strings.
+
+fn digits_reversed(n) {
+  let s = int_to_string(n);
+  fn go(i, acc) { if i < 0 { acc } else { go(i - 1, acc ++ substring(s, i, i + 1)) } }
+  go(string_length(s) - 1, "")
+}
+
+fn is_palindrome(n) { int_to_string(n) == digits_reversed(n) }
+
+fn count_palindromes(lo, hi, acc) {
+  if lo == hi { acc } else { count_palindromes(lo + 1, hi, if is_palindrome(lo) { acc + 1 } else { acc }) }
+}
+
+fn csv(n) { join(map(range(0, n), int_to_string), ",") }
+
+fn main() {
+  println("palindromes below 150000: " ++ int_to_string(count_palindromes(0, 150000, 0)));
+  let line = csv(3000);
+  println("csv length: " ++ int_to_string(string_length(line)));
+  println("fields: " ++ int_to_string(length(filter(chars(line), |c| c == ",")) + 1));
+}
