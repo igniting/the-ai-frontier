@@ -4,11 +4,13 @@
 import { check } from './check.js';
 import { interpret } from './interp.js';
 import { compileProgram, runWasm } from './codegen.js';
+import { testProperties, HARNESS } from './props.js';
+import { makeHost } from './host.js';
 import { LumenError, formatDiagnostic } from './diagnostics.js';
 
 export { formatDiagnostic };
 export { decodeBytes, utf8 } from './lexer.js';
-export { makeHost } from './host.js';
+export { makeHost };
 
 // Returns { ok, program, signatures, warnings } or { ok: false, errors }.
 // options.grants: the capabilities granted to `main`, or null for no restriction.
@@ -22,9 +24,12 @@ export function checkSource(source, options = {}) {
   }
 }
 
+const noMain = () => ({ ok: false, errors: [new LumenError('the program has no `main` function', { s: 0, e: 0 })] });
+
 export function interpretSource(source, options = {}) {
   const c = checkSource(source, options);
   if (!c.ok) return c;
+  if (!c.program.main) return noMain();
   return { ok: true, ...interpret(c.program, options), signatures: c.signatures };
 }
 
@@ -32,6 +37,7 @@ export function interpretSource(source, options = {}) {
 export function compileSource(source, options = {}) {
   const c = checkSource(source, options);
   if (!c.ok) return c;
+  if (!c.program.main) return noMain();
   return { ok: true, ...compileProgram(c.program, options), signatures: c.signatures };
 }
 
@@ -40,4 +46,16 @@ export function runSource(source, { input = '', paranoid = false, grants = null,
   const c = compileSource(source, { paranoid, grants });
   if (!c.ok) return c;
   return { ok: true, ...runWasm(c.bytes, { input, host }) };
+}
+
+// Tests every property: { ok, results } (see props.js) or { ok: false, errors }.
+export function testSource(source, { runs = 100, seed = 1 } = {}) {
+  const c = checkSource(source);
+  if (!c.ok) return c;
+  const compile = (harness) => {
+    const h = checkSource(harness, { entry: HARNESS });
+    if (!h.ok) return { output: '', error: `internal error: ${h.errors[0].message}` };
+    return runWasm(compileProgram(h.program).bytes, { host: makeHost({ seed }) });
+  };
+  return { ok: true, results: testProperties(c.program, source, { runs, seed, compile }) };
 }

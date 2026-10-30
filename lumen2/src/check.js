@@ -76,7 +76,9 @@ const EFFECT_WORDS = { input: 'read input', output: 'write output', clock: 'read
 
 // ------------------------------------------------------------------ check --
 // options.grants: the capabilities granted to `main` (null: no restriction).
-export function check(source, { grants = null } = {}) {
+// options.entry: the function a run starts from (`main` unless a test harness
+// says otherwise). A program made only of properties needs no entry.
+export function check(source, { grants = null, entry = 'main' } = {}) {
   const preludeAst = parse(PRELUDE);
   let userAst;
   userAst = parse(source);
@@ -283,7 +285,13 @@ export function check(source, { grants = null } = {}) {
     globals.prelude.set(f.name, f);
     allFns.push(f);
   }
-  for (const f of userAst.fns) {
+  // Properties are functions too (so a test harness can call them), but their
+  // parameters need concrete types, they may only fail, and they return Bool.
+  for (const f of userAst.properties) {
+    for (const p of f.params) if (!p.ann) throw new LumenError(`the parameters of property \`${f.name}\` need types, so that inputs can be generated`, p.span);
+    f.presetEff = row(['fail']);
+  }
+  for (const f of [...userAst.fns, ...userAst.properties]) {
     if (globals.user.has(f.name)) throw new LumenError(`function \`${f.name}\` is defined twice`, f.nameSpan);
     if (methods.user.has(f.name)) throw new LumenError(`\`${f.name}\` is already a method of trait \`${methods.user.get(f.name).trait}\``, f.nameSpan);
     f.key = globals.prelude.has(f.name) || f.name in builtins || methods.prelude.has(f.name) ? `${f.name}'` : f.name;
@@ -291,9 +299,10 @@ export function check(source, { grants = null } = {}) {
     globals.user.set(f.name, f);
     allFns.push(f);
   }
-  const main = globals.user.get('main');
-  if (!main) throw new LumenError('the program has no `main` function', { s: 0, e: 0 });
-  if (main.params.length) throw new LumenError('`main` takes no parameters', main.nameSpan);
+  const main = globals.user.get(entry) ?? null;
+  if (!main && !userAst.properties.length) throw new LumenError(`the program has no \`${entry}\` function`, { s: 0, e: 0 });
+  if (main?.property) throw new LumenError(`\`${entry}\` is a property, not a function to run`, main.nameSpan);
+  if (main?.params.length) throw new LumenError(`\`${entry}\` takes no parameters`, main.nameSpan);
 
   const resolveGlobal = (name, scope) => (scope === 'user' && globals.user.get(name)) || globals.prelude.get(name) || null;
 
@@ -585,7 +594,7 @@ export function check(source, { grants = null } = {}) {
   function fnType(f, ctx, owner) {
     const inner = { ...ctx, scope: { vars: new Map(), parent: ctx.scope }, owner };
     inner.eff = f.eff ? sigEffect(f.eff, ctx) : f.presetEff ?? row([], newRowVar(ctx.level));
-    if (f === main && grants && !f.eff) { inner.eff = row([...grants, 'fail']); inner.granted = true; }
+    if (f === main && main && grants && !f.eff) { inner.eff = row([...grants, 'fail']); inner.granted = true; }
     const params = f.params.map((p) => {
       const ty = p.ann ? sigType(p.ann, ctx) : newVar(ctx.level);
       p.id = bindLocal(inner, p.name, ty, p.span).id;
@@ -594,16 +603,17 @@ export function check(source, { grants = null } = {}) {
     });
     const body = infer(f.body, inner);
     if (f.ret) unifyAt(sigType(f.ret, ctx), body, f.body.result?.span ?? f.body.span, `\`${f.name}\` returns`);
+    if (f.property) unifyAt(BOOL, body, f.body.result?.span ?? f.body.span, 'a property must be true or false');
     return tfun(params, body, inner.eff);
   }
 
   for (const comp of sccs) {
     const level = 1;
     for (const f of comp) {
-      f.ctx = { level, tvars: new Map(), rvars: new Map(), scope: null, scopeName: f.scope, owner: `\`${f.name}\`` };
+      f.ctx = { level, tvars: new Map(), rvars: new Map(), scope: null, scopeName: f.scope, owner: f.property ? `property \`${f.name}\`` : `\`${f.name}\`` };
       f.ty = newVar(level);
     }
-    for (const f of comp) unifyAt(f.ty, fnType(f, f.ctx, `\`${f.name}\``), f.nameSpan);
+    for (const f of comp) unifyAt(f.ty, fnType(f, f.ctx, f.ctx.owner), f.nameSpan);
     for (const f of comp) { generalize(f.ty, 0); f.scheme = f.ty; }
   }
   // Impl methods, checked against their trait's signature with Self = the impl's type.
@@ -637,8 +647,18 @@ export function check(source, { grants = null } = {}) {
     }
   }
 
+  // Property inputs are generated, so their types must be concrete and contain no functions.
+  const concrete = (t) => {
+    t = prune(t);
+    if (t.k === 'var' || t.k === 'fun') return false;
+    return (t.k === 'tuple' ? t.elems : t.args).every(concrete);
+  };
+  for (const f of userAst.properties) {
+    for (const p of f.params) if (!concrete(p.ty)) throw new LumenError(`property inputs need concrete types without functions; \`${p.name}\` has type ${show(p.ty)}`, p.span);
+  }
+
   // An annotated `main` must not claim more than it was granted.
-  if (grants && main.eff) {
+  if (grants && main?.eff) {
     const extra = main.eff.labels.filter((l) => l !== 'fail' && !grants.includes(l));
     if (extra.length) throw new LumenError(`\`main\` is declared with \`${extra.join(', ')}\`, which was not granted`, main.nameSpan, `grant it when running the program, for example \`lumen2 run --allow ${extra.join(',')}\``);
   }
@@ -648,6 +668,7 @@ export function check(source, { grants = null } = {}) {
   const signatures = userAst.fns.map((f) => ({ name: f.name, type: printer(f), span: f.nameSpan }));
   return {
     adts, fns: allFns, main, builtins, signatures, warnings, impls, traits,
+    properties: userAst.properties.map((f) => ({ name: f.name, key: f.key, params: f.params.map((p) => ({ name: p.name, ty: p.ty })), span: f.nameSpan })),
     preludeFns: preludeAst.fns, userFns: userAst.fns,
   };
 }

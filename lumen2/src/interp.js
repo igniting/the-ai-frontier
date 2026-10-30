@@ -50,7 +50,8 @@ export function compare(a, b, userOrd = () => null) {
 }
 
 // options.host supplies the clock and random numbers (see host.js).
-export function interpret(program, { input = '', maxSteps = Infinity, maxDepth = 10000, host = makeHost() } = {}) {
+// options.entry ({ key, args }) calls a function other than main, such as a property.
+export function interpret(program, { input = '', maxSteps = Infinity, maxDepth = 10000, host = makeHost(), entry = null } = {}) {
   const fns = new Map(program.fns.map((f) => [f.key, f]));
   let out = '';
   let steps = 0;
@@ -274,13 +275,13 @@ export function interpret(program, { input = '', maxSteps = Infinity, maxDepth =
     }
   }
 
-  let error = null;
+  let error = null, value;
   try {
-    call({ t: 'glob', key: program.main.key }, []);
+    value = entry ? call({ t: 'glob', key: entry.key }, entry.args) : call({ t: 'glob', key: program.main.key }, []);
   } catch (e) {
     if (e instanceof LumenRuntimeError) error = e.message;
     else if (e instanceof RangeError) error = 'stack overflow';
     else throw e;
   }
-  return { output: out, error, steps };
+  return { output: out, error, steps, value };
 }

@@ -1,0 +1,27 @@
+// Properties: `lumen2 test examples/properties.lm` checks each one on
+// generated inputs and shrinks any failure to a small counterexample.
+
+type Tree { Leaf, Node(Tree, Int, Tree) }
+
+fn insert(t, x) {
+  match t {
+    Leaf -> Node(Leaf, x, Leaf),
+    Node(l, y, r) -> if x < y { Node(insert(l, x), y, r) } else if x > y { Node(l, y, insert(r, x)) } else { t },
+  }
+}
+fn to_list(t) { match t { Leaf -> [], Node(l, x, r) -> append(to_list(l), [x, ..to_list(r)]) } }
+fn sorted(xs) { match xs { [a, b, ..rest] -> a <= b && sorted([b, ..rest]), _ -> true } }
+
+property reverse_twice(xs: List<Int>) { reverse(reverse(xs)) == xs }
+property sort_is_sorted(xs: List<Int>) { sorted(sort(xs)) }
+property sort_keeps_length(xs: List<String>) { length(sort(xs)) == length(xs) }
+property tree_stays_sorted(xs: List<Int>, x: Int) { sorted(to_list(insert(fold(xs, Leaf, insert), x))) }
+property join_length(xs: List<String>) { string_length(join(xs, ",")) >= length(xs) - 1 }
+
+// The last two are false on purpose, to show what a failure looks like.
+// A tree built by hand need not be a search tree; the shrunk
+// counterexample is the smallest one that is not.
+property insert_keeps_order(t: Tree) { sorted(to_list(t)) }
+
+// And this one fails with a runtime error: the average of an empty list.
+property average_exists(xs: List<Int>) { sum(xs) / length(xs) <= sum(xs) }

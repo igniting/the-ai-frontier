@@ -42,7 +42,9 @@ function sleb(n, out) {
     out.push(b | 0x80);
   }
 }
-const str = (s, out) => { const b = new TextEncoder().encode(s); uleb(b.length, out); out.push(...b); };
+// Appends without spreading, which overflows the stack for large arrays.
+const append = (out, xs) => { for (const x of xs) out.push(x); };
+const str = (s, out) => { const b = new TextEncoder().encode(s); uleb(b.length, out); append(out, b); };
 const vec = (items, f, out) => { uleb(items.length, out); for (const it of items) f(it, out); };
 
 export class Module {
@@ -86,7 +88,7 @@ export class Module {
     this.funcs.forEach((f, i) => funcIdx.set(f.name, this.imports.length + i));
     const globalIdx = new Map(this.globals.map((g, i) => [g.name, i]));
     const out = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
-    const section = (id, f) => { const body = []; f(body); out.push(id); uleb(body.length, out); out.push(...body); };
+    const section = (id, f) => { const body = []; f(body); out.push(id); uleb(body.length, out); append(out, body); };
 
     section(1, (o) => vec(this.types, (t, o2) => {
       o2.push(0x60);
@@ -168,11 +170,11 @@ export class Module {
       }
       body.push(0x0b);
       uleb(body.length, o2);
-      o2.push(...body);
+      append(o2, body);
     }, o));
     section(11, (o) => vec(this.data, (d, o2) => {
       o2.push(0x00, 0x41); sleb(d.offset, o2); o2.push(0x0b);
-      uleb(d.bytes.length, o2); o2.push(...d.bytes);
+      uleb(d.bytes.length, o2); append(o2, d.bytes);
     }, o));
     return new Uint8Array(out);
   }

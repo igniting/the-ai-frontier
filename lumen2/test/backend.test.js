@@ -4,7 +4,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { interpretSource, compileSource, runSource, makeHost } from '../src/api.js';
+import { interpretSource, compileSource, runSource, testSource, makeHost } from '../src/api.js';
 import { runWasm } from '../src/codegen.js';
 import { generate, differential, MUTANTS } from './fuzz.js';
 
@@ -91,6 +91,27 @@ test('traits: impls are resolved at compile time, and user Ord reaches structura
   // join is linear: a long join neither overflows the stack nor takes quadratic time.
   const r = agree('fn main() { println(int_to_string(string_length(join(map(range(0, 20000), int_to_string), ",")))) }');
   assert.equal(r.output, '108889\n');
+});
+
+test('properties: generated inputs, shrunk counterexamples, compiled replay', () => {
+  const t = testSource(`
+    type Tree { Leaf, Node(Tree, Int, Tree) }
+    fn sorted(xs) { match xs { [a, b, ..rest] -> a <= b && sorted([b, ..rest]), _ -> true } }
+    fn to_list(t) { match t { Leaf -> [], Node(l, x, r) -> append(to_list(l), [x, ..to_list(r)]) } }
+    property reverse_twice(xs: List<Int>) { reverse(reverse(xs)) == xs }
+    property pairs(ps: List<(Int, String)>, b: Bool) { length(map(ps, |p| match p { (n, _) -> n })) == length(ps) || b }
+    property small(n: Int) { n < 100 }
+    property search_tree(t: Tree) { sorted(to_list(t)) }
+    property divides(xs: List<Int>) { sum(xs) / length(xs) <= sum(xs) }
+  `, { runs: 200, seed: 3 });
+  const by = Object.fromEntries(t.results.map((r) => [r.name, r]));
+  assert.equal(by.reverse_twice.ok, true);
+  assert.equal(by.pairs.ok, true);
+  for (const r of t.results) assert.equal(r.compiled, 'agrees', r.name);
+  assert.equal(by.small.ok, false);
+  assert.deepEqual(by.small.counterexample, [{ name: 'n', value: '100' }], 'shrinks to the boundary');
+  assert.equal(by.search_tree.counterexample[0].value.split('Node').length - 1, 2, 'the smallest unsorted tree has two nodes');
+  assert.deepEqual([by.divides.reason, by.divides.counterexample[0].value], ['stopped with division by zero', '[]']);
 });
 
 test('constant stack: tail calls, long lists are freed and compared without recursion', () => {

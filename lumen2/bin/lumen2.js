@@ -5,6 +5,8 @@
 //            [--seed N]             seed for random_int (default: from the system)
 //            [--interp]             use the reference interpreter instead
 //            [--paranoid]           never reuse freed memory; catch any use after free
+// lumen2 test FILE [--runs N]       test every property with generated inputs
+//            [--seed N]
 // lumen2 build FILE [-o OUT.wasm]   write the WebAssembly module
 // lumen2 ir FILE [FN]               print the IR with its reference-count operations
 //
@@ -12,7 +14,7 @@
 // can drop output still queued for a pipe.
 
 import { readFileSync, writeFileSync } from 'node:fs';
-import { checkSource, interpretSource, compileSource, formatDiagnostic, decodeBytes, utf8, makeHost } from '../src/api.js';
+import { checkSource, interpretSource, compileSource, testSource, formatDiagnostic, decodeBytes, utf8, makeHost } from '../src/api.js';
 import { CAPABILITIES } from '../src/types.js';
 import { runWasm } from '../src/codegen.js';
 import { showIR } from '../src/perceus.js';
@@ -23,7 +25,7 @@ const flag = (name) => rest.includes(name);
 
 function main() {
   if (!cmd || !file) {
-    console.error('usage: lumen2 check FILE | run FILE [--allow CAPS] [--input FILE] [--seed N] [--interp] [--paranoid] | build FILE [-o OUT] | ir FILE [FN]');
+    console.error('usage: lumen2 check FILE | run FILE [--allow CAPS] [--input FILE] [--seed N] [--interp] [--paranoid] | test FILE [--runs N] [--seed N] | build FILE [-o OUT] | ir FILE [FN]');
     return 2;
   }
   const source = readFileSync(file, 'utf8');
@@ -60,6 +62,20 @@ function main() {
       process.stdout.write(decodeBytes(r.output));
       if (r.error) { console.error(`runtime error: ${r.error}`); return 1; }
       return 0;
+    }
+    case 'test': {
+      const t = testSource(source, { runs: Number(opt('--runs') ?? 100), seed: Number(opt('--seed') ?? 1) });
+      if (!t.results.length) { console.log('no properties'); return 0; }
+      let failed = 0;
+      for (const r of t.results) {
+        const compiled = r.compiled ? `; compiled code ${r.compiled}` : '';
+        if (r.ok) { console.log(`ok      ${r.name} (${r.cases} cases${compiled})`); continue; }
+        failed++;
+        console.log(`FAILED  ${r.name}: ${r.reason} on case ${r.cases}${compiled}`);
+        console.log(`        counterexample, shrunk in ${r.shrinks} step${r.shrinks === 1 ? '' : 's'}: ${r.counterexample.map((x) => `${x.name} = ${x.value}`).join(', ')}`);
+      }
+      console.log(`${t.results.length - failed} passed, ${failed} failed`);
+      return failed || t.results.some((r) => r.compiled && r.compiled !== 'agrees') ? 1 : 0;
     }
     case 'build': {
       const out = opt('-o') ?? file.replace(/\.[^.]*$/, '') + '.wasm';

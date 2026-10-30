@@ -117,6 +117,16 @@ test('Ord: a user impl replaces structural ordering, everywhere the type is comp
   assert.equal(r.output, '[V(3, 0), V(1, 5), V(1, 2)]\ntrue 1 -1\n');
 });
 
+test('properties: typed inputs, a Bool result, no effects but fail', () => {
+  assert.equal(checkSource('property p(xs: List<Int>) { reverse(reverse(xs)) == xs }').ok, true, 'a program of properties needs no main');
+  rejects('property p(xs) { true }', /need types, so that inputs can be generated/);
+  rejects('property p(f: fn(Int) -> Int) { f(1) == 1 }', /concrete types without functions/);
+  rejects('property p(xs: List<a>) { true }', /concrete types without functions/);
+  rejects('property p(n: Int) { n + 1 }', /a property must be true or false/);
+  rejects('property p(n: Int) { println("x"); true }', /calling `println` can write output, but property `p` is declared without `output`/);
+  assert.equal(checkSource('property p(n: Int) { 10 / n > 0 }').ok, true, 'a property may fail');
+});
+
 test('comparison needs a type without functions', () => {
   rejects('fn main() { let f = |x: Int| x; let b = f == f; () }', /cannot be compared/);
   rejects('fn main() { let b = contains([|x: Int| x], |x: Int| x); () }', /cannot be compared/);
