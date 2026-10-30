@@ -4,6 +4,7 @@
 //
 //   bench/campaign-instructions.svg   executed instructions per campaign step
 //   bench/campaign-time.svg           wall time saved by -O, per benchmark
+//   bench/campaign-*-paper.svg         the same, light only, in the story page's typefaces
 //
 //   node bench/chart.js
 
@@ -31,18 +32,41 @@ export function instructionSeries() {
   });
 }
 
-const STYLE = `
-  <style>
-    svg { --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781; --grid: #e1e0d9; --axis: #c3c2b7; --series: #2a78d6; }
+// Two themes. `auto` follows the reader's light or dark setting (README,
+// CAMPAIGN.md, the playground); `paper` is light only, in the story page's
+// LaTeX typefaces, so the charts match the page they sit on.
+const LM = 'https://cdn.jsdelivr.net/npm/latex.css@1.11.0/fonts';
+const THEMES = {
+  auto: {
+    fonts: '',
+    family: 'system-ui, -apple-system, "Segoe UI", sans-serif',
+    colors: '--surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781; --grid: #e1e0d9; --axis: #c3c2b7; --series: #2a78d6;',
+    dark: `
     @media (prefers-color-scheme: dark) {
       svg { --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781; --grid: #2c2c2a; --axis: #383835; --series: #3987e5; }
-    }
-    text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; fill: var(--ink-2); }
-    .title { font-size: 15px; font-weight: 600; fill: var(--ink); }
-    .sub { font-size: 12px; fill: var(--ink-2); }
-    .tick { font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; }
-    .name { font-size: 11px; fill: var(--ink-2); }
-    .value { font-size: 12px; font-weight: 600; fill: var(--ink); font-variant-numeric: tabular-nums; }
+    }`,
+    sizes: { title: 15, sub: 12, tick: 11, name: 11, value: 12 },
+  },
+  paper: {
+    fonts: `
+    @font-face { font-family: "Latin Modern"; font-weight: 400; src: url("${LM}/LM-regular.woff2") format("woff2"); }
+    @font-face { font-family: "Latin Modern"; font-weight: 700; src: url("${LM}/LM-bold.woff2") format("woff2"); }`,
+    family: '"Latin Modern", "CMU Serif", Georgia, serif',
+    colors: '--surface: #fefefd; --ink: #161616; --ink-2: #333333; --muted: #6b6b6b; --grid: #ecebe6; --axis: #c9c8c0; --series: #4b3bc4;',
+    dark: '',
+    sizes: { title: 17, sub: 13.5, tick: 12.5, name: 12.5, value: 13.5 },
+  },
+};
+
+const style = (t) => `
+  <style>${t.fonts}
+    svg { ${t.colors} }${t.dark}
+    text { font-family: ${t.family}; fill: var(--ink-2); }
+    .title { font-size: ${t.sizes.title}px; font-weight: ${t === THEMES.paper ? 700 : 600}; fill: var(--ink); }
+    .sub { font-size: ${t.sizes.sub}px; fill: var(--ink-2); }
+    .tick { font-size: ${t.sizes.tick}px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+    .name { font-size: ${t.sizes.name}px; fill: var(--ink-2); }
+    .value { font-size: ${t.sizes.value}px; font-weight: ${t === THEMES.paper ? 700 : 600}; fill: var(--ink); font-variant-numeric: tabular-nums; }
     .grid { stroke: var(--grid); stroke-width: 1; }
     .axis { stroke: var(--axis); stroke-width: 1; }
     .line { stroke: var(--series); stroke-width: 2; fill: none; stroke-linejoin: round; stroke-linecap: round; }
@@ -52,7 +76,7 @@ const STYLE = `
     .hit:hover + .dot, g:hover > .bar { opacity: 0.8; }
   </style>`;
 
-function lineChart(points) {
+function lineChart(points, theme = THEMES.auto) {
   const W = 760, H = 340, L = 56, R = 70, T = 64, B = 62;
   const lo = Math.min(-30, Math.floor(Math.min(...points.map((p) => p.change)) / 5) * 5), hi = 0;
   const x = (i) => L + (i * (W - L - R)) / (points.length - 1);
@@ -62,7 +86,7 @@ function lineChart(points) {
   const last = points[points.length - 1];
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-labelledby="t1 d1">
   <title id="t1">Executed instructions with -O, per campaign step</title>
-  <desc id="d1">${esc(points.map((p) => `step ${p.step} (${p.short}): ${pct(p.change)}`).join('; '))}</desc>${STYLE}
+  <desc id="d1">${esc(points.map((p) => `step ${p.step} (${p.short}): ${pct(p.change)}`).join('; '))}</desc>${style(theme)}
   <rect width="${W}" height="${H}" fill="var(--surface)"/>
   <text class="title" x="${L - 40}" y="26">Executed wasm instructions with -O, relative to the default build</text>
   <text class="sub" x="${L - 40}" y="46">Geometric mean over the original ${ORIGINAL.length} benchmarks; each step passed the gate before it was kept. Lower is better.</text>
@@ -77,7 +101,7 @@ function lineChart(points) {
 `;
 }
 
-function barChart(rows) {
+function barChart(rows, theme = THEMES.auto) {
   const W = 760, rowH = 30, T = 64, L = 130, R = 70, B = 30;
   const H = T + rows.length * rowH + B;
   const max = Math.ceil(Math.max(...rows.map((r) => r.saved)) / 10) * 10;
@@ -96,7 +120,7 @@ function barChart(rows) {
   };
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-labelledby="t2 d2">
   <title id="t2">Wall time saved by -O, per benchmark</title>
-  <desc id="d2">${esc(rows.map((r) => `${r.name}: ${r.saved.toFixed(1)}% less time`).join('; '))}</desc>${STYLE}
+  <desc id="d2">${esc(rows.map((r) => `${r.name}: ${r.saved.toFixed(1)}% less time`).join('; '))}</desc>${style(theme)}
   <rect width="${W}" height="${H}" fill="var(--surface)"/>
   <text class="title" x="16" y="26">Wall time saved by -O</text>
   <text class="sub" x="16" y="46">Default build vs -O compiled by the same compiler, runs alternated in one process; median of 15 runs (Node ${process.versions.node}).</text>
@@ -112,7 +136,9 @@ export function timeRows() {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  writeFileSync('bench/campaign-instructions.svg', lineChart(instructionSeries()));
-  writeFileSync('bench/campaign-time.svg', barChart(timeRows()));
-  console.log('wrote bench/campaign-instructions.svg, bench/campaign-time.svg');
+  for (const [suffix, theme] of [['', THEMES.auto], ['-paper', THEMES.paper]]) {
+    writeFileSync(`bench/campaign-instructions${suffix}.svg`, lineChart(instructionSeries(), theme));
+    writeFileSync(`bench/campaign-time${suffix}.svg`, barChart(timeRows(), theme));
+  }
+  console.log('wrote bench/campaign-{instructions,time}.svg and their -paper variants for the story page');
 }

@@ -36,7 +36,7 @@ jobs:
           cp fuzz/generate.js fuzz/check.js _site/fuzz/
           cp selfhost/lumenc.lm _site/selfhost/
           cp superopt/sat.js superopt/rup.js superopt/bv.js superopt/synth.js superopt/show.js superopt/verify-core.js superopt/rules.json _site/superopt/
-          cp bench/campaign-instructions.svg bench/campaign-time.svg _site/bench/
+          cp bench/campaign-instructions.svg bench/campaign-time.svg bench/campaign-instructions-paper.svg bench/campaign-time-paper.svg _site/bench/
           cp proofs/sat.lm proofs/schur.lm proofs/schur-core.js _site/proofs/
           touch _site/.nojekyll
       - uses: actions/configure-pages@v5

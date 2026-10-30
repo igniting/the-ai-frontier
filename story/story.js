@@ -216,3 +216,40 @@ function proveSchur(k, n) {
 }
 $('schur3').addEventListener('click', () => proveSchur(3, 13));
 $('schur4').addEventListener('click', () => proveSchur(4, 44));
+
+// --------------------------------------------------------- Schur puzzle --
+// Split 1..n into k groups by hand; numbers in a group holding x, y and x + y are flagged.
+const LETTERS = ['', 'A', 'B', 'C'];
+const pz = { k: 2, n: 5, groups: [] };
+function pzRender(focus = -1) {
+  const bad = new Set();
+  let first = null;
+  for (let x = 1; x <= pz.n; x++) {
+    for (let y = x; x + y <= pz.n; y++) {
+      const g = pz.groups[x];
+      if (g && pz.groups[y] === g && pz.groups[x + y] === g) {
+        bad.add(x); bad.add(y); bad.add(x + y);
+        first ??= `Group ${LETTERS[g]} contains ${x === y ? `${x} and ${x + y}` : `${x}, ${y} and ${x + y}`}, and ${x} + ${y} = ${x + y}.`;
+      }
+    }
+  }
+  const box = $('pz-chips');
+  box.replaceChildren(...Array.from({ length: pz.n }, (_, i) => {
+    const v = i + 1, g = pz.groups[v] ?? 0;
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = `chip${g ? ` g${g}` : ''}${bad.has(v) ? ' bad' : ''}`;
+    b.innerHTML = `${v}<small>${g ? LETTERS[g] : '·'}</small>`;
+    b.setAttribute('aria-label', `${v}, ${g ? `group ${LETTERS[g]}` : 'no group'}${bad.has(v) ? ', in conflict' : ''}`);
+    b.addEventListener('click', () => { pz.groups[v] = (g + 1) % (pz.k + 1); pzRender(i); });
+    return b;
+  }));
+  if (focus >= 0) box.children[focus].focus();
+  const placed = pz.groups.filter(Boolean).length;
+  $('pz-status').textContent = first ?? (placed === pz.n
+    ? `All ${pz.n} numbers placed with no conflict. That should be impossible, since S(${pz.k}) = ${pz.n - 1}.`
+    : `${placed} of ${pz.n} placed, no conflict so far. ${placed === pz.n - 1 && !pz.groups[pz.n] ? `Now try to place ${pz.n}.` : 'Keep going.'}`);
+}
+$('pz-k').addEventListener('change', (e) => { pz.k = +e.target.value; pz.n = pz.k === 2 ? 5 : 14; pz.groups = []; pzRender(); });
+$('pz-clear').addEventListener('click', () => { pz.groups = []; pzRender(); });
+pzRender();
