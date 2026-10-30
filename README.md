@@ -7,24 +7,47 @@
 **A statically typed functional language with a from-scratch compiler to
 WebAssembly.** It infers every type, proves every `match` exhaustive, converts
 closures, compiles tail calls to `return_call`, and ships its own copying
-garbage collector inside the binaries it emits. It is about 3,500 lines of
-JavaScript with zero dependencies: no parser generator, no wasm toolchain,
-no GC library.
+garbage collector inside the binaries it emits. The compiler is about 4,000
+lines of JavaScript with zero dependencies: no parser generator, no wasm
+toolchain, no GC library.
 
-Claude built this end to end in a single Claude Code session, as a
-demonstration of long-horizon, self-verifying software engineering. The
-repository also contains the tools used to check that the result is
-correct, and a [challenge](CHALLENGE.md) for comparing models on the same
-task.
+Three things are built on top of it:
+
+- **[The compiler compiles itself.](#self-hosting)** `selfhost/lumenc.lm` is
+  the whole compiler rewritten in Lumen (3,300 lines). Compiled by the
+  JavaScript compiler, it compiles its own source to a binary that compiles its
+  own source to *the same binary*: a byte-identical fixed point. You can run
+  this bootstrap in the browser.
+- **[A superoptimizer with machine-checked proofs.](#a-superoptimizer-with-checked-proofs)**
+  It mines the compiler's output for code with a shorter equivalent and proves
+  each rewrite for all 2^32 inputs. The proof uses a SAT solver written for this
+  project, and every refutation is re-checked by an independent proof checker.
+  `-O` applies the 40 surviving rules.
+- **[A gated performance campaign.](#the--o-campaign)** `-O` was built one
+  profiled step at a time. Each step had to pass the tests, thousands of fresh
+  fuzz programs run five ways, every planted bug, every proof, and the bootstrap
+  before it was kept. The result:
+  - 27% fewer executed instructions, and 13–43% less wall time on 8 of 9 timed
+    benchmarks;
+  - up to 2.9× the memory;
+  - the default build unchanged byte for byte.
+
+Claude built this end to end in Claude Code, as a demonstration of
+long-horizon, self-verifying software engineering. The repository also
+contains the tools used to check that the result is correct, and a
+[challenge](CHALLENGE.md) for comparing models on the same task.
 
 ![The Lumen playground running the red-black tree example](docs/playground.png)
 
 ```sh
-npm test                                              # 40 tests, about 10 s
-node bin/lumen.js run examples/red_black_tree.lm --stats
+npm test                                              # 54 tests, about 20 s
+node bin/lumen.js run examples/red_black_tree.lm --stats [-O]
 npm run serve                                         # playground at http://localhost:8080
-node fuzz/fuzz.js --count 1000                        # differential fuzzing
+node fuzz/fuzz.js --count 1000                        # differential fuzzing, five ways
 node fuzz/mutants.js                                  # does the fuzzer catch planted bugs?
+node selfhost/bootstrap.js                            # the self-hosted compiler's fixed point
+node superopt/verify.js                               # re-prove every rewrite rule
+node bench/bench.js                                   # -O vs the default build
 ```
 
 Requires Node.js 22 or later. The playground needs a browser with WebAssembly
@@ -146,9 +169,11 @@ Each layer of evidence below checks the one before it.
 | Evidence | What it shows |
 | --- | --- |
 | **Golden tests** for every example (`test/examples.test.js`) | Real programs produce exactly the recorded output, and the two error demos produce exactly the recorded diagnostics |
-| **Three-way semantic tests** (`test/language.test.js`) | Each program runs in the interpreter, as wasm, and as wasm with a GC on every allocation; all three must agree |
-| **Differential fuzzing** (`fuzz/`) | A type-directed generator writes random well-typed programs with closures, local recursion, nested matches, strings, and runtime errors. Over 11,000 programs have been run three ways with **zero disagreements**, including 1.6 million stress-mode collections |
-| **Mutation testing** (`fuzz/mutants.js`) | 16 realistic compiler bugs are planted one at a time. The fuzzer catches **16 of 16**, most within 1–7 random programs |
+| **Five-way semantic tests** (`test/language.test.js`) | Each program runs in the interpreter and as four wasm builds: default and `-O`, each with and without a GC on every allocation. All five must agree |
+| **Differential fuzzing** (`fuzz/`) | A type-directed generator writes random well-typed programs with closures, local recursion, nested matches, strings, and runtime errors. Over 40,000 programs have been run this way. The only disagreement was a real bug in the reference interpreter, now fixed (below) |
+| **Mutation testing** (`fuzz/mutants.js`) | 27 realistic compiler and optimizer bugs are planted one at a time. The fuzzer catches **27 of 27**, most within 1–8 random programs |
+| **Self-hosting** (`selfhost/`) | An independent second implementation of the whole compiler, in Lumen, emits byte-identical binaries for the examples and hundreds of fuzz programs, and identical error messages |
+| **Proofs** (`superopt/verify.js`) | Every rewrite rule `-O` applies is re-proved by SAT, the proof is RUP-checked, and both sides are random-tested |
 | **Spec conformance** (`challenge/score.js`) | 340/340 on examples, spec probes and fuzz programs, for both the compiler and the interpreter |
 
 Mutation testing is what makes the zero meaningful. When the fuzzer reports
@@ -172,6 +197,17 @@ no disagreements, we know it is capable of reporting them:
 | Captured variables read from the wrong closure slot | 11 |
 | `substring` does not clamp a negative start | 21 |
 | Division-by-zero check missing for `%` | 43 |
+| `-O`: a superoptimizer rule is off by one (`x >>> 1 == 0` becomes `x <u 1`) | 18 |
+| `-O`: a self tail call assigns the arguments to the wrong parameters | 1 |
+| `-O`: a self tail call loops back past the prologue | 1 |
+| `-O`: load forwarding keeps values across calls that may collect | 1 |
+| `-O`: load forwarding merges paths by union | 180 |
+| `-O`: frame zeroing ignores direct calls as GC points | 1 |
+| `-O`: frame zeroing trusts writes made inside an `if` | 8 |
+| `-O`: inline allocation forgets to bump the heap pointer | 1 |
+| `-O`: the heap-growth test is inverted | 1 |
+| `-O`: temporary forwarding deletes a store still read later | 1 |
+| `-O`: the constant folder swaps the operands of subtraction | 1 |
 
 ### Problems found during development
 
@@ -201,6 +237,99 @@ These are recorded as they happened.
   (46341² wraps to 4633 in 31 bits, and the missing case for
   `match xs { [] -> …, [x] -> … }` is `[_, _, .._]`). The implementation was
   right both times.
+- **A bug in the reference interpreter**, found by fresh-seed fuzzing. A
+  generated program grew a string eightfold per step past 8 MiB. Compiled code
+  stopped with `string too long`, but the interpreter carried on. The limit had
+  never been written down. SPEC.md now states it, and the interpreter enforces
+  it.
+- **Stale roots that were caught only by luck.** A planted bug in frame-zeroing
+  elision survived 400 programs. A stale shadow-stack slot is harmless unless it
+  happens to point into the current semispace. `-O` with GC stress is now a
+  paranoid mode: popped frames are poisoned and the collector validates every
+  root, so the bug is caught after 8 programs.
+- **A wrong reference implementation.** The naive RUP checker written to
+  cross-check the fast one disagreed with it on the first instance. The naive
+  one was wrong: it missed unit clauses with repeated literals.
+- **A false alarm from the benchmark harness.** It deleted the baseline's output
+  before comparing against it, and reported that `-O` miscompiled the
+  self-hosted compiler. The outputs were in fact identical.
+
+## Self-hosting
+
+`selfhost/src/*.lm` is the compiler again, written in Lumen. It covers the
+same lexer, parser, Hindley–Milner inference, Maranget exhaustiveness
+checking, lowering to A-normal form, closure conversion, code generator,
+garbage-collected runtime and binary encoder. `selfhost/build.js` joins the
+parts into `selfhost/lumenc.lm`. The program reads its input with
+`read_input()` and writes a wasm binary to standard output. It differs from
+the JavaScript version where Lumen forces it to:
+- there is no mutation, so the type substitution is threaded through
+  explicitly and maps are persistent AVL trees;
+- output is a rope of byte strings with cached sizes.
+
+```sh
+node selfhost/bootstrap.js     # stage 1 (built by JS) = stage 2 (built by stage 1) = stage 3, byte for byte
+node selfhost/check-phase.js types examples/huffman.lm    # compare any phase with the reference
+```
+
+Each phase was brought up against the reference compiler's output for that
+phase: tokens, then syntax trees, types, IR and finally binaries. The fixed
+point is a 274 KiB binary with SHA-256 `a40f2d5ad4456845…`. In the
+playground's *Self-hosting* tab you can rebuild it in the browser, or compile
+the editor's program with lumenc and compare it with the JavaScript
+compiler's output.
+
+## A superoptimizer with checked proofs
+
+`superopt/` searches for shorter code and accepts nothing it cannot prove:
+- **Mining.** `corpus.js` collects windows of straight-line i32 code from the
+  compiler's output on the examples and 60 random programs.
+- **Synthesis.** `synth.js` enumerates candidate replacements, evaluating each
+  on 48 test inputs at once. A candidate that matches on all of them is passed
+  to the prover. A counterexample becomes a new test input (counterexample-
+  guided synthesis).
+- **Proof.** `bv.js` bit-blasts both sides into CNF. `sat.js`, a CDCL solver
+  written here (watched literals, first-UIP learning, VSIDS, restarts), shows
+  the two sides cannot differ for any input. It records every learned clause.
+- **Checking.** `rup.js` is an independent checker. It re-derives each learned
+  clause by unit propagation before the rule is accepted.
+- **Generalization.** Constants are generalized to symbols proved for all
+  values, sometimes under a side condition (`K ≥ 0`) that the compiler then
+  checks. Assumptions the proof doesn't need, such as "this local holds a tagged
+  integer, so it is odd", are dropped.
+
+Discoveries include `(x < 0) << 1 | 1 ⇒ x >>> 30 | 1`, and
+`!((4 − x) >>> 1) ⇒ x == 3` for odd `x`. The most useful is a family that
+deletes six of the seven instructions where a comparison is boxed into a
+tagged boolean and immediately unboxed. Search runs to a fixed point: it
+re-mines code already rewritten by the rules found so far, which also repaired
+one case where greedy rewriting got stuck.
+
+The catalogue is [superopt/RULES.md](superopt/RULES.md). `node superopt/verify.js --emit DIR` writes every
+formula and proof as DIMACS/DRUP, so a third-party checker such as drat-trim
+can confirm them; CI uploads these files.
+
+## The `-O` campaign
+
+`-O` was developed as a loop:
+1. Profile where executed instructions go (`bench/profile.js`).
+2. Change one thing.
+3. Pass the gate (`bench/gate.js`): tests, 4,500 fresh fuzz programs run five
+   ways, every planted bug caught, every rule re-proved, and the bootstrap.
+4. Measure, then keep or revert.
+
+The primary metric is executed wasm instructions, which is deterministic.
+Wall time comes from interleaved A/B runs in a single process. The kept steps:
+- forward temporaries and frame-slot loads;
+- give the heap more headroom and inline allocation;
+- zero only the frame slots a collection could see unwritten;
+- turn self tail calls into loops;
+- re-mine the rules to a fixed point.
+
+[CAMPAIGN.md](CAMPAIGN.md) records every step with its numbers, the
+experiments that were rejected, and the costs.
+
+![Executed instructions per campaign step](bench/campaign-instructions.svg)
 
 ## Compare models
 
@@ -225,7 +354,10 @@ reports `stack overflow`.
 ## Layout
 
 ```
-src/         compiler, runtime and reference interpreter
+src/         compiler, runtime, -O passes and reference interpreter
+selfhost/    the compiler written in Lumen, its build and bootstrap checks
+superopt/    superoptimizer: SAT solver, RUP checker, bit-blaster, search
+bench/       benchmarks, profiler, A/B timer, the campaign's gate and charts
 examples/    example programs and their expected output
 test/        node:test suites (npm test)
 fuzz/        random program generator, differential fuzzer, mutation tester

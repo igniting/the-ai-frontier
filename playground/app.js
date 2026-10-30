@@ -32,6 +32,17 @@ const MUTATION_RESULTS = [
   ['int_to_string drops the minus sign', 1],
   ['substring does not clamp a negative start', 21],
   ['String comparison treats a prefix as greater', 4],
+  ['-O: a superoptimizer rule is off by one', 18],
+  ['-O: a self tail call assigns arguments to the wrong parameters', 1],
+  ['-O: a self tail call loops back past the prologue', 1],
+  ['-O: load forwarding keeps values across calls that may collect', 1],
+  ['-O: load forwarding merges paths by union', 180],
+  ['-O: frame zeroing ignores direct calls as GC points', 1],
+  ['-O: frame zeroing trusts writes made inside an if', 8],
+  ['-O: inline allocation forgets to bump the heap pointer', 1],
+  ['-O: the heap-growth test is inverted', 1],
+  ['-O: temporary forwarding deletes a store still read later', 1],
+  ['-O: the constant folder swaps the operands of subtraction', 1],
 ];
 
 const RUN_TIMEOUT_MS = 15000;
@@ -40,7 +51,7 @@ const MAX_OUTPUT = 400000;
 const $ = (id) => document.getElementById(id);
 const els = {
   code: $('code'), hl: $('hl'), marks: $('marks'), gutter: $('gutter'), example: $('example'), run: $('run'),
-  stress: $('opt-stress'), compare: $('opt-compare'), fileName: $('file-name'), checkStatus: $('check-status'),
+  stress: $('opt-stress'), compare: $('opt-compare'), optimize: $('opt-optimize'), fileName: $('file-name'), checkStatus: $('check-status'),
   note: $('example-note'), runStatus: $('run-status'), diagnostics: $('diagnostics'), out: $('out'),
   runtimeError: $('runtime-error'), runStats: $('run-stats'), sigs: $('sigs'), typesCount: $('types-count'),
   ir: $('ir'), wat: $('wat'), pipeline: $('pipeline'),
@@ -317,7 +328,7 @@ function run() {
   els.diagnostics.innerHTML = '';
   setRunStatus('', 'Compiling…');
   setPipeline({});
-  send({ type: 'run', id: runId, source: els.code.value, options: { gcStress: els.stress.checked, compare: els.compare.checked } });
+  send({ type: 'run', id: runId, source: els.code.value, options: { gcStress: els.stress.checked, compare: els.compare.checked, optimize: els.optimize.checked } });
   clearTimeout(runTimer);
   if (!fallbackHandle) runTimer = setTimeout(() => stopRun(`Stopped after ${RUN_TIMEOUT_MS / 1000} s. The program may loop forever.`), RUN_TIMEOUT_MS);
 }
@@ -331,7 +342,9 @@ function stopRun(message) {
   setRunStatus('err', message);
 }
 
-function setPipeline({ timings = {}, wasmSize, run, stats, failedAt }) {
+function setPipeline({ timings = {}, wasmSize, run, stats, failedAt, optimized }) {
+  $('stage-opt').hidden = $('arrow-opt').hidden = !els.optimize.checked;
+  $('t-opt').textContent = optimized ? `${num(optimized.rewrites)} · −${num(optimized.removed)} instr` : '–';
   $('t-parse').textContent = ms(timings.parse);
   $('t-typecheck').textContent = ms(timings.typecheck);
   $('t-lower').textContent = ms(timings.lower);
@@ -380,7 +393,7 @@ function onEngineMessage(msg) {
       els.ir.innerHTML = highlightIr(msg.ir);
       els.wat.innerHTML = highlightWat(msg.wat);
       setRunStatus('', 'Running…');
-      setPipeline({ timings: msg.timings, wasmSize: msg.wasmSize });
+      setPipeline({ timings: msg.timings, wasmSize: msg.wasmSize, optimized: msg.optimized });
       return;
     }
     case 'output':
@@ -394,7 +407,7 @@ function onEngineMessage(msg) {
     case 'ran': {
       clearTimeout(runTimer);
       const c = lastCompile;
-      setPipeline({ timings: c.timings, wasmSize: c.wasmSize, run: msg.timeMs, stats: msg.stats });
+      setPipeline({ timings: c.timings, wasmSize: c.wasmSize, run: msg.timeMs, stats: msg.stats, optimized: c.optimized });
       const total = Object.values(c.timings).reduce((a, b) => a + b, 0);
       if (msg.error) {
         els.runtimeError.hidden = false;
@@ -489,6 +502,7 @@ if (savedTab?.classList.contains('tab')) selectTab(savedTab);
 
 // ---------------------------------------------------------------- fuzzer --
 const mutBody = document.querySelector('#mutants tbody');
+$('mut-count').textContent = MUTATION_RESULTS.length;
 for (const [name, n] of MUTATION_RESULTS) {
   const tr = document.createElement('tr');
   tr.innerHTML = `<td>${esc(name)}</td><td class="num">${n === 1 ? '1 program' : `${n} programs`}</td>`;
@@ -553,6 +567,109 @@ function toggleFuzz() {
   fuzzWorker.postMessage({ seed: Math.floor(Math.random() * 1e9) + fuzzTotals.programs, size: Number($('fuzz-size').value) });
 }
 fuzzBtn.addEventListener('click', toggleFuzz);
+
+// ----------------------------------------------------------- self-hosting --
+let selfhostWorker = null;
+function selfhost(msg, onMessage) {
+  selfhostWorker ??= new Worker(new URL('./selfhost-worker.js', import.meta.url), { type: 'module' });
+  selfhostWorker.onmessage = (e) => onMessage(e.data);
+  selfhostWorker.onerror = () => onMessage({ type: 'failed', message: 'the self-hosting worker could not start in this browser' });
+  selfhostWorker.postMessage(msg);
+}
+const bootButtons = [$('boot-run'), $('boot-compile')];
+const busy = (on) => bootButtons.forEach((b) => { b.disabled = on; });
+const shortHash = (h) => (h ? `${h.slice(0, 16)}…` : 'n/a');
+$('boot-run').addEventListener('click', () => {
+  busy(true);
+  for (const tr of document.querySelectorAll('#boot-table tbody tr')) tr.querySelectorAll('td:not(:first-child)').forEach((td) => { td.textContent = '…'; });
+  $('boot-verdict').hidden = true;
+  selfhost({ type: 'bootstrap' }, (m) => {
+    if (m.type === 'stage') {
+      const cells = document.querySelector(`#boot-table tr[data-stage="${m.n}"]`).children;
+      cells[1].textContent = ms(m.ms);
+      cells[2].textContent = bytes(m.bytes);
+      cells[3].textContent = shortHash(m.sha);
+      cells[3].title = m.sha ?? '';
+      if (m.lines) $('boot-lines').textContent = num(m.lines);
+    } else if (m.type === 'verdict' || m.type === 'failed') {
+      busy(false);
+      const v = $('boot-verdict');
+      v.hidden = false;
+      v.className = `verdict ${m.identical ? 'ok' : 'bad'}`;
+      v.textContent = m.type === 'failed' ? `Failed: ${m.message}`
+        : m.identical ? '✓ Fixed point: stages 1, 2 and 3 are byte-identical. The compiler, compiled by itself, reproduces itself exactly.'
+          : '✗ The stages differ.';
+    }
+  });
+});
+$('boot-compile').addEventListener('click', () => {
+  busy(true);
+  const out = $('boot-compile-out');
+  $('boot-compile-title').hidden = out.hidden = false;
+  out.textContent = 'Compiling with lumenc (building lumenc first if needed)…';
+  selfhost({ type: 'compile', source: els.code.value }, (m) => {
+    if (m.type === 'stage') return;
+    busy(false);
+    if (m.type === 'failed') { out.textContent = `Failed: ${m.message}`; return; }
+    if (!m.ok) {
+      out.textContent = `lumenc rejected the program (${m.lumenc.phase}): ${m.lumenc.message}\nThe JavaScript compiler says: ${m.reference ?? 'no error (they disagree!)'}`;
+      return;
+    }
+    const text = new TextDecoder().decode(Uint8Array.from(m.output, (c) => c.charCodeAt(0)));
+    out.textContent = `${m.identical ? '✓' : '✗'} lumenc produced ${bytes(m.bytes)} in ${ms(m.ms)}: ${m.identical ? 'byte-identical to' : `different from (${bytes(m.referenceBytes ?? 0)})`} the JavaScript compiler's output (without -O).\n\nRunning lumenc's binary prints:\n${text}${m.error ? `\nruntime error: ${m.error}` : ''}`;
+  });
+});
+
+// --------------------------------------------------------- proved rules --
+let rulesLoaded = false;
+async function loadRules() {
+  if (rulesLoaded) return;
+  rulesLoaded = true;
+  const [{ show, showExpr }, data] = await Promise.all([
+    import('../superopt/show.js'),
+    fetch(new URL('../superopt/rules.json', import.meta.url)).then((r) => r.json()),
+  ]);
+  const body = document.querySelector('#rules-table tbody');
+  for (const r of data.rules) {
+    const pre = [...r.odd.map((o, i) => (o ? `x${i} odd` : null)), ...(r.nonneg ?? []).map((k) => `${k} ≥ 0`)].filter(Boolean);
+    const tr = document.createElement('tr');
+    tr.dataset.rule = r.id;
+    tr.innerHTML = `<td class="num">${r.id}</td><td><code>${esc(show(r.lhs))}</code></td><td><code>${esc(show(r.rhs) || 'ε')}</code></td>`
+      + `<td class="expr">${esc(showExpr(r.lhs, r.inputs))} ⇒ ${esc(showExpr(r.rhs, r.inputs))}${pre.length ? ` (${esc(pre.join(', '))})` : ''}</td>`
+      + `<td class="num">${r.proof.trivial ? 'structural' : `${num(r.proof.lemmas)} lemmas`}</td>`;
+    body.append(tr);
+  }
+  $('rules-summary').textContent = `${data.rules.length} rules, mined from ${num(data.corpus.windows)} code windows in ${data.corpus.modules} compiled programs.`;
+}
+$('tab-rules').addEventListener('click', loadRules);
+if (store.get('tab', '') === 'tab-rules') loadRules();
+$('rules-verify').addEventListener('click', async () => {
+  await loadRules();
+  const btn = $('rules-verify');
+  btn.disabled = true;
+  let done = 0;
+  const w = new Worker(new URL('./rules-worker.js', import.meta.url), { type: 'module' });
+  w.onmessage = ({ data: m }) => {
+    if (m.type === 'rule') {
+      done++;
+      const cell = document.querySelector(`#rules-table tr[data-rule="${m.id}"] td:last-child`);
+      cell.className = `num ${m.ok ? 'ok' : 'bad'}`;
+      cell.textContent = `${m.ok ? '✓' : '✗'} ${m.trivial ? 'structural' : `${num(m.lemmas)} lemmas`} · ${ms(m.ms)}`;
+      cell.title = m.vars ? `${num(m.vars)} variables, ${num(m.clauses)} clauses` : '';
+      $('rules-summary').textContent = `Proving… ${done} done`;
+    } else if (m.type === 'done') {
+      btn.disabled = false;
+      w.terminate();
+      $('rules-summary').textContent = `All ${m.rules} rules re-proved in ${ms(m.ms)}: ${num(m.lemmas)} learned clauses, each checked by the RUP checker.`;
+    }
+  };
+  w.onerror = () => { btn.disabled = false; $('rules-summary').textContent = 'The proof worker could not start in this browser.'; };
+  w.postMessage({});
+});
+
+// -O toggle: remembered, and re-runs the program.
+els.optimize.checked = store.get('optimize', '0') === '1';
+els.optimize.addEventListener('change', () => { store.set('optimize', els.optimize.checked ? '1' : '0'); run(); });
 
 // ------------------------------------------------------------------ boot --
 startWorker();

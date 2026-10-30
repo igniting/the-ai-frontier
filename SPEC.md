@@ -155,6 +155,7 @@ never match produce a warning.
 | `char_code_at(s, i)` | `fn(String, Int) -> Int` | the byte at index `i` (0–255); `index out of bounds` if `i < 0` or `i >= len` |
 | `char_from_code(c)` | `fn(Int) -> String` | the one-byte string containing byte `c & 255` |
 | `panic(msg)` | `fn(String) -> a` | stops with the runtime error `panic: <msg>` |
+| `read_input()` | `fn() -> String` | the program's input: bytes supplied by the host (`lumen run file.lm --input data.txt`), or `""` if there are none |
 
 ## The prelude
 

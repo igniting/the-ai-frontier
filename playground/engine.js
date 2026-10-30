@@ -23,13 +23,14 @@ export async function handle(msg, post, { sync = true, fuel = 0 } = {}) {
   }
   if (type !== 'run') return;
 
-  const c = compile(source, { gcStress: !!options.gcStress, fuel });
+  const c = compile(source, { gcStress: !!options.gcStress, optimize: !!options.optimize, fuel });
   if (!c.ok) {
     post({ type: 'compiled', id, ok: false, timings: c.timings, diagnostics: diagnostics(source, c.errors, 'error') });
     return;
   }
   post({
     type: 'compiled', id, ok: true, timings: c.timings, wasmSize: c.wasm.length, functionCount: c.functionCount,
+    optimized: c.peephole && { rewrites: [...c.peephole.stats.values()].reduce((a, b) => a + b, 0), removed: c.peephole.before - c.peephole.after },
     signatures: c.signatures, diagnostics: diagnostics(source, c.warnings, 'warning'), wat: c.wat, ir: c.ir,
   });
 

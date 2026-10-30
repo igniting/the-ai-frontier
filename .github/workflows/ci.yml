@@ -13,7 +13,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Unit, golden and four-way semantic tests
+      - name: Unit, golden and five-way semantic tests
         run: npm test
       - name: Re-prove every superoptimizer rule (SAT, independent RUP check, random testing)
         run: node superopt/verify.js --emit proofs
@@ -22,9 +22,13 @@ jobs:
         with:
           name: superopt-proofs
           path: proofs/
+      - name: Self-hosted bootstrap (stage 1 = stage 2 = stage 3, plus parity on fuzz programs)
+        run: node selfhost/bootstrap.js --programs 100
+      - name: Benchmarks (every -O build must print exactly what the default build prints)
+        run: node bench/bench.js --runs 1
       - name: Differential fuzzing (fresh seeds every run)
         run: node fuzz/fuzz.js --count 1000 --size 2 --seed $(( GITHUB_RUN_NUMBER * 1000 )) --quiet
       - name: Mutation testing of the fuzzer
-        run: node fuzz/mutants.js --budget 300
+        run: node fuzz/mutants.js --budget 400
       - name: Spec conformance
         run: node challenge/score.js --fuzz 200 -- node bin/lumen.js run

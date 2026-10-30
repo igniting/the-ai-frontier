@@ -218,6 +218,21 @@ table.mut td, table.mut th { padding: 5px 8px; border-bottom: 1px solid var(--li
 table.mut th { font-weight: 500; color: var(--muted); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; }
 table.mut td.num { font-family: var(--font-code); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .table-wrap { overflow-x: auto; }
+.ghost {
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: var(--radius);
+  padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer;
+}
+.ghost:hover { border-color: var(--muted); }
+.run:disabled, .ghost:disabled { opacity: 0.55; cursor: progress; }
+table.mut td.hash { font-family: var(--font-code); font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+table.rules td code { font-family: var(--font-code); font-size: 12px; white-space: nowrap; }
+table.rules td.expr { font-family: var(--font-code); font-size: 12px; color: var(--muted); min-width: 16ch; }
+table.rules td.num.ok { color: var(--ok); }
+table.rules td.num.bad { color: var(--err); }
+.verdict { margin: 12px 0; padding: 10px 12px; border-radius: var(--radius); font-weight: 500; }
+.verdict.ok { background: var(--ok-soft); color: var(--ok); }
+.verdict.bad { background: var(--err-soft); color: var(--err); }
+object.chart { display: block; width: 100%; max-width: 760px; height: auto; margin: 4px 0 16px; border-radius: var(--radius); }
 
 /* ------------------------------------------------------------------- about */
 .about { max-width: 68ch; }
@@ -241,6 +256,7 @@ table.mut td.num { font-family: var(--font-code); text-align: right; font-varian
   .panel-pane { height: 75vh; min-height: 420px; }
   .tagline { display: none; }
   .pipeline { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .pipeline > * { flex-shrink: 0; } /* scroll sideways rather than squash the stages */
   .fuzz-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
@@ -256,6 +272,7 @@ table.mut td.num { font-family: var(--font-code); text-align: right; font-varian
     </div>
     <div class="controls">
       <select id="example" aria-label="Example program"></select>
+      <label class="check" title="Optimize: forward temporaries and frame-slot loads, inline allocation, turn self tail calls into loops, and apply the superoptimizer's proved rewrite rules."><input type="checkbox" id="opt-optimize"> -O</label>
       <label class="check" title="Collect garbage on every single allocation, with a 4 KiB heap. Slow, but any GC bug shows up immediately."><input type="checkbox" id="opt-stress"> GC on every allocation</label>
       <label class="check" title="Also run the program in the reference interpreter and compare the output byte for byte."><input type="checkbox" id="opt-compare" checked> Cross-check</label>
       <button class="run" id="run" type="button">Run <kbd id="run-key">Ctrl ↵</kbd></button>
@@ -272,6 +289,8 @@ table.mut td.num { font-family: var(--font-code); text-align: right; font-varian
     <span class="arrow" aria-hidden="true">→</span>
     <div class="stage"><span class="k">Codegen</span><span class="v" id="t-codegen">–</span></div>
     <span class="arrow" aria-hidden="true">→</span>
+    <div class="stage" id="stage-opt" hidden><span class="k">-O rewrites</span><span class="v" id="t-opt">–</span></div>
+    <span class="arrow" id="arrow-opt" aria-hidden="true" hidden>→</span>
     <div class="stage"><span class="k">Encode</span><span class="v" id="t-encode">–</span></div>
     <span class="arrow" aria-hidden="true">→</span>
     <div class="stage result"><span class="k">Binary</span><span class="v" id="t-size">–</span></div>
@@ -302,6 +321,9 @@ table.mut td.num { font-family: var(--font-code); text-align: right; font-varian
         <button class="tab" role="tab" id="tab-ir" aria-controls="panel-ir" aria-selected="false">IR</button>
         <button class="tab" role="tab" id="tab-wat" aria-controls="panel-wat" aria-selected="false">WebAssembly</button>
         <button class="tab" role="tab" id="tab-fuzz" aria-controls="panel-fuzz" aria-selected="false">Fuzzer</button>
+        <button class="tab" role="tab" id="tab-boot" aria-controls="panel-boot" aria-selected="false">Self-hosting</button>
+        <button class="tab" role="tab" id="tab-rules" aria-controls="panel-rules" aria-selected="false">Proved rules</button>
+        <button class="tab" role="tab" id="tab-campaign" aria-controls="panel-campaign" aria-selected="false">-O campaign</button>
         <button class="tab" role="tab" id="tab-about" aria-controls="panel-about" aria-selected="false">About</button>
       </nav>
       <div class="panels">
@@ -342,7 +364,7 @@ table.mut td.num { font-family: var(--font-code); text-align: right; font-varian
           </div>
           <div class="fuzz-grid">
             <div class="stat"><div class="k">Programs</div><div class="v" id="f-programs">0</div></div>
-            <div class="stat good"><div class="k">All three agree</div><div class="v" id="f-agreed">0</div></div>
+            <div class="stat good"><div class="k">All five agree</div><div class="v" id="f-agreed">0</div></div>
             <div class="stat"><div class="k">Same runtime error</div><div class="v" id="f-errors">0</div></div>
             <div class="stat" id="f-mismatch-card"><div class="k">Mismatches</div><div class="v" id="f-mismatches">0</div></div>
             <div class="stat"><div class="k">Collections</div><div class="v" id="f-gcs">0</div></div>
@@ -351,7 +373,7 @@ table.mut td.num { font-family: var(--font-code); text-align: right; font-varian
           <div class="section-title" id="fuzz-program-title">Latest generated program</div>
           <pre class="code fuzz-program" id="fuzz-program">Press “Start fuzzing” to watch programs being generated and checked.</pre>
           <div class="section-title">Who checks the checker?</div>
-          <p class="hint">To show the fuzzer can find real bugs, <code>fuzz/mutants.js</code> injects each of these compiler bugs into a copy of the compiler and counts how many random programs it takes to notice. All 16 were caught.</p>
+          <p class="hint">To show the fuzzer can find real bugs, <code>fuzz/mutants.js</code> injects each of these compiler bugs into a copy of the compiler and counts how many random programs it takes to notice. All <span id="mut-count">27</span> were caught.</p>
           <div class="table-wrap">
             <table class="mut" id="mutants">
               <thead><tr><th>Injected bug</th><th style="text-align:right">Caught after</th></tr></thead>
@@ -359,23 +381,64 @@ table.mut td.num { font-family: var(--font-code); text-align: right; font-varian
             </table>
           </div>
         </div>
+        <div class="panel" role="tabpanel" id="panel-boot" aria-labelledby="tab-boot" hidden>
+          <p class="hint">Lumen's compiler is also written in Lumen: <code>selfhost/lumenc.lm</code>, <span id="boot-lines">3,300</span> lines covering the same lexer, type inference, exhaustiveness checker, lowering, code generator, garbage-collected runtime and binary encoder. The JavaScript compiler builds it (stage 1). That binary then compiles lumenc's own source (stage 2), and stage 2 does it again (stage 3). All three binaries must be identical byte for byte, and they must also match what the JavaScript compiler emits.</p>
+          <div class="fuzz-controls">
+            <button class="run" id="boot-run" type="button">Bootstrap in this browser</button>
+            <button class="ghost" id="boot-compile" type="button">Compile the editor's program with lumenc</button>
+          </div>
+          <div class="table-wrap">
+            <table class="mut boot" id="boot-table">
+              <thead><tr><th>Stage</th><th style="text-align:right">Time</th><th style="text-align:right">Size</th><th>SHA-256</th></tr></thead>
+              <tbody>
+                <tr data-stage="1"><td>1 · JavaScript compiler builds lumenc</td><td class="num">–</td><td class="num">–</td><td class="hash">–</td></tr>
+                <tr data-stage="2"><td>2 · stage 1 compiles lumenc</td><td class="num">–</td><td class="num">–</td><td class="hash">–</td></tr>
+                <tr data-stage="3"><td>3 · stage 2 compiles lumenc</td><td class="num">–</td><td class="num">–</td><td class="hash">–</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="verdict" id="boot-verdict" hidden></div>
+          <div class="section-title" id="boot-compile-title" hidden>The editor's program, compiled by lumenc</div>
+          <pre class="code" id="boot-compile-out" hidden></pre>
+        </div>
+        <div class="panel" role="tabpanel" id="panel-rules" aria-labelledby="tab-rules" hidden>
+          <p class="hint">A superoptimizer (<code>superopt/</code>) mined the compiler's own output for straight-line code with a shorter equivalent. Each rewrite below was found by enumeration and then <em>proved</em> for every possible input: a SAT solver written for this project shows that "the two sides differ" has no solution. An independent proof checker re-validates every step of that refutation. <code>-O</code> applies these rules. <code>K</code> stands for any constant, <code>a</code> and <code>b</code> for values on the stack, and <code>x0</code> for a local variable.</p>
+          <div class="fuzz-controls">
+            <button class="run" id="rules-verify" type="button">Re-prove every rule here</button>
+            <span class="hint" id="rules-summary"></span>
+          </div>
+          <div class="table-wrap">
+            <table class="mut rules" id="rules-table">
+              <thead><tr><th>#</th><th>Stack code</th><th>Becomes</th><th>As an expression</th><th style="text-align:right">Proof</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="panel" role="tabpanel" id="panel-campaign" aria-labelledby="tab-campaign" hidden>
+          <p class="hint"><code>-O</code> was built as a measured campaign. Each step started from a profile of where executed instructions went. Each one was kept only after it passed a gate: the test suite, 4,500 fresh fuzz programs run five ways, 27 injected bugs that must all be caught, every rule re-proved, and the self-hosted bootstrap. The result is 27% fewer instructions executed and 13–43% less wall time on 8 of 9 timed benchmarks. The price is up to 2.9× the memory. The full log, including the experiments that were rejected, is <a href="https://github.com/igniting/the-ai-frontier/blob/main/CAMPAIGN.md" target="_blank" rel="noopener">CAMPAIGN.md</a>.</p>
+          <object class="chart" type="image/svg+xml" data="bench/campaign-instructions.svg" style="aspect-ratio: 760 / 340" aria-label="Executed instructions with -O per campaign step"></object>
+          <object class="chart" type="image/svg+xml" data="bench/campaign-time.svg" style="aspect-ratio: 760 / 364" aria-label="Wall time saved by -O per benchmark"></object>
+        </div>
         <div class="panel" role="tabpanel" id="panel-about" aria-labelledby="tab-about" hidden>
           <div class="about">
             <h2>A compiler you can watch work</h2>
-            <p>Lumen is a small, statically typed functional language. Everything on this page runs in your browser. The compiler is about 3,500 lines of dependency-free JavaScript. It infers every type, checks that every <code>match</code> is exhaustive, and emits a WebAssembly binary byte by byte. Programs that allocate carry their own garbage collector inside that binary.</p>
+            <p>Lumen is a small, statically typed functional language. Everything on this page runs in your browser. The compiler is about 4,000 lines of dependency-free JavaScript. It infers every type, checks that every <code>match</code> is exhaustive, and emits a WebAssembly binary byte by byte. Programs that allocate carry their own garbage collector inside that binary.</p>
             <h3>Pipeline</h3>
             <ul class="phases">
               <li><div class="what"><b>Lexer and parser</b><span>Recursive descent with precedence climbing; list literals and <code>|&gt;</code> are desugared.</span></div><div class="loc">src/lexer.js, parser.js · 526 lines</div></li>
-              <li><div class="what"><b>Type inference</b><span>Hindley–Milner with level-based generalization. Top-level functions are grouped into strongly connected components so they can appear in any order.</span></div><div class="loc">types.js, typecheck.js · 721</div></li>
+              <li><div class="what"><b>Type inference</b><span>Hindley–Milner with level-based generalization. Top-level functions are grouped into strongly connected components so they can appear in any order.</span></div><div class="loc">types.js, typecheck.js · 722</div></li>
               <li><div class="what"><b>Exhaustiveness</b><span>Maranget’s usefulness algorithm. It reports a concrete value that no arm handles, and warns about unreachable arms.</span></div><div class="loc">exhaustive.js · 157</div></li>
               <li><div class="what"><b>Lowering</b><span>A-normal form, closure conversion, lambda lifting, pattern-match compilation and type-directed root elision.</span></div><div class="loc">lower.js · 355</div></li>
-              <li><div class="what"><b>Code generation</b><span>Shadow-stack frames for GC roots, <code>return_call</code> for tail calls, static closures for capture-free functions.</span></div><div class="loc">codegen.js · 362</div></li>
-              <li><div class="what"><b>Runtime</b><span>Bump allocator, Cheney copying collector with growing semispaces, structural equality and ordering, strings. Written as raw wasm instructions.</span></div><div class="loc">runtime.js · 332</div></li>
+              <li><div class="what"><b>Code generation</b><span>Shadow-stack frames for GC roots, <code>return_call</code> for tail calls, static closures for capture-free functions.</span></div><div class="loc">codegen.js · 422</div></li>
+              <li><div class="what"><b>Optimizer (-O)</b><span>Forwards temporaries and frame-slot loads, zeroes only the frame slots a collection could see unwritten, turns self tail calls into loops, and applies the superoptimizer's 40 proved rewrite rules.</span></div><div class="loc">optimize.js, peephole.js · 376</div></li>
+              <li><div class="what"><b>Runtime</b><span>Bump allocator, Cheney copying collector with growing semispaces, structural equality and ordering, strings. Written as raw wasm instructions.</span></div><div class="loc">runtime.js · 378</div></li>
               <li><div class="what"><b>Binary encoder</b><span>LEB128, sections, label-depth resolution, a name section, and the WAT printer you see in the WebAssembly tab.</span></div><div class="loc">wasm.js · 342</div></li>
-              <li><div class="what"><b>Reference interpreter</b><span>An independent tree-walking evaluator over the typed AST, used as the oracle for differential testing.</span></div><div class="loc">interp.js · 242</div></li>
+              <li><div class="what"><b>Reference interpreter</b><span>An independent tree-walking evaluator over the typed AST, used as the oracle for differential testing.</span></div><div class="loc">interp.js · 244</div></li>
             </ul>
             <h3>How it is verified</h3>
-            <p>Golden tests cover every example. Semantic tests run each program three ways. The differential fuzzer (the Fuzzer tab) has checked more than 11,000 random programs with no disagreement. Mutation testing confirms that the fuzzer catches 16 of 16 deliberately injected compiler bugs.</p>
+            <p>Golden tests cover every example. Semantic tests run each program five ways: in the interpreter, and as default and <code>-O</code> wasm, each with and without a collection on every allocation. The differential fuzzer (the Fuzzer tab) has checked more than 40,000 random programs. Its one disagreement was a real interpreter bug, now fixed. Mutation testing confirms that the fuzzer catches all 27 deliberately injected compiler and optimizer bugs.</p>
+            <h3>Beyond the compiler</h3>
+            <p><b>Self-hosting.</b> The compiler is also written in Lumen, and it reaches a byte-identical fixed point when it compiles itself. See the Self-hosting tab. <b>Proofs.</b> A superoptimizer found the rewrite rules that <code>-O</code> uses, and each one is proved for every input by a SAT solver whose proofs an independent checker validates. See the Proved rules tab. <b>Measurement.</b> <code>-O</code> was built step by step, and every step passed the full test, fuzz, mutation, proof and bootstrap gate before it was kept. See the -O campaign tab.</p>
             <h3>Source</h3>
             <p>The compiler, tests, fuzzer, language spec and a model-comparison challenge are on <a href="https://github.com/igniting/the-ai-frontier" target="_blank" rel="noopener">GitHub</a>.</p>
             <h3>The language in one breath</h3>
