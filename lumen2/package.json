@@ -1,0 +1,11 @@
+{
+  "name": "lumen2",
+  "version": "0.1.0",
+  "description": "Lumen 2: a language whose claims are checked by machines. Effects in types, value-semantics arrays updated in place, reference counting, compiled to WebAssembly.",
+  "type": "module",
+  "bin": { "lumen2": "bin/lumen2.js" },
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}
