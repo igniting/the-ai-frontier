@@ -4,10 +4,13 @@
 // A function type carries an effect row: the set of effects calling it may
 // perform. Rows are a set of labels plus an optional tail variable:
 //   {}            pure: no effects
-//   {io, fail}    exactly these effects
-//   {io | e}      io, plus whatever e turns out to be
-// Two labels exist: `io` (input and output) and `fail` (a runtime error the
-// program can cause: panic, division by zero, an index out of bounds).
+//   {output, fail}    exactly these effects
+//   {output | e}      output, plus whatever e turns out to be
+// The labels are four capabilities, `input` (reading the program's input),
+// `output` (printing), `clock` (reading the time) and `random` (drawing random
+// numbers), and `fail` (a runtime error the program can cause: panic,
+// division by zero, an index out of bounds). In annotations `io` is
+// shorthand for the four capabilities.
 //
 // Type variables use the "levels" technique (as in OCaml) for linear-time
 // generalization. A type variable may carry the `cmp` constraint: it can only
@@ -17,7 +20,8 @@
 import { LumenError } from './diagnostics.js';
 
 export const GENERIC = 1e9;
-export const LABELS = ['fail', 'io'];
+export const LABELS = ['clock', 'fail', 'input', 'output', 'random'];
+export const CAPABILITIES = ['clock', 'input', 'output', 'random'];
 
 let counter = 0;
 export const newVar = (level, cmp = false) => ({ k: 'var', id: counter++, level, link: null, cmp });

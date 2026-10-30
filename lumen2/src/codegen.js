@@ -29,6 +29,7 @@ import { lowerProgram, tkey, valtype } from './lower.js';
 import { perceus, makeHeapTest } from './perceus.js';
 import { insertReuse } from './reuse.js';
 import { substParams } from './types.js';
+import { makeHost } from './host.js';
 
 export const FAILURES = ['', 'integer overflow', 'division by zero', 'index out of bounds', 'out of memory', 'string too long', 'use after free'];
 const OVERFLOW = 1, DIVZERO = 2, BOUNDS = 3, OOM = 4, STRLONG = 5, UAF = 6;
@@ -116,6 +117,8 @@ export function compileProgram(program, { paranoid = false, reuse = true, mutant
   m.importFunc('env', 'input_read', 'host_input_read', ['i32'], []);
   m.importFunc('env', 'fail', 'host_fail', ['i32'], []);
   m.importFunc('env', 'panic', 'host_panic', ['i32', 'i32'], []);
+  m.importFunc('env', 'clock', 'host_clock', [], ['i64']);
+  m.importFunc('env', 'random', 'host_random', ['i64', 'i64'], ['i64']);
   m.addGlobal('hp', 'i32', true, 0);
   m.addGlobal('live', 'i32', true, 0);
   m.addGlobal('allocs', 'i32', true, 0);
@@ -554,6 +557,8 @@ export function compileProgram(program, { paranoid = false, reuse = true, mutant
         case 'print': return [args, call('str_print'), i32(0)];
         case 'println': return [args, call('str_println'), i32(0)];
         case 'read_input': return call('str_read_input');
+        case 'clock_ms': return call('host_clock');
+        case 'random_int': return [args, call('host_random')];
         case 'int_to_string': return [args, call('int_to_string')];
         case 'string_length': return [args, call('str_length')];
         case 'substring': return [args, call('str_sub')];
@@ -656,7 +661,7 @@ export class LumenTrap extends Error {}
 // Returns { output, error, live, allocs }: live is the number of objects
 // still allocated when main returned, which must be 0; allocs counts every
 // allocation the program made.
-export function runWasm(bytes, { input = '' } = {}) {
+export function runWasm(bytes, { input = '', host = makeHost() } = {}) {
   let out = '';
   let memory = null;
   const bytesAt = (ptr, len) => new Uint8Array(memory.buffer, ptr, len);
@@ -667,6 +672,8 @@ export function runWasm(bytes, { input = '' } = {}) {
     input_read: (ptr) => { const b = bytesAt(ptr, input.length); for (let i = 0; i < input.length; i++) b[i] = input.charCodeAt(i) & 0xff; },
     fail: (code) => { throw new LumenTrap(FAILURES[code] ?? `internal error ${code}`); },
     panic: (ptr, len) => { throw new LumenTrap(`panic: ${asString(bytesAt(ptr, len))}`); },
+    clock: () => host.clock(),
+    random: (lo, hi) => host.random(lo, hi),
   };
   const instance = new WebAssembly.Instance(new WebAssembly.Module(bytes), { env });
   memory = instance.exports.memory;

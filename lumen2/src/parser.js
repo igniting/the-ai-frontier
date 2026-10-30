@@ -22,14 +22,19 @@ export function parse(src) {
   const accept = (k) => (at(k) ? next() : null);
 
   // ------------------------------------------------------------- types --
+  // `io` is shorthand for all four capabilities.
+  const IO = ['input', 'output', 'clock', 'random'];
+  const KNOWN = new Set([...IO, 'fail']);
+  const expand = (l) => (l === 'io' ? IO : [l]);
+
   function effect() {
-    // `! io`, `! e`, `! {io, fail}`, `! {io | e}`, `! {}`
+    // `! output`, `! e`, `! {output, fail}`, `! {io | e}`, `! {}`
     const start = expect('!');
     const labels = [];
     let tail = null;
     if (accept('{')) {
       while (!at('}') && !at('|')) {
-        labels.push(expect('lower', 'an effect name').v);
+        labels.push(...expand(expect('lower', 'an effect name').v));
         if (!accept(',')) break;
       }
       if (accept('|')) tail = expect('lower', 'an effect variable').v;
@@ -37,8 +42,8 @@ export function parse(src) {
       return { labels, tail, span: sp(start.s, end.e) };
     }
     const t = expect('lower', 'an effect');
-    // A known label (io, fail) is closed; any other lowercase name is an effect variable.
-    if (t.v === 'io' || t.v === 'fail') return { labels: [t.v], tail: null, span: sp(start.s, t.e) };
+    // A known effect is closed; any other lowercase name is an effect variable.
+    if (t.v === 'io' || KNOWN.has(t.v)) return { labels: expand(t.v), tail: null, span: sp(start.s, t.e) };
     return { labels: [], tail: t.v, span: sp(start.s, t.e) };
   }
 

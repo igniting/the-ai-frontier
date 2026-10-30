@@ -3,10 +3,15 @@
 // Hindley–Milner with row-polymorphic effects. Every expression is checked
 // against an *ambient* effect row: the effects the enclosing function may
 // perform. Calling a function unifies the callee's effect row with the
-// ambient row, so effects flow outwards; `print` adds `io`, while `/`, `%`,
-// array indexing and `panic` add `fail`. An effect annotation on a function
-// (`! {}`, `! io`, `! {io, fail}`) closes its row, so an undeclared effect is
-// a compile error at the call that causes it.
+// ambient row, so effects flow outwards; `print` adds `output`, `read_input`
+// adds `input`, and `/`, `%`, array indexing and `panic` add `fail`. An effect
+// annotation on a function (`! {}`, `! output`, `! {output, fail}`) closes its
+// row, so an undeclared effect is a compile error at the call that causes it.
+//
+// Capabilities: the effects other than `fail` are granted to `main` by
+// whoever runs the program. With a grant, `main` is checked as if it were
+// annotated with the granted effects, so a program that would use an
+// ungranted capability is rejected before it runs, at the call responsible.
 //
 // Top-level functions are polymorphic, in types and in effects; they are
 // checked in dependency order (strongly connected components of the call
@@ -31,9 +36,11 @@ function builtinTable() {
   const fn = (params, ret, labels = []) => tfun(params, ret, row(labels));
   const t = {};
   const A = a();
-  t.print = fn([STRING], UNIT, ['io']);
-  t.println = fn([STRING], UNIT, ['io']);
-  t.read_input = fn([], STRING, ['io']);
+  t.print = fn([STRING], UNIT, ['output']);
+  t.println = fn([STRING], UNIT, ['output']);
+  t.read_input = fn([], STRING, ['input']);
+  t.clock_ms = fn([], INT, ['clock']);
+  t.random_int = fn([INT, INT], INT, ['random']);
   t.int_to_string = fn([INT], STRING);
   t.string_length = fn([STRING], INT);
   t.substring = fn([STRING, INT, INT], STRING);
@@ -56,10 +63,11 @@ function builtinTable() {
 }
 export const BUILTIN_NAMES = Object.keys(builtinTable());
 
-const EFFECT_WORDS = { io: 'perform io', fail: 'fail' };
+const EFFECT_WORDS = { input: 'read input', output: 'write output', clock: 'read the clock', random: 'use randomness', fail: 'fail' };
 
 // ------------------------------------------------------------------ check --
-export function check(source) {
+// options.grants: the capabilities granted to `main` (null: no restriction).
+export function check(source, { grants = null } = {}) {
   const preludeAst = parse(PRELUDE);
   let userAst;
   userAst = parse(source);
@@ -200,6 +208,10 @@ export function check(source) {
   }
   function effectViolation(labels, ctx, span, cause) {
     const words = labels.map((l) => EFFECT_WORDS[l] ?? l).join(' and ');
+    if (ctx.granted) {
+      return new LumenError(`${cause} can ${words}, but \`main\` was not granted \`${labels.join(', ')}\``, span,
+        `grant it when running the program, for example \`lumen2 run --allow ${labels.join(',')}\``);
+    }
     return new LumenError(`${cause} can ${words}, but ${ctx.owner} is declared without \`${labels.join(', ')}\``, span,
       `add the effect to the signature (for example \`! {${[...new Set([...pruneRow(ctx.eff).labels, ...labels])].sort().join(', ')}}\`), or remove the cause`);
   }
@@ -431,6 +443,7 @@ export function check(source) {
   function fnType(f, ctx, owner) {
     const inner = { ...ctx, scope: { vars: new Map(), parent: ctx.scope }, owner };
     inner.eff = f.eff ? sigEffect(f.eff, ctx) : row([], newRowVar(ctx.level));
+    if (f === main && grants && !f.eff) { inner.eff = row([...grants, 'fail']); inner.granted = true; }
     const params = f.params.map((p) => {
       const ty = p.ann ? sigType(p.ann, ctx) : newVar(ctx.level);
       p.id = bindLocal(inner, p.name, ty, p.span).id;
@@ -451,7 +464,11 @@ export function check(source) {
     for (const f of comp) unifyAt(f.ty, fnType(f, f.ctx, `\`${f.name}\``), f.nameSpan);
     for (const f of comp) { generalize(f.ty, 0); f.scheme = f.ty; }
   }
-  // `main` may perform any effect.
+  // An annotated `main` must not claim more than it was granted.
+  if (grants && main.eff) {
+    const extra = main.eff.labels.filter((l) => l !== 'fail' && !grants.includes(l));
+    if (extra.length) throw new LumenError(`\`main\` is declared with \`${extra.join(', ')}\`, which was not granted`, main.nameSpan, `grant it when running the program, for example \`lumen2 run --allow ${extra.join(',')}\``);
+  }
   for (const run of deferred) run();
 
   const printer = (f) => new TypePrinter().signature(f.scheme);
@@ -466,7 +483,7 @@ function checkEffectLabels(ast) {
   const visit = (te) => {
     if (!te || typeof te !== 'object') return;
     if (Array.isArray(te)) { te.forEach(visit); return; }
-    if (te.labels) for (const l of te.labels) if (!LABELS.includes(l)) throw new LumenError(`unknown effect \`${l}\` (the effects are io and fail)`, te.span);
+    if (te.labels) for (const l of te.labels) if (!LABELS.includes(l)) throw new LumenError(`unknown effect \`${l}\` (the effects are input, output, clock, random and fail)`, te.span);
     for (const [k, v] of Object.entries(te)) if (k !== 'span' && v && typeof v === 'object') visit(v);
   };
   visit(ast);

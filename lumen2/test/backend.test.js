@@ -4,17 +4,17 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { interpretSource, compileSource, runSource } from '../src/api.js';
+import { interpretSource, compileSource, runSource, makeHost } from '../src/api.js';
 import { runWasm } from '../src/codegen.js';
 import { generate, differential, MUTANTS } from './fuzz.js';
 
 // Runs src compiled (normally and in paranoid mode) and interpreted; all must agree.
 function agree(src, input = '') {
-  const ref = interpretSource(src, { input });
+  const ref = interpretSource(src, { input, host: makeHost({ seed: 9 }) });
   if (!ref.ok) assert.fail(ref.errors[0].message);
   let last;
   for (const paranoid of [false, true]) {
-    const r = runSource(src, { input, paranoid });
+    const r = runSource(src, { input, paranoid, host: makeHost({ seed: 9 }) });
     assert.equal(r.output, ref.output, `output (paranoid: ${paranoid})`);
     assert.equal(r.error, ref.error, `error (paranoid: ${paranoid})`);
     if (!r.error) assert.equal(r.live, 0, 'every object is freed');
@@ -43,6 +43,7 @@ test('compiled programs agree with the interpreter', () => {
   agree('fn main() { panic("stop") }');
   agree('fn main() { println(int_to_string(3037000500 * 3037000500)) }');
   agree('fn main() { let s = read_input(); println(int_to_string(string_length(s)) ++ s) }', 'caf\xc3\xa9 \xff');
+  agree('fn main() { let t = clock_ms(); println(int_to_string(random_int(-5, 5)) ++ " " ++ int_to_string(random_int(-9223372036854775808, 9223372036854775807)) ++ " " ++ int_to_string(clock_ms() - t)) }');
 });
 
 test('closures, local functions, guards and nested patterns', () => {

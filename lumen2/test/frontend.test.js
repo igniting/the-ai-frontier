@@ -3,7 +3,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkSource, interpretSource } from '../src/api.js';
+import { checkSource, interpretSource, makeHost } from '../src/api.js';
 
 const sigs = (src) => {
   const c = checkSource(src);
@@ -15,8 +15,8 @@ const rejects = (src, pattern) => {
   assert.equal(c.ok, false, 'expected a compile error');
   assert.match(c.errors[0].message, pattern);
 };
-const run = (src, input = '') => {
-  const r = interpretSource(src, { input });
+const run = (src, input = '', host = undefined) => {
+  const r = interpretSource(src, { input, host });
   if (!r.ok) assert.fail(r.errors[0].message);
   return r;
 };
@@ -32,18 +32,52 @@ test('types and effects are inferred, effects are polymorphic', () => {
   `);
   assert.equal(s.area, 'fn(Int, Int) -> Int');
   assert.equal(s.average, 'fn(List<Int>) -> Int ! fail');
-  assert.equal(s.shout, 'fn(List<Int>) -> () ! io');
+  assert.equal(s.shout, 'fn(List<Int>) -> () ! output');
   assert.equal(s.apply, 'fn(fn(a) -> b ! e, a) -> b ! e');
   assert.equal(s.has, 'fn(List<a>, a) -> Bool where a: Cmp');
-  assert.equal(s.main, 'fn() -> () ! {fail, io}');
+  assert.equal(s.main, 'fn() -> () ! {fail, output}');
 });
 
 test('effect annotations are checked claims', () => {
   rejects('fn f(xs: List<Int>) -> Int ! {} { sum(xs) / length(xs) }\nfn main() { () }', /`\/` \(division by zero\) can fail, but `f` is declared without `fail`/);
-  rejects('fn f() -> () ! fail { println("x") }\nfn main() { () }', /calling `println` can perform io, but `f` is declared without `io`/);
-  rejects('fn g(f: fn(Int) -> Int) -> Int { f(1) }\nfn main() { let n = g(|x| { println("hi"); x }); () }', /differ in their effects|expected fn\(Int\) -> Int, found fn\(Int\) -> Int ! io/);
+  rejects('fn f() -> () ! fail { println("x") }\nfn main() { () }', /calling `println` can write output, but `f` is declared without `output`/);
+  rejects('fn g(f: fn(Int) -> Int) -> Int { f(1) }\nfn main() { let n = g(|x| { println("hi"); x }); () }', /differ in their effects|expected fn\(Int\) -> Int, found fn\(Int\) -> Int ! output/);
+  sigs('fn f() -> () ! io { println("x") }\nfn main() { f() }');
   sigs('fn f(xs: List<Int>) -> Int ! fail { sum(xs) / length(xs) }\nfn main() { () }');
   sigs('fn g(f: fn(Int) -> Int ! e, x: Int) -> Int ! e { f(x) }\nfn main() { let n = g(|x| { println("ok"); x }, 1); () }');
+});
+
+test('capabilities: io is split, and main gets only what it is granted', () => {
+  const s = sigs(`
+    fn greet() { println("hi") }
+    fn echo() { print(read_input()) }
+    fn roll() { random_int(1, 6) }
+    fn stamp() { clock_ms() }
+    fn main() { greet() }
+  `);
+  assert.equal(s.greet, 'fn() -> () ! output');
+  assert.equal(s.echo, 'fn() -> () ! {input, output}');
+  assert.equal(s.roll, 'fn() -> Int ! random');
+  assert.equal(s.stamp, 'fn() -> Int ! clock');
+  const granted = (src, grants) => checkSource(src, { grants });
+  const prog = 'fn roll() { random_int(1, 6) }\nfn main() { println(int_to_string(roll())) }';
+  const denied = granted(prog, ['output']);
+  assert.equal(denied.ok, false);
+  assert.match(denied.errors[0].message, /calling `roll` can use randomness, but `main` was not granted `random`/);
+  assert.equal(granted(prog, ['output', 'random']).ok, true);
+  // fail is not a capability: it is always allowed.
+  assert.equal(granted('fn main() { println(int_to_string(1 / 0)) }', ['output']).ok, true);
+  // An annotation on main cannot claim more than the grant.
+  assert.match(granted('fn main() -> () ! {output, clock} { println("x") }', ['output']).errors[0].message, /declared with `clock`, which was not granted/);
+  rejects('fn f() -> () ! {net} { () }\nfn main() { () }', /unknown effect `net`/);
+});
+
+test('clock and random come from the host, so a seeded run is reproducible', () => {
+  const src = 'fn main() { let t = clock_ms(); let a = random_int(1, 100); let b = random_int(100, 1); println(int_to_string(a) ++ " " ++ int_to_string(b) ++ " " ++ int_to_string(clock_ms() - t)) }';
+  const one = run(src, '', makeHost({ seed: 42 })).output;
+  assert.equal(run(src, '', makeHost({ seed: 42 })).output, one);
+  const [a, b, dt] = one.trim().split(' ').map(Number);
+  assert.ok(a >= 1 && a <= 100 && b >= 1 && b <= 100 && dt === 1);
 });
 
 test('comparison needs a type without functions', () => {

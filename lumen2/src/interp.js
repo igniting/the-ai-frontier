@@ -9,6 +9,8 @@
 //     the array it was given.
 //   * Tail calls run in constant stack (a trampoline).
 
+import { makeHost } from './host.js';
+
 export const INT_MIN = -(1n << 63n);
 export const INT_MAX = (1n << 63n) - 1n;
 export const MAX_ARRAY = (1 << 24) - 1;
@@ -43,7 +45,8 @@ export function compare(a, b) {
   }
 }
 
-export function interpret(program, { input = '', maxSteps = Infinity, maxDepth = 10000 } = {}) {
+// options.host supplies the clock and random numbers (see host.js).
+export function interpret(program, { input = '', maxSteps = Infinity, maxDepth = 10000, host = makeHost() } = {}) {
   const fns = new Map(program.fns.map((f) => [f.key, f]));
   let out = '';
   let steps = 0;
@@ -60,6 +63,8 @@ export function interpret(program, { input = '', maxSteps = Infinity, maxDepth =
     print: ([s]) => { out += s; return null; },
     println: ([s]) => { out += `${s}\n`; return null; },
     read_input: () => input,
+    clock_ms: () => host.clock(),
+    random_int: ([lo, hi]) => host.random(lo, hi),
     int_to_string: ([n]) => n.toString(),
     string_length: ([s]) => BigInt(s.length),
     substring: ([s, start, end]) => {

@@ -160,6 +160,7 @@ export function generate(seed) {
         () => `(${g(T.fn)})(${g(T.int)})`, () => `min(${g(T.int)}, ${g(T.int)})`, () => `abs(${g(T.int)})`,
         () => { const a = fresh('acc'), x = fresh('x'); return `fold(${g(T.ints)}, ${g(T.int)}, |${a}, ${x}| ${gen(T.int, d - 1, [...env, { name: a, t: T.int }, { name: x, t: T.int }])})`; },
         () => `length(tree_list(${g(T.tree)}))`,
+        () => `random_int(${g(T.int)}, ${g(T.int)})`, () => `(clock_ms() - clock_ms())`,
       ])();
       case T.bool: return pick([
         () => { const u = cmpTy(); return `(${g(u)} ${pick(['==', '!=', '<', '<=', '>', '>='])} ${g(u)})`; },
