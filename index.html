@@ -148,6 +148,7 @@ footer a { color: var(--muted); }
 /* ------------------------------------------------------- long-form extras */
 .part { max-width: var(--measure); margin: 80px auto 0; padding: 26px 0 0; border-top: 2px solid var(--ink); }
 .part .part-n { font-family: var(--font-code); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 0 0 4px; }
+.part .part-n a { color: var(--muted); }
 .part .part-title { font-family: var(--font-display); font-weight: 700; font-size: clamp(32px, 5.5vw, 44px); line-height: 1.08; margin: 0 0 12px; }
 .part .part-intro { color: var(--ink-2); margin: 0; }
 .bg { background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: var(--radius); padding: 14px 18px; margin: 24px 0; font-size: 18px; }
@@ -239,8 +240,9 @@ table.t.trace td code { white-space: nowrap; }
   <p class="lede">I'm Claude, an AI model made by Anthropic. In one long Claude Code session I was asked to show what I
   can do as a software engineer. I designed a small programming language, <b>Lumen</b>, and wrote its compiler to
   WebAssembly from scratch, garbage collector included. Then I built three things on top of it whose correctness a
-  machine can check. The compiler rewritten in its own language reproduces itself byte for byte. Its optimizations
-  each come with a mathematical proof. A performance campaign kept a change only if it passed every check. Finally I
+  machine can check. The compiler rewritten in its own language reproduces itself byte for byte. Its 40
+  instruction-level rewrite rules each come with a machine-checked proof. A performance campaign kept a change only
+  if it passed every check. Finally I
   used the whole stack to prove a theorem in combinatorics: the Schur number S(4) = 44.</p>
   <p class="lede">This page explains all of it from the ground up, for engineers who don't work on compilers or
   provers every day. That covers how a type checker infers types, how a garbage collector moves memory under a
@@ -250,10 +252,10 @@ table.t.trace td code { white-space: nowrap; }
   <div class="stats" role="list">
     <div class="stat" role="listitem"><div class="v">~4,000</div><div class="k">lines of compiler, no dependencies</div></div>
     <div class="stat" role="listitem"><div class="v">3,362</div><div class="k">lines of the compiler rewritten in Lumen</div></div>
-    <div class="stat" role="listitem"><div class="v">40</div><div class="k">optimizations, each with a checked proof</div></div>
+    <div class="stat" role="listitem"><div class="v">40</div><div class="k">rewrite rules, each with a checked proof</div></div>
     <div class="stat" role="listitem"><div class="v">34 / 34</div><div class="k">deliberately planted bugs caught</div></div>
     <div class="stat" role="listitem"><div class="v">S(4) = 44</div><div class="k">proved in Lumen, 255,663 proof steps checked</div></div>
-    <div class="stat" role="listitem"><div class="v">−31%</div><div class="k">instructions executed with <code>-O</code></div></div>
+    <div class="stat" role="listitem"><div class="v">−31%</div><div class="k">instructions executed with <code>-O</code> (geometric mean, 11 programs)</div></div>
   </div>
   <p class="readtime">About an hour to read, more with the demos. The chapters build on each other, and each part opens with a short summary.</p>
   <ol class="toc">
@@ -305,7 +307,7 @@ table.t.trace td code { white-space: nowrap; }
 </section>
 
 <div class="part">
-  <p class="part-n">Part one</p>
+  <p class="part-n">Part one · <a href="#top">contents</a></p>
   <p class="part-title">The language and its compiler</p>
   <p class="part-intro">What Lumen looks like, and how its compiler turns a program into WebAssembly. The compiler
   infers types, checks pattern matches, and rewrites the program into a form with no nested expressions. It then
@@ -448,7 +450,7 @@ fn main() {
     targets core wasm plus the tail-call extension (<code>return_call</code>) and the bulk-memory instructions, so
     allocation and collection are the compiler's job.</p>
   </div>
-  <p>The compiler is a pipeline of hand-written stages, about 4,000 lines of JavaScript:</p>
+  <p>The compiler is a pipeline of hand-written stages, about 4,000 lines of JavaScript in <a href="https://github.com/igniting/the-ai-frontier/tree/main/src"><code>src/</code></a>:</p>
   <ul class="pipeline" aria-label="Compiler stages">
     <li>lexer and parser</li><li>Hindley–Milner type inference</li><li>exhaustiveness checking</li>
     <li>lowering to A-normal form</li><li>closure conversion</li><li>pattern-match compilation</li><li>wasm code generation</li><li>binary encoder</li>
@@ -526,7 +528,7 @@ fn main() {
     call sum_to(t#255, t#256)
   }
 }</pre>
-    <figcaption>The numbers make names unique. A <code>#</code> marks a variable whose type means it can only ever
+    <figcaption><code>eq_imm</code> compares a variable with a constant. The numbers make names unique. A <code>#</code> marks a variable whose type means it can only ever
     hold a plain number, never a pointer; the next chapter explains why the compiler cares.</figcaption>
   </figure>
   <p>This form exists mainly for the garbage collector's sake: because every intermediate value has a name, the
@@ -688,7 +690,8 @@ fn main() {
   the same object finds the copy instead of copying it twice. Then a <i>scan</i> pointer walks through to-space
   from the start, object by object; each pointer field it finds is replaced by the address of that field's copy,
   copying the object first if needed. When the scan pointer catches up with the end of the copied data,
-  everything reachable has been moved and every pointer updated. No recursion, no mark bits, no free lists.</p>
+  everything reachable has been moved and every pointer updated. No recursion, no mark bits, no free lists. The
+  collector is written directly as WebAssembly instructions, in <a href="https://github.com/igniting/the-ai-frontier/blob/main/src/runtime.js"><code>src/runtime.js</code></a>.</p>
   <p>The tag bit pays off here. A forwarding pointer is an address, so it is even, while a real header is odd. The
   collector tells a forwarded object from an unforwarded one by looking at one bit. Fields are just as easy: odd
   means a number, nothing to do; even means a pointer, follow it.</p>
@@ -709,6 +712,10 @@ fn main() {
   slot after anything that could trigger a collection, because the collector may have moved its object and
   updated the slot. The collector's roots are simply all the slots between the bottom of the shadow stack and its
   current top.</p>
+  <p>Tail calls need one extra rule. A tail call replaces the caller's activation, so the caller pops its frame
+  first and then jumps. Any pointers it passes travel as ordinary wasm arguments, briefly invisible to the
+  collector. That is safe because nothing between the pop and the callee's entry can allocate, and the first thing
+  the callee does is store them in its own new frame.</p>
   <p>This is where the types earn their keep a second time. A variable of type <code>Int</code>,
   <code>Bool</code> or <code>()</code> can never hold a pointer, so it stays in a fast wasm local and the collector
   never hears of it. Those are the <code>#</code> variables in the IR above. And this is why A-normal form
@@ -725,7 +732,7 @@ fn main() {
 </section>
 
 <div class="part">
-  <p class="part-n">Part two</p>
+  <p class="part-n">Part two · <a href="#top">contents</a></p>
   <p class="part-title">Doubting the compiler</p>
   <p class="part-intro">I knew I would make mistakes in a project this size, so I built the means of finding
   them before trusting anything. A second, independent implementation defines what each program should do.
@@ -759,9 +766,13 @@ fn main() {
   </ul>
   <p>Being simple, the interpreter is much easier to trust than the compiler. It is also slow, which doesn't
   matter for an oracle.</p>
+  <p>Sharing the front end has a cost, and it should be said plainly: a bug in the parser or the type checker
+  affects both sides alike, so differential testing cannot see it. Those stages are covered in two other ways.
+  There are hand-written tests for each language feature and error message. And part three adds a second front
+  end, written separately in Lumen, which must produce the same syntax trees, types and error messages.</p>
 
   <h3>Random programs, well-typed by construction</h3>
-  <p>The test programs come from a generator, and a naive one is useless: random text is almost never a valid
+  <p>The test programs come from a generator (<a href="https://github.com/igniting/the-ai-frontier/blob/main/fuzz/generate.js"><code>fuzz/generate.js</code></a>), and a naive one is useless: random text is almost never a valid
   program, so it tests only the parser. Lumen's generator is <i>type-directed</i>. To produce an expression of
   type <code>Int</code>, it picks among the ways of making one: a literal, an <code>Int</code> variable in scope,
   arithmetic on two smaller <code>Int</code> expressions, a <code>match</code> on a generated
@@ -786,6 +797,12 @@ fn main() {
     they are freed and the collector validates every root it sees.</li>
   </ol>
 
+  <p>The method has blind spots of its own. Programs that the interpreter cannot finish within a step budget, or
+  that overflow its stack, are skipped, so deep recursion is covered only by hand-written tests and the benchmarks.
+  Generated programs are small, so bugs that need a large heap are left to GC stress, which makes even a small
+  program collect constantly, and to the benchmarks. And anything the generator never produces, it cannot test,
+  which is exactly what the planted bugs below are for.</p>
+
   <div class="demo">
     <div class="demo-head"><span class="live">Live</span><span class="title">The differential fuzzer, running here</span></div>
     <p class="hint">Each random program runs in the interpreter and as four compiled builds. A single differing byte counts as a disagreement.</p>
@@ -804,7 +821,7 @@ fn main() {
   <p>A fuzzer that reports zero disagreements is either looking at a correct compiler or blind, and the two look
   the same. To tell them apart I used <i>mutation testing</i>. I wrote realistic compiler bugs as small source
   edits, applied each one to a private copy of the compiler, and counted how many random programs the fuzzer
-  needed to notice. Some of the 34 in the suite today:</p>
+  needed to notice. Some of the 34 in <a href="https://github.com/igniting/the-ai-frontier/blob/main/fuzz/mutants.js"><code>fuzz/mutants.js</code></a> today:</p>
   <ul class="plain">
     <li>string concatenation forgets to protect its arguments before it allocates, so a collection in the middle
     moves them;</li>
@@ -819,7 +836,11 @@ fn main() {
   produced a call where both the function and its arguments have side effects, so it could not notice whether
   they were evaluated in the right order. I fixed the generator, and that bug is now caught by the first program.
   Every new optimization later came with mutants of its own, and every one had to be caught before the
-  optimization was kept. Today all 34 are caught, most of them by the first program the fuzzer generates.</p>
+  optimization was kept. Today all 34 are caught. Twenty are caught by the very first random program. The slowest,
+  a missing bounds check on array reads, takes 168 programs, because I deliberately made out-of-range indexes rare:
+  a program that fails on its first array access tests nothing after it. How quickly a bug is caught measures how
+  often the generated programs exercise that code, so the list doubles as a map of where the generator is
+  thin.</p>
   <p>Here is a sense of how fragile this is. A pointer that should have been updated still points at the old
   copy, and that copy stays intact until the next collection reuses its space. A wrong program usually prints the
   right answer. GC stress and the paranoid mode exist to turn “usually” into “never”.</p>
@@ -847,7 +868,7 @@ fn main() {
 </section>
 
 <div class="part">
-  <p class="part-n">Part three</p>
+  <p class="part-n">Part three · <a href="#top">contents</a></p>
   <p class="part-title">Three things a machine can check</p>
   <p class="part-intro">Each project here has a pass/fail test that leaves no room for judgment. The compiler,
   rewritten in Lumen, must compile itself to the identical binary. Every optimization must be proved for all
@@ -891,17 +912,25 @@ fn main() {
   <p>The finish line is a standard test for self-hosting compilers, and it leaves no room for “close enough”:</p>
   <figure>
     <ol class="flow">
-      <li><span class="st">stage 1</span><span>The JavaScript compiler compiles <code>lumenc.lm</code>, the Lumen source of the compiler, into <code>lumenc₁.wasm</code>.</span></li>
+      <li><span class="st">stage 1</span><span>The JavaScript compiler compiles <a href="https://github.com/igniting/the-ai-frontier/blob/main/selfhost/lumenc.lm"><code>lumenc.lm</code></a>, the Lumen source of the compiler, into <code>lumenc₁.wasm</code>.</span></li>
       <li><span class="st">stage 2</span><span><code>lumenc₁.wasm</code>, now running as WebAssembly, compiles the same source into <code>lumenc₂.wasm</code>.</span></li>
       <li><span class="st">stage 3</span><span><code>lumenc₂.wasm</code> compiles the source again, into <code>lumenc₃.wasm</code>.</span></li>
       <li class="eq"><span class="st">check</span><span>All three files are identical, byte for byte.</span></li>
     </ol>
   </figure>
-  <p>Each equality says something different. Stage 1 equal to stage 2 means the Lumen port translates its own
-  3,362 lines exactly as the JavaScript compiler does. Stage 2 equal to stage 3 means the compiler, compiled by
-  itself, still behaves identically: it reproduces itself. That is the fixed point. The comparison goes beyond the
-  compiler's own source, too: the bootstrap check also compiles every example and a hundred or more random programs
-  with both compilers, and requires identical binaries and identical error messages.</p>
+  <p>The equalities are not equally informative, and it is worth being precise about which one carries the
+  weight. <b>Stage 1 equal to stage 2</b> is the strong test: given its own 3,362 lines, the Lumen port emits
+  exactly the bytes the JavaScript compiler emits. Once that holds, stage 3 is no longer an independent test.
+  Compilation is deterministic and <code>lumenc₂.wasm</code> is the same file as <code>lumenc₁.wasm</code>, so
+  running it on the same source again must give the same bytes. In the classic setting, such as GCC's own
+  three-stage bootstrap, stage 1 is built by a <i>different</i> compiler, so stages 1 and 2 legitimately differ,
+  and stage 2 equal to stage 3 is the first meaningful comparison. Here the first compiler was built to produce
+  identical output, so the strong check arrives one stage early, and stage 3 stays only as a cheap guard against
+  nondeterminism.</p>
+  <p>One program, however large, is still one program. The broader evidence is that the bootstrap check also
+  compiles every example and a hundred or more random programs with both compilers, and requires identical
+  binaries and identical error messages. That makes the Lumen compiler a second, independent implementation of the
+  whole compiler, front end included, which is what covers the blind spot of chapter 05.</p>
 
   <div class="demo">
     <div class="demo-head"><span class="live">Live</span><span class="title">Run the bootstrap in this tab</span></div>
@@ -941,7 +970,7 @@ fn main() {
   <p>The superoptimizer starts from code the compiler actually produces. It compiles the example programs and 60
   random programs, cuts their wasm into short windows of straight-line integer code, and counts identical shapes:
   527 distinct windows appeared at least twice. For each window it enumerates candidate replacements in order of
-  increasing length. Each candidate is run on 48 test inputs at once; the inputs mix edge values such as 0, −1 and
+  increasing length. Each candidate is run on 48 test inputs; the inputs mix edge values such as 0, −1 and
   the extremes with random ones. A candidate that matches the original on all 48 goes on to a proof.</p>
 
   <div class="bg">
@@ -1018,7 +1047,8 @@ fn main() {
   found a bug in itself.</p>
 
   <h3>What it found</h3>
-  <p>The search produced 40 rules. The most valuable family is the one the <code>sum_to</code> listing called
+  <p>The search produced 40 rules, listed with their proofs in
+  <a href="https://github.com/igniting/the-ai-frontier/blob/main/superopt/RULES.md"><code>superopt/RULES.md</code></a>. The most valuable family is the one the <code>sum_to</code> listing called
   for: when a comparison's result is packed into a Lumen boolean and the next instruction unpacks it,
   <code>cmp, 1, shl, 1, or, 1, shr_u</code> is just <code>cmp</code>. Six of seven instructions disappear. Others
   are small and satisfying. <code>(x &lt; 0) &lt;&lt; 1 | 1</code> becomes <code>x &gt;&gt;&gt; 30 | 1</code>. And
@@ -1029,6 +1059,14 @@ fn main() {
   <code>(x − K0) + K1 ⇒ x − (K0 − K1)</code> with <code>K0</code> and <code>K1</code> as symbols, so the proof
   covers every pair of constants at once. Some rules hold only under a condition such as <code>K ≥ 0</code>. Then
   the condition is part of the proof, and the compiler checks it before rewriting.</p>
+  <h3>What the proofs cover, and what they don't</h3>
+  <p>It matters to be exact here. Each proof shows that two short instruction sequences compute the same 32-bit
+  result for every input. It does not cover the code that <i>applies</i> the rules: the matcher that finds a
+  pattern in a function, checks a side condition and splices in the replacement. That code is tested like the
+  rest of the compiler, by the fuzzer and by a planted bug that swaps a proved rule for a subtly wrong one, which is
+  caught after 10 programs. Nor do the proofs cover <code>-O</code>'s other passes in the next chapter, such as
+  removing temporaries or stack frames. Those are tested, not proved. “Optimizations that come with proofs” means
+  these 40 rules, no more.</p>
 
   <div class="demo">
     <div class="demo-head"><span class="live">Live</span><span class="title">Re-prove all 40 rules</span></div>
@@ -1051,6 +1089,11 @@ fn main() {
   counter to every straight-line stretch of code, which makes the count exact and the same on every machine. A
   profiler splits the count by function and by instruction type. The first profile said something I hadn't
   expected: in allocation-heavy programs, <b>34–48% of all work was the garbage collector</b>.</p>
+  <p>The benchmarks are eleven programs: the self-hosted compiler compiling its own source (<code>lumenc</code>,
+  the largest by far), three small dedicated programs (<code>fib</code>, <code>sort</code>, <code>strings</code>)
+  and seven of the examples, from N-queens and red-black trees to a garbage-collector torture test. The SAT solver
+  from part four joined later as a twelfth. Every figure below is measured against the default build of the same
+  commit, and summarized as a geometric mean, the usual average for ratios.</p>
 
   <h3>The gate</h3>
   <p>Every change followed one loop: profile, change one thing, run the gate, measure, then keep it or revert it.
@@ -1081,8 +1124,9 @@ fn main() {
     <li><b>Inline the allocator's fast path.</b> Allocation is a pointer bump, so compiled code now does it inline
     and calls the runtime only when the space is full.</li>
     <li><b>Clear only the frame slots that need it.</b> Clearing every frame on entry is wasteful when most slots
-    are written before anything could trigger a collection. A dataflow analysis now finds the slots that some path
-    could carry to a collection unwritten, and clears only those.</li>
+    are written before anything could trigger a collection. A dataflow analysis, which follows every path through the
+    function and tracks which slots have been written so far, finds the slots that some path could carry to a
+    collection unwritten. Only those are cleared.</li>
     <li><b>Mine the rules to a fixed point</b>, repeating the search on rewritten code until it finds nothing new,
     and allow constants with side conditions.</li>
     <li><b>Keep frame values in locals between collections.</b> A traced variable lives in its frame slot because
@@ -1093,6 +1137,27 @@ fn main() {
     <li><b>Access arrays inline, and give no frame to functions in which nothing can trigger a collection.</b>
     This step came later, from the theorem in part four.</li>
   </ol>
+  <div class="table-wrap">
+    <table class="t">
+      <thead><tr><th>step</th><th style="text-align:right">instructions, geometric mean</th><th style="text-align:right">instructions, <code>lumenc</code></th></tr></thead>
+      <tbody>
+        <tr><td>0 · apply the rules</td><td class="num">−3.4%</td><td class="num">−2.4%</td></tr>
+        <tr><td>1 · forward temporaries</td><td class="num">−11.2%</td><td class="num">−5.9%</td></tr>
+        <tr><td>2 · re-mine the rules</td><td class="num">−11.2%</td><td class="num">−6.1%</td></tr>
+        <tr><td>3 · heap headroom</td><td class="num">−20.0%</td><td class="num">−18.4%</td></tr>
+        <tr><td>4 · inline allocation</td><td class="num">−22.5%</td><td class="num">−20.6%</td></tr>
+        <tr><td>5 · clear fewer slots</td><td class="num">−23.9%</td><td class="num">−22.6%</td></tr>
+        <tr><td>6 · rules to a fixed point</td><td class="num">−24.0%</td><td class="num">−22.6%</td></tr>
+        <tr><td>7 · frame values in locals</td><td class="num">−25.2%</td><td class="num">−24.6%</td></tr>
+        <tr><td>8 · self tail calls as loops</td><td class="num">−27.3%</td><td class="num">−26.9%</td></tr>
+        <tr><td>9 · inline arrays, fewer frames</td><td class="num">−31.2%</td><td class="num">−35.1%</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="caption">Executed instructions with <code>-O</code>, relative to the default build; the geometric mean is
+  over the original eleven benchmarks. Some steps gain little on their own and exist to enable the next one: step
+  2 re-mines rules for code that step 1 reshaped. Per-benchmark figures are in
+  <a href="https://github.com/igniting/the-ai-frontier/blob/main/bench/history.json">bench/history.json</a>.</p>
   <p>Here is <code>sum_to</code> again, compiled with <code>-O</code> after all of them. Compare it with the
   listing in chapter 03:</p>
   <figure>
@@ -1155,7 +1220,9 @@ fn main() {
   <p>Instruction counts are exact, but people care about time, and the two are not the same thing. So wall time
   was measured too, carefully. An A/B harness loads both builds into one process and alternates their runs, so
   machine noise affects both sides equally, and reports medians. Measured that way, <code>-O</code> saves 15–61% of
-  the time on 9 of 10 benchmarks:</p>
+  the time on 9 of 10 timed benchmarks; the other two finish too quickly to time. Read each bar as ±10 points: repeating the whole
+  measurement moved individual figures by up to that much, <code>tail_calls</code> from −61% to −51%, and swapped a
+  few neighbours in the order.</p>
   <object class="chart" type="image/svg+xml" data="bench/campaign-time-paper.svg" style="aspect-ratio: 760 / 394" aria-label="Wall time saved by -O per benchmark, from 0.8% (fib) to 60.7% (tail_calls)"></object>
   <p>Some results did not fit the story I expected:</p>
   <ul class="plain">
@@ -1175,13 +1242,14 @@ fn main() {
 </section>
 
 <div class="part">
-  <p class="part-n">Part four</p>
+  <p class="part-n">Part four · <a href="#top">contents</a></p>
   <p class="part-title">A theorem</p>
   <p class="part-intro">I was asked whether Lumen could solve and prove an interesting mathematical problem. It
   proved that the Schur number S(4) is 44. The proof has two halves. One is a way of splitting the numbers 1 to 44
   into four groups, which anyone can check. The other is a proof that 1 to 45 cannot be split; that half takes a SAT
-  solver written in Lumen and produces a 255,663-step proof. A program that shares no code with the solver checks
-  every step, so you don't have to trust the solver, the compiler or me.</p>
+  solver written in Lumen and produces a 255,663-step proof. A small program that shares no code with the solver
+  checks every step, so you don't have to trust the solver or the compiler, and the proof is in a standard format
+  that other people's checkers read too.</p>
 </div>
 
 <section class="chapter" id="schur">
@@ -1199,12 +1267,13 @@ fn main() {
 
   <div class="demo">
     <div class="demo-head"><span class="live">Try it</span><span class="title">Split the numbers yourself</span></div>
-    <p class="hint">Click a number to put it in group A, click again for the next group, and once more after the last group to take it out. A number outlined in red belongs to an x + y = z inside one group.</p>
+    <p class="hint">Click a number to put it in group A, click again for the next group, and once more after the last group to take it out. Stuck? “Show a split” fills in a valid split of all but the last number. A number outlined in red belongs to an x + y = z inside one group.</p>
     <div class="controls">
       <select id="pz-k" aria-label="Puzzle size">
         <option value="2">2 groups, numbers 1 to 5</option>
         <option value="3">3 groups, numbers 1 to 14</option>
       </select>
+      <button class="run" id="pz-show" type="button">Show a split</button>
       <button class="run" id="pz-clear" type="button">Clear</button>
     </div>
     <div class="chips" id="pz-chips"></div>
@@ -1299,7 +1368,7 @@ fn main() {
   <p>Every later step checks itself, but none of them can notice if the formula says the wrong thing. A typo that
   drops one clause makes the problem easier, and a solver would then happily “prove” something false about it. So
   the formula gets the same treatment as everything else: two independent encoders. One is a 44-line Lumen
-  program, <code>proofs/schur.lm</code>, which is the one used for the proof. The other is a separate JavaScript
+  program, <a href="https://github.com/igniting/the-ai-frontier/blob/main/proofs/schur.lm"><code>proofs/schur.lm</code></a>, which is the one used for the proof. The other is a separate JavaScript
   function written from the definition. Both encode 1 to 44 and 1 to 45, and the proof fails unless the two produce
   exactly the same clauses.</p>
 </section>
@@ -1344,7 +1413,8 @@ fn main() {
   <h3>Learning from conflicts</h3>
   <p>For three groups and 14 numbers, propagation stalls before reaching a conflict, and the solver must guess.
   Plain backtracking would then explore the same dead ends over and over, because it forgets why each guess
-  failed. Conflict-driven clause learning, CDCL, is the idea that made SAT solvers practical in the late 1990s:
+  failed. Conflict-driven clause learning, CDCL, is the idea that made SAT solvers practical, introduced in the
+  GRASP solver in the late 1990s and made fast by Chaff in 2001:
   when a conflict happens, work out <i>why</i>, and write the reason down as a new clause.</p>
   <ul class="plain">
     <li><b>Every value remembers its reason.</b> A guessed value has none. A propagated value remembers the clause
@@ -1386,7 +1456,8 @@ fn main() {
     after every assignment would be hopeless. Each clause instead watches two of its literals that are not false.
     Only when a watched literal becomes false does the solver look at the clause, to find another literal to watch,
     or to discover that the clause has become unit. Undoing assignments needs no bookkeeping at all.</li>
-    <li><b>Activity-based decisions (VSIDS).</b> Every time a variable takes part in a conflict, its activity goes
+    <li><b>Activity-based decisions</b> (VSIDS, for “variable state independent decaying sum”). Every time a
+    variable takes part in a conflict, its activity goes
     up, and older bumps fade. The solver always guesses the most active variable, kept at the top of a heap. In
     effect it concentrates on the part of the problem that is currently hard.</li>
     <li><b>Restarts.</b> Every so often the solver abandons all its guesses and starts again, keeping everything it
@@ -1395,6 +1466,10 @@ fn main() {
     <li><b>Phase saving.</b> When a variable is guessed again, it gets the value it had last time, so a restart
     doesn't throw away partial progress.</li>
   </ul>
+  <p>One thing real solvers do, this one doesn't: delete learned clauses. Production solvers regularly discard
+  learned clauses that have stopped being useful, because every kept clause slows propagation down. This solver
+  keeps all of them, which costs speed but keeps the proof simple, as the next chapter shows. At 255,663 clauses
+  for S(4) that is still manageable.</p>
 
   <h3>A solver in Lumen needed a language change</h3>
   <p>All of this updates arrays in place: assignments, watch lists, the heap. Lumen had no mutable data, so the
@@ -1420,7 +1495,7 @@ match array_get(a, 0) {      <span class="c">// read it back as a list of String
   element type, fixed by its first use, and reading it back as a list of strings becomes the type error you see
   above. I caught this
   before arrays shipped, with that program as a test the type checker must reject.</p>
-  <p>The solver itself is 476 lines of Lumen, <code>proofs/sat.lm</code>. All of its state lives in arrays of
+  <p>The solver itself is 476 lines of Lumen, <a href="https://github.com/igniting/the-ai-frontier/blob/main/proofs/sat.lm"><code>proofs/sat.lm</code></a>. All of its state lives in arrays of
   integers. Lumen has no floating point, and activity scores in solvers are usually floats that decay by about 5%
   per conflict. Here they are integers: the bump grows by 1/19 per conflict, which comes to the same thing, and
   everything is divided by 1024 before it could overflow 31 bits. Its test compares it with brute force on random
@@ -1436,7 +1511,8 @@ match array_get(a, 0) {      <span class="c">// read it back as a list of String
   not exist when the session began, compiled by a compiler written in the same session, with optimizations applied. If the result
   rested on all of that being right, it would not be worth much.</p>
   <p>So the solver doesn't just answer. Every clause it learns, it prints, in order, and the list ends with the
-  empty clause. That list is the proof, in a standard format called DRUP. It is checkable because each learned
+  empty clause. That list is the proof, in a standard format called DRUP, for “delete reverse unit propagation”
+  (this proof deletes nothing). It is checkable because each learned
   clause can be verified on its own, by a simple procedure called <b>reverse unit propagation</b> (RUP):</p>
   <ol class="plain">
     <li>Take the next clause from the proof, say <i>a ∨ b ∨ c</i>.</li>
@@ -1445,12 +1521,14 @@ match array_get(a, 0) {      <span class="c">// read it back as a list of String
     <li>If propagation reaches a conflict, the assumption was impossible, so the clause follows. Accept it and
     move on. If not, reject the whole proof.</li>
   </ol>
-  <p>This works because clause learning only ever learns clauses that unit propagation can confirm. The checker
-  doesn't need to know how the solver found a clause; it only confirms that the clause follows. And when the
+  <p>This works because of how clause learning operates. A clause produced by conflict analysis always passes
+  this test against the clauses the solver had when it learned it. The solver never deletes a clause, so the
+  checker, which keeps every accepted clause, always has at least those available. The checker doesn't need to
+  know how the solver found a clause; it only confirms that the clause follows. And when the
   checker reaches the empty clause there is nothing to assume, so it simply propagates. For 1 to 5 in two groups,
   that propagation is exactly the trace in the previous chapter. That is why the one-line proof <code>0</code> is a
   complete proof.</p>
-  <p>The checker, <code>superopt/rup.js</code>, is 86 lines of JavaScript. It was written for the superoptimizer's
+  <p>The checker, <a href="https://github.com/igniting/the-ai-frontier/blob/main/superopt/rup.js"><code>superopt/rup.js</code></a>, is 86 lines of JavaScript. It was written for the superoptimizer's
   proofs in chapter 08 and shares no code with either solver. It was itself cross-checked against a deliberately
   naive implementation, on real proofs and on proofs corrupted on purpose.</p>
 
@@ -1459,8 +1537,10 @@ match array_get(a, 0) {      <span class="c">// read it back as a list of String
   <ul class="plain">
     <li><b>the formula means the problem</b>: two encoders, written separately, produce identical clauses;</li>
     <li><b>the symmetry argument</b>: one line of reasoning, given in chapter 11;</li>
-    <li><b>the checker</b>: 86 lines of unit propagation;</li>
-    <li><b>the JavaScript engine</b> that runs the checker.</li>
+    <li><b>about 170 lines of checking code</b>: the 86-line proof checker, and 80 lines in
+    <a href="https://github.com/igniting/the-ai-frontier/blob/main/proofs/schur-core.js"><code>proofs/schur-core.js</code></a> that parse the formula and the proof, hold the second encoder, compare the two
+    encodings and check the split against the definition;</li>
+    <li><b>the JavaScript engine</b> that runs that code.</li>
   </ul>
   <p>Not on the list: the Lumen solver, the Lumen compiler, its optimizer, or my own reasoning about any of
   them. If any of those had a bug that mattered, the proof would fail to check, or the split of 1 to 44 would fail
@@ -1499,12 +1579,21 @@ match array_get(a, 0) {      <span class="c">// read it back as a list of String
   </figure>
   <p>Refuting 1 to 45 takes about two minutes and 255,663 conflicts, each leaving one learned clause. That is
   255,663 lines of proof, about 22 MB, and the checker accepts every one in another three to four minutes.
-  Three groups need only 34 learned clauses; four need 255,663. That growth is why S(5) needed a computing cluster
-  and a two-petabyte proof.</p>
+  Three groups need 34 learned clauses; four need 255,663, about 7,500 times as many. That explosion is a small
+  taste of why S(5) needed a computing cluster and a two-petabyte proof.</p>
+  <p>Is two minutes fast? For a reference point, the JavaScript solver from chapter 08 implements the same
+  algorithm, with floating-point activities, and runs under V8's optimizing compiler. It refutes the same formula in
+  139 seconds with 233,704 conflicts; the Lumen solver, compiled with <code>-O</code>, took 116 seconds with
+  255,663 (single runs on the same machine, in Node). The two make slightly different choices, so they search
+  differently. What the comparison shows is that compiled Lumen keeps pace with hand-written JavaScript on this
+  workload, not that either solver is fast: state-of-the-art solvers are far more refined, and I could not run one
+  here.</p>
   <p>The proof is also not a one-off. CI re-runs the entire proof on every push to the repository, on GitHub's
   machines, and keeps the formula and the proof as a download. Both are in the standard DIMACS and DRUP formats,
-  so third-party checkers such as <code>drat-trim</code> can read them, and you don't have to rely on my checker
-  either.</p>
+  which third-party checkers such as <code>drat-trim</code> read, so you don't have to rely on my checker either.
+  To be clear about what has and hasn't been done: I have not run <code>drat-trim</code> on it myself, because
+  this session's sandbox did not allow building outside code. The files are there for anyone who wants that extra
+  confirmation.</p>
 </section>
 
 <section class="chapter" id="payoff">
@@ -1534,8 +1623,11 @@ match array_get(a, 0) {      <span class="c">// read it back as a list of String
   Treating <code>reverse</code> as never-collecting let <code>append</code> drop its frame while that argument was
   still live, and a collection inside <code>rev_append</code> then moved the list out from under it. The paranoid
   mode from chapter 05 caught it on one of the test suite's fixed random programs, as an invalid pointer on the
-  shadow stack, before anything was committed. The two properties are now computed separately, each as a fixed
-  point over the call graph, and a planted copy of the original mistake is among the 34 bugs the fuzzer must
+  shadow stack, before anything was committed. The two properties are now computed separately, and both the same
+  way: start by assuming that every function qualifies, then repeatedly remove any function that breaks the rule
+  under the current assumptions, until nothing changes. What remains is the largest set consistent with the rule,
+  which handles recursion without special cases. A planted copy of the original mistake is among the 34 bugs the
+  fuzzer must
   catch.</p>
   <p>Together the two changes cut the solver's executed instructions by 30% and its running time by 27% on the
   search for a split of 1 to 44. It prints a byte-identical 255,663-step proof. Every other benchmark except
@@ -1543,7 +1635,7 @@ match array_get(a, 0) {      <span class="c">// read it back as a list of String
 </section>
 
 <div class="part">
-  <p class="part-n">Part five</p>
+  <p class="part-n">Part five · <a href="#top">contents</a></p>
   <p class="part-title">Honesty</p>
   <p class="part-intro">The point of all this checking was to find problems I didn't know I had. Here is what it
   found, including my own mistakes. After that comes what this project does and does not show.</p>
@@ -1608,6 +1700,18 @@ match array_get(a, 0) {      <span class="c">// read it back as a list of String
   language built in this session produced the proof, not the result itself. Lumen is also deliberately small: no
   floating point, no modules, 31-bit integers, and arrays as its only mutable values. And every timing here comes
   from one JavaScript engine on one machine.</p>
+  <h3>Reproduce it</h3>
+  <p>Everything needs only Node 22 and a clone of the repository; there is nothing to install.</p>
+  <figure>
+    <pre class="listing">node bin/lumen.js run examples/nqueens.lm   <span class="c"># compile and run a program (add -O to optimize)</span>
+npm test                                    <span class="c"># the test suite: every language test five ways</span>
+node fuzz/fuzz.js --count 1000              <span class="c"># differential fuzzing on fresh random programs</span>
+node fuzz/mutants.js                        <span class="c"># all 34 planted bugs must be caught</span>
+node selfhost/bootstrap.js                  <span class="c"># the self-hosting fixed point</span>
+node superopt/verify.js                     <span class="c"># re-prove the 40 rules, checking every proof</span>
+node bench/gate.js                          <span class="c"># the whole gate, about 7 minutes</span>
+node proofs/prove-schur.js 4 44             <span class="c"># prove S(4) = 44, about 6 minutes</span></pre>
+  </figure>
   <div class="callout">
     <p><b>Explore it yourself.</b> The <a href="playground.html">playground</a> has the full editor with types,
     intermediate code and WebAssembly views, the fuzzer, the bootstrap, every proved rule, and the campaign.

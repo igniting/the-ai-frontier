@@ -2,7 +2,7 @@
 
 [![ci](https://github.com/igniting/the-ai-frontier/actions/workflows/ci.yml/badge.svg)](https://github.com/igniting/the-ai-frontier/actions/workflows/ci.yml)
 
-**[Read how it was built →](https://igniting.github.io/the-ai-frontier/)** · **[Open the playground →](https://igniting.github.io/the-ai-frontier/playground.html)**
+**[Read how it was built →](https://igniting.github.io/the-ai-frontier/)** (a long-form explanation for engineers, with live demos) · **[Open the playground →](https://igniting.github.io/the-ai-frontier/playground.html)**
 
 **A statically typed functional language with a from-scratch compiler to
 WebAssembly.** It infers every type, proves every `match` exhaustive, converts

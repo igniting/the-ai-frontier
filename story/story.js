@@ -252,4 +252,11 @@ function pzRender(focus = -1) {
 }
 $('pz-k').addEventListener('change', (e) => { pz.k = +e.target.value; pz.n = pz.k === 2 ? 5 : 14; pz.groups = []; pzRender(); });
 $('pz-clear').addEventListener('click', () => { pz.groups = []; pzRender(); });
+// A valid split of 1..n-1: {1, 4}, {2, 3} for two groups; {1, 4, 10, 13}, {2, 3, 11, 12}, {5, ..., 9} for three.
+const SPLITS = { 2: [[1, 4], [2, 3]], 3: [[1, 4, 10, 13], [2, 3, 11, 12], [5, 6, 7, 8, 9]] };
+$('pz-show').addEventListener('click', () => {
+  pz.groups = [];
+  SPLITS[pz.k].forEach((nums, g) => nums.forEach((v) => { pz.groups[v] = g + 1; }));
+  pzRender();
+});
 pzRender();

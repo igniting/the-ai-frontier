@@ -233,9 +233,9 @@ unaffected.
   no faster: V8's optimizing tier already removes the redundancy the rules remove.
   Wall time is reported from A/B runs for that reason.
 - **One machine, one engine.** All timings are Node 22 (V8) on one Linux
-  container. A repeat of the final A/B kept every benchmark's ranking but moved
-  individual figures by up to 10 points (`tail_calls` −61% and −51%, `lumenc`
-  −18% and −16%). `mandelbrot` and `huffman` run in a few milliseconds, too short to
+  container. A repeat of the final A/B moved individual figures by up to 10
+  points (`tail_calls` −61% and −51%, `lumenc` −18% and −16%) and swapped three
+  pairs of neighbours in the ranking. `mandelbrot` and `huffman` run in a few milliseconds, too short to
   time, so they are absent from the wall-time chart. Their instruction counts are
   in `bench/history.json`.
 - **Corpus overlap.** The seven examples are both benchmarks and part of the
