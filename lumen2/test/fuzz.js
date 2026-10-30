@@ -386,6 +386,7 @@ export const MUTANTS = [
   'refine-else-same', // assume an if's condition in its else branch too
   'blast-carry', // a bit-blasted adder that drops the carry
   'sat-claims-unsat', // a SAT solver that claims every formula is unsatisfiable
+  'lower-bind-type', // give a pattern variable the type of the pattern's first variable
 ];
 
 function main() {

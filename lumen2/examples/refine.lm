@@ -1,0 +1,25 @@
+// Refinements: `lumen2 check` shows which functions cannot fail, and
+// `lumen2 certify examples/refine.lm --out cert` writes every proof.
+
+// No annotation needed: the checker proves the index in bounds, so this is pure.
+fn safe_get(a, i) { if 0 <= i && i < array_length(a) { Some(array_get(a, i)) } else { None } }
+
+// A refined parameter is assumed in the body and proved at every call.
+fn sum_from(a: Array<Int>, i: {i: Int | 0 <= i}, acc: Int) -> Int {
+  if i < array_length(a) { sum_from(a, i + 1, acc + array_get(a, i)) } else { acc }
+}
+
+// A refined result is proved at the end of the body and assumed by callers.
+fn clamp_index(i: Int, n: {n: Int | n > 0}) -> {r: Int | 0 <= r && r < n} {
+  if i < 0 { 0 } else if i >= n { n - 1 } else { i }
+}
+
+fn average(xs) { let n = length(xs); if n == 0 { 0 } else { sum(xs) / n } }
+
+fn main() {
+  let a = array_from_list([3, 1, 4, 1, 5, 9, 2, 6]);
+  let n = array_length(a);
+  println(show(safe_get(a, 2)) ++ " " ++ show(safe_get(a, 8)));
+  println(show(sum_from(a, 0, 0)) ++ " " ++ show(average([1, 2, 3, 4])));
+  if n > 0 { println(show(array_get(a, clamp_index(100, n)))) }
+}

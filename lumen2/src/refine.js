@@ -90,7 +90,7 @@ export function verify(program, sources, { mutant = null, keepProofs = false, in
 
   // Records an obligation and tries to prove it. Afterwards the goal holds on this path.
   function oblige(kind, goal, st, info) {
-    const o = { kind, ...info };
+    const o = { kind, scope, ...info };
     obligations.push(o);
     if (goal) {
       const r = prove(atoms, [...defs, ...st.facts], goal, { mutant });

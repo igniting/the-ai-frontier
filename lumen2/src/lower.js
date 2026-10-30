@@ -28,7 +28,8 @@ export function tkey(t) {
 }
 export const valtype = (t) => (t.k === 'con' && t.name === 'Int' ? 'i64' : 'i32');
 
-export function lowerProgram(program) {
+// options.mutant plants a known bug (see test/fuzz.js).
+export function lowerProgram(program, { mutant = null } = {}) {
   const fnsByKey = new Map(program.fns.map((f) => [f.key, f]));
   const out = new Map(); // IR functions by name
   const work = [];
@@ -387,7 +388,7 @@ export function lowerProgram(program) {
           if (j === binds.length) return lowerTail(arm.body, armCtx);
           const { id, path, ty } = binds[j];
           if (!path.length) { armCtx.atoms.set(id, x); return step(j + 1); }
-          const t = conc(ty, ctx.S);
+          const t = conc(mutant === 'lower-bind-type' ? binds[0].ty : ty, ctx.S);
           const v = newVar(ctx.fn, t, 'b');
           armCtx.atoms.set(id, { k: 'var', v });
           return { k: 'let', v, rhs: { k: 'field', x, path, ty: t, objTy: scrutTy }, body: step(j + 1) };

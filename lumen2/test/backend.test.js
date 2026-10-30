@@ -4,7 +4,9 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkSource, interpretSource, compileSource, runSource, testSource, makeHost } from '../src/api.js';
+import { checkSource, interpretSource, compileSource, runSource, testSource, certifySource, makeHost } from '../src/api.js';
+import { compileProgram } from '../src/codegen.js';
+import { CertificateError } from '../src/certify.js';
 import { checkRefutation } from '../src/rup.js';
 import { runWasm } from '../src/codegen.js';
 import { generate, differential, MUTANTS } from './fuzz.js';
@@ -136,6 +138,22 @@ test('refinements: compiled programs agree, and every proof is a checked DRUP ce
   const big = proved.reduce((x, y) => (y.proof.length > x.proof.length ? y : x));
   assert.ok(big.proof.length > 1);
   assert.equal(checkRefutation(big.cnf.nvars, big.cnf.clauses, [[]]).ok, false);
+});
+
+test('certifying passes: independent checkers reject planted bugs at compile time', () => {
+  const sources = [1, 2, 3].map((seed) => generate(seed));
+  const rejected = (mutant) => sources.some((src) => {
+    const c = checkSource(src, { mutant });
+    if (!c.ok) return false;
+    try { compileProgram(c.program, { mutant }); return false; } catch (e) { if (e instanceof CertificateError) return true; throw e; }
+  });
+  for (const mutant of ['perceus-transfer-live', 'perceus-no-post-drop', 'perceus-drop-borrowed', 'reuse-no-free', 'lower-bind-type']) {
+    assert.ok(rejected(mutant), `${mutant} is rejected by a certificate checker`);
+  }
+  assert.throws(() => checkSource(sources[0], { mutant: 'sat-claims-unsat' }), /rejected by the proof checker/);
+  const r = certifySource(sources[0]);
+  assert.ok(r.certificates.types.instructions > 0 && r.certificates.ownership.functions === r.ir.fns.length);
+  for (const o of r.obligations.filter((x) => x.status === 'proved')) assert.equal(checkRefutation(o.cnf.nvars, o.cnf.clauses, o.proof).ok, true);
 });
 
 test('constant stack: tail calls, long lists are freed and compared without recursion', () => {

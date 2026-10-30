@@ -7,6 +7,7 @@
 //            [--paranoid]           never reuse freed memory; catch any use after free
 // lumen2 test FILE [--runs N]       test every property with generated inputs
 //            [--seed N]
+// lumen2 certify FILE [--out DIR]   check every certificate; write them to DIR
 // lumen2 build FILE [-o OUT.wasm]   write the WebAssembly module
 // lumen2 ir FILE [FN]               print the IR with its reference-count operations
 //
@@ -14,7 +15,10 @@
 // can drop output still queued for a pipe.
 
 import { readFileSync, writeFileSync } from 'node:fs';
-import { checkSource, interpretSource, compileSource, testSource, formatDiagnostic, decodeBytes, utf8, makeHost } from '../src/api.js';
+import { checkSource, interpretSource, compileSource, testSource, certifySource, formatDiagnostic, decodeBytes, utf8, makeHost } from '../src/api.js';
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { lineCol } from '../src/diagnostics.js';
 import { CAPABILITIES } from '../src/types.js';
 import { runWasm } from '../src/codegen.js';
 import { showIR } from '../src/perceus.js';
@@ -25,7 +29,7 @@ const flag = (name) => rest.includes(name);
 
 function main() {
   if (!cmd || !file) {
-    console.error('usage: lumen2 check FILE | run FILE [--allow CAPS] [--input FILE] [--seed N] [--interp] [--paranoid] | test FILE [--runs N] [--seed N] | build FILE [-o OUT] | ir FILE [FN]');
+    console.error('usage: lumen2 check FILE | run FILE [--allow CAPS] [--input FILE] [--seed N] [--interp] [--paranoid] | test FILE [--runs N] [--seed N] | certify FILE [--out DIR] | build FILE [-o OUT] | ir FILE [FN]');
     return 2;
   }
   const source = readFileSync(file, 'utf8');
@@ -76,6 +80,36 @@ function main() {
       }
       console.log(`${t.results.length - failed} passed, ${failed} failed`);
       return failed || t.results.some((r) => r.compiled && r.compiled !== 'agrees') ? 1 : 0;
+    }
+    case 'certify': {
+      const r = certifySource(source);
+      if (!r.ok) { for (const e of r.errors) console.error(formatDiagnostic(source, e)); return 1; }
+      const { types, ownership } = r.certificates;
+      const proved = r.obligations.filter((o) => o.status === 'proved');
+      const kept = r.obligations.filter((o) => o.kind === 'partial' && o.status !== 'proved');
+      const lemmas = proved.reduce((n, o) => n + o.lemmas, 0);
+      console.log(`types      ${types.functions} IR functions, ${types.instructions} instructions: all well typed`);
+      console.log(`ownership  ${ownership.functions} functions, ${ownership.dups} dups, ${ownership.drops} drops, ${ownership.reuses} reuses: balanced on every path`);
+      console.log(`proofs     ${proved.length} obligations proved, ${lemmas} lemmas, every refutation checked; ${kept.length} partial operation${kept.length === 1 ? '' : 's'} keep \`fail\``);
+      console.log(`wasm       ${r.bytes.length} bytes, validated by the engine`);
+      const out = opt('--out');
+      if (out) {
+        mkdirSync(join(out, 'proofs'), { recursive: true });
+        const where = (o) => (o.scope === 'user' ? ` at ${Object.values(lineCol(source, o.span.s)).join(':')}` : ' in the prelude');
+        const manifest = [];
+        proved.forEach((o, i) => {
+          const n = String(i + 1).padStart(3, '0');
+          const what = `${o.what}${where(o)}`;
+          writeFileSync(join(out, 'proofs', `${n}.cnf`), `c ${what}\np cnf ${o.cnf.nvars} ${o.cnf.clauses.length}\n${o.cnf.clauses.map((c) => `${c.join(' ')} 0`).join('\n')}\n`);
+          writeFileSync(join(out, 'proofs', `${n}.drup`), `${o.proof.map((c) => `${c.join(' ')} 0`).join('\n')}\n`);
+          manifest.push(`${n}  ${what}  (${o.cnf.nvars} variables, ${o.cnf.clauses.length} clauses, ${o.lemmas} lemmas)`);
+        });
+        writeFileSync(join(out, 'proofs', 'MANIFEST'), `${manifest.join('\n')}\n`);
+        writeFileSync(join(out, 'ir.txt'), r.ir.fns.map((f) => showIR(f)).join('\n\n') + '\n');
+        writeFileSync(join(out, 'program.wasm'), r.bytes);
+        console.log(`wrote ${out}/proofs (DIMACS + DRUP, checkable with drat-trim), ${out}/ir.txt and ${out}/program.wasm`);
+      }
+      return 0;
     }
     case 'build': {
       const out = opt('-o') ?? file.replace(/\.[^.]*$/, '') + '.wasm';

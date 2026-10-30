@@ -28,6 +28,7 @@ import { Module } from './wasm.js';
 import { lowerProgram, tkey, valtype } from './lower.js';
 import { perceus, makeHeapTest } from './perceus.js';
 import { insertReuse } from './reuse.js';
+import { checkTypes, checkOwnership, CertificateError } from './certify.js';
 import { substParams } from './types.js';
 import { makeHost } from './host.js';
 
@@ -55,12 +56,15 @@ const flat = (x) => (Array.isArray(x) && typeof x[0] === 'string' ? [x] : x.flat
 // Options: paranoid (never reuse freed memory), reuse (Perceus reuse, on by
 // default) and mutant (plant a known bug; see test/fuzz.js).
 export function compileProgram(program, { paranoid = false, reuse = true, mutant = null } = {}) {
-  const ir = lowerProgram(program);
+  const ir = lowerProgram(program, { mutant });
   const isHeap = makeHeapTest(program.adts);
+  // Each pass's output is checked by an independent certificate checker (certify.js).
+  const types = checkTypes(ir, program.adts);
   for (const f of ir.fns) {
     perceus(f, isHeap, mutant);
     if (reuse) insertReuse(f, program.adts, mutant);
   }
+  const ownership = checkOwnership(ir, isHeap);
 
   const m = new Module();
   const made = new Set();
@@ -678,7 +682,9 @@ export function compileProgram(program, { paranoid = false, reuse = true, mutant
   const heapStart = (DATA + data.length + 15) & ~15;
   m.globals.find((g) => g.name === 'hp').init = heapStart;
   m.memory = { min: Math.ceil((heapStart + 65536) / 65536), max: MAX_PAGES };
-  return { bytes: m.encode(), module: m, ir };
+  const bytes = m.encode();
+  if (!WebAssembly.validate(bytes)) throw new CertificateError('wasm: the engine rejected the module');
+  return { bytes, module: m, ir, certificates: { types, ownership } };
 }
 
 // ------------------------------------------------------------------ host --

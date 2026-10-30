@@ -59,3 +59,14 @@ export function testSource(source, { runs = 100, seed = 1 } = {}) {
   };
   return { ok: true, results: testProperties(c.program, source, { runs, seed, compile }) };
 }
+
+// Compiles with every certificate kept: the IR type and ownership checks,
+// each refinement obligation with its formula and checked DRUP refutation
+// (the prelude's included), and the validated module.
+export function certifySource(source, options = {}) {
+  const c = checkSource(source, { ...options, keepProofs: true });
+  if (!c.ok) return c;
+  if (!c.program.main) return noMain();
+  const compiled = compileProgram(c.program, options);
+  return { ok: true, ...compiled, obligations: c.program.verification.obligations };
+}

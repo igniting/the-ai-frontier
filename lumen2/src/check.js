@@ -745,7 +745,19 @@ function checkOnce(source, { grants = null, entry = 'main', assumeSafe = false, 
   }
   for (const run of deferred) run();
 
-  const printer = (f) => new TypePrinter().signature(f.scheme);
+  // A signature, with any refinements written as in the source.
+  const printer = (f) => {
+    const refined = f.params.some((p) => p.refine) || f.retRefine;
+    if (!refined) return new TypePrinter().signature(f.scheme);
+    const t = prune(f.scheme);
+    const p = new TypePrinter();
+    p.show(t);
+    const text = (r, ty) => `{${r.v}: ${p.show(ty, false)} | ${source.slice(r.predSpan.s, r.predSpan.e)}}`;
+    const params = t.params.map((pt, i) => (f.params[i].refine ? text(f.params[i].refine, pt) : p.show(pt, false)));
+    const ret = f.retRefine ? text(f.retRefine, t.ret) : p.show(t.ret, false);
+    const cs = [...p.names.keys()].filter((v) => v.traits.size).map((v) => `${p.names.get(v)}: ${[...v.traits].sort().join(' + ')}`);
+    return `fn(${params.join(', ')}) -> ${ret}${p.effect(t.eff)}${cs.length ? ` where ${cs.join(', ')}` : ''}`;
+  };
   const signatures = userAst.fns.map((f) => ({ name: f.name, type: printer(f), span: f.nameSpan }));
   return {
     adts, fns: allFns, main, builtins, signatures, warnings, impls, traits,
