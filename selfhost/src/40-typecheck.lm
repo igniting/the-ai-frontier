@@ -664,6 +664,9 @@ fn typecheck(prelude_decls, user_decls) {
   match fni_decl(main_f) {
     FnD(_, nsp, ps, _, _, _) -> if !is_empty(ps) { tc_fail(nsp, "`main` must not take any parameters") } else { () },
   };
+  // Exhaustiveness, in the order the reference records matches: by component, then within each body.
+  let checks = fold(flatten(comps), [], |acc, i| match m_find(typed, i) { XFn(_, _, _, _, body) -> collect_checks(body, acc) });
+  check_exhaustive(g_type_infos(g), st6, reverse(checks));
   TProg(map(all, |f| m_find(typed, fni_index(f))), g, st6, fni_internal(main_f))
 }
 

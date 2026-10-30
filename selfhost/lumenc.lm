@@ -1727,6 +1727,9 @@ fn typecheck(prelude_decls, user_decls) {
   match fni_decl(main_f) {
     FnD(_, nsp, ps, _, _, _) -> if !is_empty(ps) { tc_fail(nsp, "`main` must not take any parameters") } else { () },
   };
+  // Exhaustiveness, in the order the reference records matches: by component, then within each body.
+  let checks = fold(flatten(comps), [], |acc, i| match m_find(typed, i) { XFn(_, _, _, _, body) -> collect_checks(body, acc) });
+  check_exhaustive(g_type_infos(g), st6, reverse(checks));
   TProg(map(all, |f| m_find(typed, fni_index(f))), g, st6, fni_internal(main_f))
 }
 
@@ -1736,6 +1739,199 @@ fn signatures(prog) {
       XFn(internal, name, origin, _, _) -> if origin == "user" { [name ++ ": " ++ show_type(st, opt_get(global_type(st, internal)))] } else { [] },
     }),
   }
+}
+// ============================================================= exhaustive ==
+// Port of src/exhaustive.js: Maranget's usefulness algorithm, producing a
+// witness value (an example of a value that no arm matches).
+
+type NP { NWild, NCtor(String, List<NP>, String) } // constructor key, arguments, type's internal name
+
+fn normalize_pat(p) {
+  match p {
+    QWild(_) -> NWild,
+    QVar(_, _) -> NWild,
+    QInt(n, _) -> NCtor("int:" ++ int_to_string(n), [], ""),
+    QStr(s, _) -> NCtor("str:" ++ s, [], ""),
+    QBool(b, _) -> NCtor(if b { "true" } else { "false" }, [], ""),
+    QUnit(_) -> NCtor("()", [], ""),
+    QTuple(ps, _) -> NCtor("tuple", map(ps, normalize_pat), ""),
+    QCtor(c, ps, _) -> NCtor(ctor_name(c), map(ps, normalize_pat), ""),
+  }
+}
+
+// The complete constructor list of a type: (key, arity, type name, field types),
+// or None for types with infinitely many or unknown values.
+fn signature_of(infos, st, t) {
+  match prune(st, t) {
+    TT(elems) -> Some([("tuple", length(elems), "", elems)]),
+    TC("Bool", _) -> Some([("false", 0, "", []), ("true", 0, "", [])]),
+    TC("Unit", _) -> Some([("()", 0, "", [])]),
+    TC(name, args) -> match m_get(infos, name) {
+      Some(TInfo(internal, _, _, pvars, ctors)) -> {
+        let mapping = m_of_list(zip(pvars, args));
+        Some(map(ctors, |c| (ctor_name(c), ctor_arity(c), internal, map(ctor_fields(c), |f| subst_ty(st, f, mapping)))))
+      },
+      None -> None,
+    },
+    _ -> None,
+  }
+}
+
+fn sig_key_of(c) { match c { (k, _, _, _) -> k } }
+
+fn specialize(rows, key, arity) {
+  flat_map(rows, |row| match row {
+    [NWild, ..rest] -> [append(repeat(NWild, arity), rest)],
+    [NCtor(k, args, _), ..rest] -> if k == key { [append(args, rest)] } else { [] },
+    [] -> [],
+  })
+}
+
+fn default_rows(rows) { flat_map(rows, |row| match row { [NWild, ..rest] -> [rest], _ -> [] }) }
+
+fn head_ctors(rows) { fold(rows, Tip, |m, row| match row { [NCtor(k, _, _), .._] -> s_add(m, k), _ -> m }) }
+
+fn fresh_literal(heads, st, t) {
+  match prune(st, t) {
+    TC("Int", _) -> {
+      fn go(n) { if s_has(heads, "int:" ++ int_to_string(n)) { go(n + 1) } else { NCtor("int:" ++ int_to_string(n), [], "") } }
+      go(0)
+    },
+    TC("String", _) -> match find(["", "a", "b", "c", "d", "e"], |s| !s_has(heads, "str:" ++ s)) {
+      Some(s) -> NCtor("str:" ++ s, [], ""),
+      None -> NWild,
+    },
+    _ -> NWild,
+  }
+}
+
+fn missing_pats(infos, st, rows, types) {
+  match types {
+    [] -> if is_empty(rows) { Some([]) } else { None },
+    [t, ..rest] -> {
+      let heads = head_ctors(rows);
+      let sig = signature_of(infos, st, t);
+      let complete = match sig { Some(cs) -> all(cs, |c| s_has(heads, sig_key_of(c))), None -> false };
+      if complete {
+        fn try_ctors(cs) {
+          match cs {
+            [] -> None,
+            [(key, arity, tname, fts), ..more] -> match missing_pats(infos, st, specialize(rows, key, arity), append(fts, rest)) {
+              Some(w) -> Some([NCtor(key, take(w, arity), tname), ..drop(w, arity)]),
+              None -> try_ctors(more),
+            },
+          }
+        }
+        try_ctors(opt_get(sig))
+      } else {
+        match missing_pats(infos, st, default_rows(rows), rest) {
+          None -> None,
+          Some(w) ->
+            if is_empty(m_keys(heads)) { Some([NWild, ..w]) }
+            else {
+              match sig {
+                Some(cs) -> match find(cs, |c| !s_has(heads, sig_key_of(c))) {
+                  Some((key, arity, tname, _)) -> Some([NCtor(key, repeat(NWild, arity), tname), ..w]),
+                  None -> panic("internal: exhaustive"),
+                },
+                None -> Some([fresh_literal(heads, st, t), ..w]),
+              }
+            },
+        }
+      }
+    },
+  }
+}
+
+fn json_quote(bytes) {
+  fn esc(c) {
+    if c == 34 { "\\\"" } else if c == 92 { "\\\\" } else if c == 10 { "\\n" } else if c == 13 { "\\r" }
+    else if c == 9 { "\\t" } else if c == 8 { "\\b" } else if c == 12 { "\\f" }
+    else if c < 32 { "\\u00" ++ substring("0123456789abcdef", c / 16, c / 16 + 1) ++ substring("0123456789abcdef", c % 16, c % 16 + 1) }
+    else { char_from_code(c) }
+  }
+  "\"" ++ join(map(range(0, string_length(bytes)), |i| esc(char_code_at(bytes, i))), "") ++ "\""
+}
+
+fn show_witness(p) {
+  match p {
+    NWild -> "_",
+    NCtor("tuple", args, _) -> "(" ++ join(map(args, show_witness), ", ") ++ ")",
+    NCtor(key, args, tname) ->
+      if str_starts_with(key, "int:") { substring(key, 4, string_length(key)) }
+      else if str_starts_with(key, "str:") { json_quote(substring(key, 4, string_length(key))) }
+      else if tname == "List" && (key == "Cons" || key == "Nil") {
+        fn elems(cur, acc) {
+          match cur {
+            NCtor("Cons", [x, rest], "List") -> elems(rest, [show_witness(x), ..acc]),
+            _ -> (reverse(acc), cur),
+          }
+        }
+        let (items, tail) = elems(p, []);
+        match tail {
+          NCtor("Nil", _, _) -> "[" ++ join(items, ", ") ++ "]",
+          _ -> "[" ++ join(items, ", ") ++ ", .." ++ show_witness(tail) ++ "]",
+        }
+      }
+      else if is_empty(args) { key }
+      else { key ++ "(" ++ join(map(args, show_witness), ", ") ++ ")" },
+  }
+}
+
+// Matches and let statements of a function body, in the order the reference
+// type checker records them (a match after everything inside it).
+type Check { CMatch(Ty, List<XArm>, Span), CLet(XP, Span) }
+
+fn collect_checks(e, acc) {
+  match e {
+    XCtor(_, Some(args), _) -> fold(args, acc, |a, x| collect_checks(x, a)),
+    XCall(f, args, _) -> fold(args, collect_checks(f, acc), |a, x| collect_checks(x, a)),
+    XLam(_, body, _) -> collect_checks(body, acc),
+    XBin(_, l, r, _, _) -> collect_checks(r, collect_checks(l, acc)),
+    XUn(_, x, _) -> collect_checks(x, acc),
+    XIf(c, t, el, _) -> { let a = collect_checks(t, collect_checks(c, acc)); match el { Some(x) -> collect_checks(x, a), None -> a } },
+    XMatch(s, arms, _, sty, sp) -> {
+      let a = fold(arms, collect_checks(s, acc), |a, arm| match arm {
+        XArm(_, guard, body) -> collect_checks(body, match guard { Some(gd) -> collect_checks(gd, a), None -> a }),
+      });
+      [CMatch(sty, arms, sp), ..a]
+    },
+    XBlock(stmts, result, _) -> {
+      let a = fold(stmts, acc, |a, s| match s {
+        XSExpr(x) -> collect_checks(x, a),
+        XSLet(p, x, sp) -> [CLet(p, sp), ..collect_checks(x, a)],
+        XSFn(_, _, _, body) -> collect_checks(body, a),
+      });
+      match result { Some(r) -> collect_checks(r, a), None -> a }
+    },
+    XTuple(xs, _) -> fold(xs, acc, |a, x| collect_checks(x, a)),
+    _ -> acc,
+  }
+}
+
+fn check_exhaustive(infos, st, checks) {
+  let matches = filter(checks, |c| match c { CMatch(_, _, _) -> true, _ -> false });
+  let lets = filter(checks, |c| match c { CLet(_, _) -> true, _ -> false });
+  each(matches, |c| match c {
+    CMatch(sty, arms, sp) -> {
+      let rows = flat_map(arms, |arm| match arm { XArm(p, None, _) -> [[normalize_pat(p)]], _ -> [] });
+      match missing_pats(infos, st, rows, [sty]) {
+        Some(w) -> tc_fail(sp, "non-exhaustive match: pattern `" ++ show_witness(list_get(w, 0)) ++ "` is not covered"),
+        None -> (),
+      }
+    },
+    _ -> (),
+  });
+  each(lets, |c| match c {
+    CLet(p, sp) -> {
+      let pty = match p { QWild(t) -> t, QVar(_, t) -> t, QInt(_, t) -> t, QStr(_, t) -> t, QBool(_, t) -> t, QUnit(t) -> t, QTuple(_, t) -> t, QCtor(_, _, t) -> t };
+      match missing_pats(infos, st, [[normalize_pat(p)]], [pty]) {
+        Some(w) -> tc_fail(sp, "refutable pattern in `let`: `" ++ show_witness(list_get(w, 0)) ++ "` is not covered"),
+        None -> (),
+      }
+    },
+    _ -> (),
+  })
 }
 // ================================================================== lower ==
 // Port of src/lower.js: A-normal form, closure conversion and pattern-match
