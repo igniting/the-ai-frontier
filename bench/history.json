@@ -374,5 +374,145 @@
     "memory": 3211264
    }
   }
+ },
+ {
+  "label": "3. heap headroom under -O: grow at 1/4 full instead of 1/2",
+  "commit": "227a758",
+  "results": {
+   "lumenc": {
+    "instructions": 2533064015,
+    "ms": 699.34,
+    "bytes": 271008,
+    "memory": 267452416
+   },
+   "fib": {
+    "instructions": 46085652,
+    "ms": 7.65,
+    "bytes": 3621,
+    "memory": 3211264
+   },
+   "sort": {
+    "instructions": 730462102,
+    "ms": 99.35,
+    "bytes": 8349,
+    "memory": 28770304
+   },
+   "strings": {
+    "instructions": 266068976,
+    "ms": 39.04,
+    "bytes": 7050,
+    "memory": 3211264
+   },
+   "gc_torture": {
+    "instructions": 1491312979,
+    "ms": 218.37,
+    "bytes": 6233,
+    "memory": 99811328
+   },
+   "red_black_tree": {
+    "instructions": 465841849,
+    "ms": 82.13,
+    "bytes": 10563,
+    "memory": 61931520
+   },
+   "tail_calls": {
+    "instructions": 465572545,
+    "ms": 52.02,
+    "bytes": 5173,
+    "memory": 45285376
+   },
+   "nqueens": {
+    "instructions": 278020598,
+    "ms": 46.4,
+    "bytes": 8058,
+    "memory": 3211264
+   },
+   "life": {
+    "instructions": 71141182,
+    "ms": 15.16,
+    "bytes": 10124,
+    "memory": 3211264
+   },
+   "mandelbrot": {
+    "instructions": 10139089,
+    "ms": 1.85,
+    "bytes": 6604,
+    "memory": 3211264
+   },
+   "huffman": {
+    "instructions": 1008522,
+    "ms": 0.24,
+    "bytes": 11992,
+    "memory": 3211264
+   }
+  },
+  "base": {
+   "lumenc": {
+    "instructions": 3104348933,
+    "ms": 636.66,
+    "bytes": 280769,
+    "memory": 133234688
+   },
+   "fib": {
+    "instructions": 75743500,
+    "ms": 7.44,
+    "bytes": 3669,
+    "memory": 3211264
+   },
+   "sort": {
+    "instructions": 975728419,
+    "ms": 112.66,
+    "bytes": 8545,
+    "memory": 16187392
+   },
+   "strings": {
+    "instructions": 279633925,
+    "ms": 37.68,
+    "bytes": 7184,
+    "memory": 3211264
+   },
+   "gc_torture": {
+    "instructions": 1886016845,
+    "ms": 243.26,
+    "bytes": 6352,
+    "memory": 34013184
+   },
+   "red_black_tree": {
+    "instructions": 578604750,
+    "ms": 82.98,
+    "bytes": 10818,
+    "memory": 32571392
+   },
+   "tail_calls": {
+    "instructions": 851699575,
+    "ms": 87.65,
+    "bytes": 5345,
+    "memory": 67567616
+   },
+   "nqueens": {
+    "instructions": 318967128,
+    "ms": 52.62,
+    "bytes": 8236,
+    "memory": 3211264
+   },
+   "life": {
+    "instructions": 73452932,
+    "ms": 11.1,
+    "bytes": 10359,
+    "memory": 3211264
+   },
+   "mandelbrot": {
+    "instructions": 11476510,
+    "ms": 2.19,
+    "bytes": 6750,
+    "memory": 3211264
+   },
+   "huffman": {
+    "instructions": 1080496,
+    "ms": 0.25,
+    "bytes": 12268,
+    "memory": 3211264
+   }
+  }
  }
 ]

@@ -137,6 +137,12 @@ export const MUTANTS = [
     replace: '"rhs":[["i32.const",1],["i32.lt_u"]]',
   },
   {
+    name: '-O: the heap-growth test is inverted (the heap does not grow when it must)',
+    file: 'runtime.js',
+    find: "lg('$base'), lg('$size'), c(2), o('i32.shr_u'), o('i32.gt_u'),",
+    replace: "lg('$base'), lg('$size'), c(2), o('i32.shr_u'), o('i32.le_u'),",
+  },
+  {
     name: '-O: temporary forwarding deletes a store whose local is read again later',
     file: 'optimize.js',
     find: 'if (uses.get(ins[1]) !== 2) out.push',

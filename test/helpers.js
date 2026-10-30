@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
 import { compile, runWasm, interpretSource, checkSource, formatDiagnostic, decodeBytes } from '../src/compiler.js';
 
-// Runs a program four ways (interpreter, wasm, wasm with GC stress, wasm
-// with -O), asserts they agree exactly, and returns { output, error } with
+// Runs a program five ways (interpreter; wasm and wasm -O, each also with GC
+// stress), asserts they agree exactly, and returns { output, error } with
 // output decoded. GC stress collects on every allocation, which is quadratic
 // for programs with large live data, so those pass { stress: false }.
 export function run(src, { stress = true, input = '' } = {}) {
   const ref = interpretSource(src, { input });
   if (!ref.ok) assert.fail(`program rejected:\n${formatDiagnostic(src, ref.errors[0])}`);
-  const modes = [{}, { optimize: true }, ...(stress ? [{ gcStress: true }] : [])];
+  const modes = [{}, { optimize: true }, ...(stress ? [{ gcStress: true }, { optimize: true, gcStress: true }] : [])];
   for (const options of modes) {
     const c = compile(src, options);
     const r = runWasm(c.wasm, { input });

@@ -103,14 +103,29 @@ export function addRuntime(mod, layout, opts) {
     lg('$p'),
   ], opts.gcStress ? 'Bump allocator. GC STRESS MODE: collects on every allocation.' : 'Bump allocator; collects when the semispace is full.');
 
+  // Growth policy. By default the semispaces grow when a collection leaves
+  // them more than half full. Under -O they grow when live data plus the
+  // pending request exceeds a quarter, so each collection copies less per
+  // byte allocated, at the cost of up to twice the memory.
+  const grow = opts.optimize
+    ? [
+      lg('$live'), lg('$need'), o('i32.add'), ls('$base'),
+      lg('$base'), lg('$size'), c(2), o('i32.shr_u'), o('i32.gt_u'),
+    ]
+    : [lg('$live'), lg('$need'), o('i32.add'), c(1), o('i32.shl'), lg('$size'), o('i32.gt_u')];
+  const target = opts.optimize
+    ? [
+      lg('$base'), c(0x0fffffff), o('i32.gt_u'), if_(null, trap(ERR.OOM)), // could never fit in memory
+      lg('$base'), c(2), o('i32.shl'), ls('$base'),
+    ]
+    : [lg('$live'), lg('$need'), o('i32.add'), c(1), o('i32.shl'), ls('$base')];
   fn('$rt:gc', ['$need'], [], ['$live', '$size', '$base'], [
     call('$rt:collect'),
     gg('$hp'), gg('$from_start'), o('i32.sub'), ls('$live'),
     gg('$from_end'), gg('$from_start'), o('i32.sub'), ls('$size'),
-    // Grow when live data plus the pending request exceeds half the semispace.
-    lg('$live'), lg('$need'), o('i32.add'), c(1), o('i32.shl'), lg('$size'), o('i32.gt_u'),
+    grow,
     if_(null, [
-      lg('$live'), lg('$need'), o('i32.add'), c(1), o('i32.shl'), ls('$base'),
+      target,
       lg('$size'), c(1), o('i32.shl'), ls('$size'),
       lg('$size'), lg('$base'), lg('$size'), lg('$base'), o('i32.gt_u'), o('select'),
       c(0xffff), o('i32.add'), c(-0x10000), o('i32.and'), ls('$size'),
@@ -123,7 +138,7 @@ export function addRuntime(mod, layout, opts) {
       lg('$base'), lg('$size'), o('i32.add'), gs('$to_start'),
       lg('$base'), lg('$size'), c(1), o('i32.shl'), o('i32.add'), gs('$to_end'),
     ]),
-  ], 'Collects garbage, then doubles the semispaces if they are more than half full.');
+  ], opts.optimize ? 'Collects garbage, then grows the semispaces if they are more than a quarter full.' : 'Collects garbage, then doubles the semispaces if they are more than half full.');
 
   fn('$rt:collect', [], [], ['$p', '$scan', '$h', '$end'], [
     gg('$gc_count'), c(1), o('i32.add'), gs('$gc_count'),
