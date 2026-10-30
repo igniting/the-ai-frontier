@@ -654,5 +654,145 @@
     "memory": 3211264
    }
   }
+ },
+ {
+  "label": "5. elide frame zeroing for slots written before any GC point",
+  "commit": "5ae7646",
+  "results": {
+   "lumenc": {
+    "instructions": 2403933455,
+    "ms": 673.5,
+    "bytes": 316074,
+    "memory": 267452416
+   },
+   "fib": {
+    "instructions": 46085632,
+    "ms": 7.71,
+    "bytes": 3649,
+    "memory": 3211264
+   },
+   "sort": {
+    "instructions": 679839231,
+    "ms": 85.54,
+    "bytes": 8635,
+    "memory": 28770304
+   },
+   "strings": {
+    "instructions": 256399042,
+    "ms": 30.61,
+    "bytes": 7279,
+    "memory": 3211264
+   },
+   "gc_torture": {
+    "instructions": 1387975458,
+    "ms": 177.71,
+    "bytes": 6443,
+    "memory": 99811328
+   },
+   "red_black_tree": {
+    "instructions": 446964325,
+    "ms": 73.64,
+    "bytes": 11195,
+    "memory": 61931520
+   },
+   "tail_calls": {
+    "instructions": 451532497,
+    "ms": 45.73,
+    "bytes": 5258,
+    "memory": 45285376
+   },
+   "nqueens": {
+    "instructions": 253180509,
+    "ms": 46.76,
+    "bytes": 8434,
+    "memory": 3211264
+   },
+   "life": {
+    "instructions": 67102544,
+    "ms": 12.32,
+    "bytes": 11317,
+    "memory": 3211264
+   },
+   "mandelbrot": {
+    "instructions": 10000867,
+    "ms": 2,
+    "bytes": 6801,
+    "memory": 3211264
+   },
+   "huffman": {
+    "instructions": 927779,
+    "ms": 0.22,
+    "bytes": 12497,
+    "memory": 3211264
+   }
+  },
+  "base": {
+   "lumenc": {
+    "instructions": 3104348933,
+    "ms": 629.38,
+    "bytes": 280769,
+    "memory": 133234688
+   },
+   "fib": {
+    "instructions": 75743500,
+    "ms": 7.55,
+    "bytes": 3669,
+    "memory": 3211264
+   },
+   "sort": {
+    "instructions": 975728419,
+    "ms": 116.91,
+    "bytes": 8545,
+    "memory": 16187392
+   },
+   "strings": {
+    "instructions": 279633925,
+    "ms": 39.9,
+    "bytes": 7184,
+    "memory": 3211264
+   },
+   "gc_torture": {
+    "instructions": 1886016845,
+    "ms": 248.51,
+    "bytes": 6352,
+    "memory": 34013184
+   },
+   "red_black_tree": {
+    "instructions": 578604750,
+    "ms": 90.88,
+    "bytes": 10818,
+    "memory": 32571392
+   },
+   "tail_calls": {
+    "instructions": 851699575,
+    "ms": 95.36,
+    "bytes": 5345,
+    "memory": 67567616
+   },
+   "nqueens": {
+    "instructions": 318967128,
+    "ms": 59.86,
+    "bytes": 8236,
+    "memory": 3211264
+   },
+   "life": {
+    "instructions": 73452932,
+    "ms": 16.47,
+    "bytes": 10359,
+    "memory": 3211264
+   },
+   "mandelbrot": {
+    "instructions": 11476510,
+    "ms": 2.32,
+    "bytes": 6750,
+    "memory": 3211264
+   },
+   "huffman": {
+    "instructions": 1080496,
+    "ms": 0.39,
+    "bytes": 12268,
+    "memory": 3211264
+   }
+  }
  }
 ]

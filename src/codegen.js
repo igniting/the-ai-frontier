@@ -18,7 +18,7 @@ import { reachableFunctions } from './lower.js';
 import {
   addRuntime, seq, c, lg, ls, lt, gg, gs, ld, st, call, header, TAG_CLOSURE, TAG_STRING, ERR, BUILTIN_RUNTIME,
 } from './runtime.js';
-import { optimize } from './optimize.js';
+import { optimize, nonCollecting, slotsNeedingZero } from './optimize.js';
 import { instrumentModule } from './instrument.js';
 
 const o = (name) => [name];
@@ -94,6 +94,7 @@ export function codegen(ir, options = {}) {
   const fnType = (n) => mod.namedType(`$fn${n}`, Array(n + 1).fill('i32'), ['i32']);
 
   addRuntime(mod, layout, opts);
+  const safeCallees = opts.optimize ? nonCollecting(mod) : null;
 
   // --------------------------------------------------------- functions --
   const funcs = reachableFunctions(ir);
@@ -127,6 +128,7 @@ export function codegen(ir, options = {}) {
     const frameBytes = slots * 4;
     if (frameBytes) locals.push({ name: '$fp', type: 'i32' });
     let needsTmp = false;
+    let zeroAt = -1, zeroLen = 0; // where the prologue zeroes the frame
     let labelCounter = 0;
     const label = (base) => `$${base}${labelCounter++}`;
 
@@ -140,7 +142,9 @@ export function codegen(ir, options = {}) {
       emit(gg('$sp'), lt('$fp'), c(frameBytes), o('i32.add'), gs('$sp'),
         gg('$sp'), c(layout.STACK_LIMIT), o('i32.gt_u'), ['if', null, null], c(ERR.STACK), call('$rt:trap'), ['end']);
       if (slots > paramSlots) {
+        zeroAt = body.length;
         emit(lg('$fp'), paramSlots ? [c(paramSlots * 4), o('i32.add')] : [], c(0), c((slots - paramSlots) * 4), ['memory.fill']);
+        zeroLen = body.length - zeroAt;
       }
       if (f.env) emit(lg('$fp'), lg('$env'), st(storage.get(f.env.id).slot * 4));
       for (const v of f.params) {
@@ -173,11 +177,18 @@ export function codegen(ir, options = {}) {
       } else {
         emit(lg('$fp'));
         value();
-        emit(st(s.slot * 4));
+        const store = st(s.slot * 4);
+        store.frameSlot = s.slot; // for frame zeroing elision under -O
+        emit(store);
       }
     }
 
-    const popFrame = () => { if (frameBytes) emit(lg('$fp'), gs('$sp')); };
+    const popFrame = () => {
+      if (!frameBytes) return;
+      // Paranoid mode: poison the popped frame (0xfefefefe is never a valid root).
+      if (opts.optimize && opts.gcStress) emit(lg('$fp'), c(0xfe), c(frameBytes), ['memory.fill']);
+      emit(lg('$fp'), gs('$sp'));
+    };
 
     // Allocation: the fields are loaded *after* $rt:alloc returns, because a
     // collection inside alloc may move the objects they point to.
@@ -341,6 +352,18 @@ export function codegen(ir, options = {}) {
     genExpr(f.body, true);
     popFrame();
     if (needsTmp) locals.push({ name: '$tmp', type: 'i32' });
+    if (opts.optimize && zeroAt >= 0) {
+      // Zero only the slots that a GC point could see before they are written.
+      const candidates = Array.from({ length: slots - paramSlots }, (_, k) => paramSlots + k);
+      const need = [...slotsNeedingZero(body, zeroAt + zeroLen, candidates, safeCallees)].sort((a, b) => a - b);
+      let zero = [];
+      if (need.length > 0 && need.length <= 2) zero = need.flatMap((k) => [lg('$fp'), c(0), st(k * 4)]);
+      else if (need.length > 2) {
+        const lo = need[0], hi = need[need.length - 1];
+        zero = seq(lg('$fp'), lo ? [c(lo * 4), o('i32.add')] : [], c(0), c((hi - lo + 1) * 4), ['memory.fill']);
+      }
+      body.splice(zeroAt, zeroLen, ...zero);
+    }
 
     const params = [{ name: '$env', type: 'i32' }, ...f.params.map((v) => ({ name: storage.get(v.id).local ?? varName(v), type: 'i32' }))];
     // Locals holding untraced variables always contain tagged immediates (odd
@@ -370,6 +393,7 @@ export function codegen(ir, options = {}) {
   mod.addGlobal('$gc_count', 'i32', true, 0, 'gc_count');
   mod.addGlobal('$alloc_bytes', 'i64', true, 0, 'alloc_bytes');
   if (opts.optimize) mod.addGlobal('$alloc_mark', 'i32', true, fromStart, 'alloc_mark');
+  if (opts.optimize && opts.gcStress) mod.addGlobal('$heap_base', 'i32', false, layout.HEAP_BASE);
   if (opts.fuel) mod.addGlobal('$fuel', 'i32', true, opts.fuel);
 
   const peephole = opts.optimize ? optimize(mod) : null;

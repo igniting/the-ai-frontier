@@ -137,6 +137,18 @@ export const MUTANTS = [
     replace: '"rhs":[["i32.const",1],["i32.lt_u"]]',
   },
   {
+    name: '-O: frame zeroing elision ignores direct calls as GC points (stale roots)',
+    file: 'optimize.js',
+    find: "else if (op === 'call_indirect' || (op === 'call' && !safeCallees.has(arg))) {",
+    replace: "else if (op === 'call_indirect') {",
+  },
+  {
+    name: '-O: frame zeroing elision trusts writes made inside an if (not on every path)',
+    file: 'optimize.js',
+    find: "else if (op === 'end') written = saved.pop() ?? written;",
+    replace: "else if (op === 'end') saved.pop();",
+  },
+  {
     name: '-O: inline allocation forgets to bump the heap pointer (objects overlap)',
     file: 'codegen.js',
     find: "['else'], gg('$hp'), lg('$tmp'), gs('$hp'), ['end'],",

@@ -25,7 +25,7 @@ export const header = (kind, size) => ((size << 9) | (kind << 1) | 1) | 0;
 export const MAX_STRING = (1 << 23) - 1;
 
 export const ERR = {
-  DIV_ZERO: 1, COMPARE_FN: 2, PANIC: 3, INDEX: 4, STACK: 5, OOM: 6, FUEL: 7, MATCH: 8, STR_LEN: 9,
+  DIV_ZERO: 1, COMPARE_FN: 2, PANIC: 3, INDEX: 4, STACK: 5, OOM: 6, FUEL: 7, MATCH: 8, STR_LEN: 9, BAD_ROOT: 10,
 };
 export const ERR_MESSAGES = {
   1: 'division by zero',
@@ -36,6 +36,7 @@ export const ERR_MESSAGES = {
   7: 'out of fuel (the program ran too long)',
   8: 'match failure',
   9: 'string too long',
+  10: 'internal error: invalid GC root',
 };
 
 // ------------------------------------------------------------ mini-DSL --
@@ -147,12 +148,25 @@ export function addRuntime(mod, layout, opts) {
     opts.optimize ? [gg('$hp'), gs('$alloc_mark')] : [],
   ], opts.optimize ? 'Collects garbage, then grows the semispaces if they are more than a quarter full.' : 'Collects garbage, then doubles the semispaces if they are more than half full.');
 
+  // Paranoid mode (-O with GC stress): popped frames are poisoned (see
+  // codegen), and every root must be 0, an immediate, static data or an
+  // allocated heap object, so a slot the frame-zeroing elision wrongly left
+  // stale traps at once instead of corrupting the heap only sometimes.
+  const paranoid = opts.optimize && opts.gcStress;
+  const checkRoot = paranoid
+    ? seq(lg('$p'), ld(), ls('$h'),
+      lg('$h'), o('i32.eqz'), lg('$h'), c(1), o('i32.and'), o('i32.or'),
+      lg('$h'), c(layout.STACK_END), o('i32.ge_u'), lg('$h'), gg('$heap_base'), o('i32.lt_u'), o('i32.and'), o('i32.or'),
+      lg('$h'), gg('$from_start'), o('i32.ge_u'), lg('$h'), gg('$hp'), o('i32.lt_u'), o('i32.and'), o('i32.or'),
+      o('i32.eqz'), if_(null, trap(ERR.BAD_ROOT)))
+    : [];
   fn('$rt:collect', [], [], ['$p', '$scan', '$h', '$end'], [
     gg('$gc_count'), c(1), o('i32.add'), gs('$gc_count'),
     gg('$to_start'), gs('$next'),
     // 1. Forward every root on the shadow stack.
     c(layout.STACK_BASE), ls('$p'),
     loop('roots', [lg('$p'), gg('$sp'), o('i32.ge_u')], [
+      checkRoot,
       lg('$p'), lg('$p'), ld(), call('$rt:forward'), st(),
       lg('$p'), c(4), o('i32.add'), ls('$p'),
     ]),
