@@ -40,6 +40,12 @@ Four things are built on top of it:
   Lumen gained mutable arrays for this, with the value restriction that keeps
   them sound.
 
+**[Lumen 2](lumen2/)** is a separate, newer language in this repository. Its
+types track effects (`io`, `fail`), memory is managed by Perceus reference
+counting with in-place reuse instead of a garbage collector, and its 64-bit
+integers stop on overflow. It is a fresh design with its own compiler,
+interpreter, spec and fuzzer, and shares no code with Lumen.
+
 Claude built this end to end in Claude Code, as a demonstration of
 long-horizon, self-verifying software engineering. The repository also
 contains the tools used to check that the result is correct, and a
@@ -414,5 +420,6 @@ fuzz/        random program generator, differential fuzzer, mutation tester
 challenge/   spec-conformance scorer and probes
 playground/  browser playground (playground.html at the repository root)
 story/       the story page's live demos (index.html at the repository root)
+lumen2/      Lumen 2, a separate language: effect types, Perceus reference counting
 bin/         lumen CLI and a static file server
 ```

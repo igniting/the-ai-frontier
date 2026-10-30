@@ -1,0 +1,49 @@
+// A tour of Lumen 2. Run `lumen2 check examples/tour.lm` to see the inferred
+// types and effects, and `lumen2 run examples/tour.lm` to run it.
+
+type Shape { Circle(Int), Rect(Int, Int), Dot }
+type Tree<a> { Leaf, Node(Tree<a>, a, Tree<a>) }
+
+// Pure: the inferred type has no effects.
+fn area(s) {
+  match s { Circle(r) -> 3 * r * r, Rect(w, h) -> w * h, Dot -> 0 }
+}
+
+// Division can fail, so the inferred type says `! fail`.
+fn average(xs) { sum(xs) / length(xs) }
+
+// Effect-polymorphic: `twice` performs whatever `f` performs.
+fn twice(f, x) { f(f(x)) }
+
+// An annotation is a claim the checker verifies.
+fn mean_area(shapes: List<Shape>) -> Int ! fail { average(map(shapes, area)) }
+
+// Insert into a search tree. When the tree is not shared, Perceus reuse
+// rebuilds each node in the cell of the node it replaces: no allocation.
+fn insert(t, x) {
+  match t {
+    Leaf -> Node(Leaf, x, Leaf),
+    Node(l, y, r) -> if x < y { Node(insert(l, x), y, r) } else if x > y { Node(l, y, insert(r, x)) } else { t },
+  }
+}
+fn to_list(t) { match t { Leaf -> [], Node(l, x, r) -> append(to_list(l), [x, ..to_list(r)]) } }
+
+// Arrays are values. This loop updates one array in place, because nothing
+// else refers to it.
+fn squares(n) {
+  fn go(a, i) { if i == n { a } else { go(array_set(a, i, i * i), i + 1) } }
+  go(array_make(n, 0), 0)
+}
+
+fn main() {
+  let shapes = [Circle(2), Rect(3, 4), Dot];
+  println("areas: " ++ show_list(map(shapes, area), int_to_string));
+  println("mean area: " ++ int_to_string(mean_area(shapes)));
+  println("twice: " ++ int_to_string(twice(|x| x * 10, 7)));
+  let t = fold([50, 20, 80, 10, 30, 20], Leaf, insert);
+  println("sorted: " ++ show_list(to_list(t), int_to_string));
+  let a = squares(10);
+  let b = array_set(a, 0, -1); // `a` is still used below, so this copies
+  println("a[0] = " ++ int_to_string(array_get(a, 0)) ++ ", b[0] = " ++ int_to_string(array_get(b, 0)));
+  println("2^62 * 2 = " ++ int_to_string(4611686018427387904 * 2))
+}

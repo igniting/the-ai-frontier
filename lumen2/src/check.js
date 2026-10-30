@@ -24,8 +24,8 @@ import {
 } from './types.js';
 
 // ---------------------------------------------------------------- builtins --
-// Each builtin: its type (with generic variables) and how the back end treats
-// its arguments (consumed or borrowed), used by reference counting.
+// Each builtin's type, with generic variables. (Which arguments the back end
+// consumes and which it only borrows is in perceus.js.)
 function builtinTable() {
   const a = () => { const v = newVar(GENERIC); return v; };
   const fn = (params, ret, labels = []) => tfun(params, ret, row(labels));

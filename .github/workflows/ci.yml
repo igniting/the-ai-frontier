@@ -33,6 +33,22 @@ jobs:
       - name: Spec conformance
         run: node challenge/score.js --fuzz 200 -- node bin/lumen.js run
 
+  lumen2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: lumen2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Lumen 2 tests (checker, interpreter, wasm back end, leak check, planted bugs)
+        run: npm test
+      - name: Lumen 2 differential fuzzing, four ways (fresh seeds every run)
+        run: node test/fuzz.js 1000 $(( 100000 + GITHUB_RUN_NUMBER * 1000 ))
+
   schur:
     runs-on: ubuntu-latest
     timeout-minutes: 30

@@ -1,8 +1,9 @@
-// The public entry points: check a program, interpret it, and (once the back
-// end is loaded) compile it to WebAssembly.
+// The public entry points: check a program, interpret it, compile it to
+// WebAssembly and run the result.
 
 import { check } from './check.js';
 import { interpret } from './interp.js';
+import { compileProgram, runWasm } from './codegen.js';
 import { LumenError, formatDiagnostic } from './diagnostics.js';
 
 export { formatDiagnostic };
@@ -23,4 +24,18 @@ export function interpretSource(source, options = {}) {
   const c = checkSource(source);
   if (!c.ok) return c;
   return { ok: true, ...interpret(c.program, options), signatures: c.signatures };
+}
+
+// Returns { ok, bytes, module, ir } or { ok: false, errors }.
+export function compileSource(source, options = {}) {
+  const c = checkSource(source);
+  if (!c.ok) return c;
+  return { ok: true, ...compileProgram(c.program, options), signatures: c.signatures };
+}
+
+// Compiles and runs: { ok, output, error, live, allocs } or { ok: false, errors }.
+export function runSource(source, { input = '', paranoid = false } = {}) {
+  const c = compileSource(source, { paranoid });
+  if (!c.ok) return c;
+  return { ok: true, ...runWasm(c.bytes, { input }) };
 }

@@ -20,26 +20,27 @@ const int = (v) => (v < INT_MIN || v > INT_MAX ? fail('integer overflow') : v);
 
 class TailCall { constructor(fn, args) { this.fn = fn; this.args = args; } }
 
+// Structural ordering. The last field is compared by looping, not recursion,
+// so comparing long lists takes constant stack.
 export function compare(a, b) {
-  if (typeof a === 'bigint') return a < b ? -1 : a > b ? 1 : 0;
-  if (typeof a === 'boolean') return a === b ? 0 : a ? 1 : -1;
-  if (a === null) return 0;
-  if (typeof a === 'string') return a < b ? -1 : a > b ? 1 : 0;
-  if (a.t === 'tup') {
-    for (let i = 0; i < a.v.length; i++) { const c = compare(a.v[i], b.v[i]); if (c) return c; }
-    return 0;
+  for (;;) {
+    if (typeof a === 'bigint') return a < b ? -1 : a > b ? 1 : 0;
+    if (typeof a === 'boolean') return a === b ? 0 : a ? 1 : -1;
+    if (a === null) return 0;
+    if (typeof a === 'string') return a < b ? -1 : a > b ? 1 : 0;
+    let xs, ys;
+    if (a.t === 'tup') { xs = a.v; ys = b.v; }
+    else if (a.t === 'ctor') {
+      if (a.idx !== b.idx) return a.idx < b.idx ? -1 : 1;
+      xs = a.f; ys = b.f;
+    } else if (a.t === 'arr') {
+      if (a.v.length !== b.v.length) return a.v.length < b.v.length ? -1 : 1;
+      xs = a.v; ys = b.v;
+    } else throw new Error('compare: not comparable');
+    if (!xs.length) return 0;
+    for (let i = 0; i < xs.length - 1; i++) { const c = compare(xs[i], ys[i]); if (c) return c; }
+    a = xs[xs.length - 1]; b = ys[ys.length - 1];
   }
-  if (a.t === 'ctor') {
-    if (a.idx !== b.idx) return a.idx < b.idx ? -1 : 1;
-    for (let i = 0; i < a.f.length; i++) { const c = compare(a.f[i], b.f[i]); if (c) return c; }
-    return 0;
-  }
-  if (a.t === 'arr') {
-    if (a.v.length !== b.v.length) return a.v.length < b.v.length ? -1 : 1;
-    for (let i = 0; i < a.v.length; i++) { const c = compare(a.v[i], b.v[i]); if (c) return c; }
-    return 0;
-  }
-  throw new Error('compare: not comparable');
 }
 
 export function interpret(program, { input = '', maxSteps = Infinity, maxDepth = 10000 } = {}) {
