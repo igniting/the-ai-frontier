@@ -2,3 +2,4 @@ node_modules/
 *.wasm
 fuzz/failures/
 .DS_Store
+selfhost/failures/

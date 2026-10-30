@@ -1,0 +1,260 @@
+// lumenc: the Lumen compiler, written in Lumen.
+//
+// This file is assembled from selfhost/src/*.lm by selfhost/build.js. It is a
+// faithful port of the reference compiler in src/*.js: given the same program
+// it emits a byte-identical WebAssembly module, which is how it is tested.
+//
+// Lumen has no mutation, no arrays and 31-bit integers, so this port threads
+// explicit state through every phase, uses persistent AVL maps for symbol
+// tables and substitutions, and builds its output as a rope of byte strings.
+
+// ============================================================== arithmetic ==
+
+fn floor_div(a, b) {
+  let q = a / b;
+  if a % b != 0 && (a < 0) != (b < 0) { q - 1 } else { q }
+}
+
+fn floor_mod(a, b) { a - b * floor_div(a, b) }
+
+// ==================================================================== lists ==
+
+fn indexed(xs) {
+  fn go(xs, i, acc) { match xs { [] -> reverse(acc), [x, ..rest] -> go(rest, i + 1, [(i, x), ..acc]) } }
+  go(xs, 0, [])
+}
+
+fn list_get(xs, i) {
+  match xs {
+    [] -> panic("internal: list index out of range"),
+    [x, ..rest] -> if i == 0 { x } else { list_get(rest, i - 1) },
+  }
+}
+
+fn last(xs) {
+  match xs {
+    [] -> panic("internal: last of empty list"),
+    [x] -> x,
+    [_, ..rest] -> last(rest),
+  }
+}
+
+fn index_of(xs, y) {
+  fn go(xs, i) { match xs { [] -> -1, [x, ..rest] -> if x == y { i } else { go(rest, i + 1) } } }
+  go(xs, 0)
+}
+
+fn last_index_of(xs, y) {
+  fn go(xs, i, found) { match xs { [] -> found, [x, ..rest] -> go(rest, i + 1, if x == y { i } else { found }) } }
+  go(xs, 0, -1)
+}
+
+fn all_but_last(xs) { reverse(drop(reverse(xs), 1)) }
+
+fn unzip(pairs) {
+  let (xs, ys) = fold(pairs, ([], []), |acc, p| match (acc, p) { ((xs, ys), (x, y)) -> ([x, ..xs], [y, ..ys]) });
+  (reverse(xs), reverse(ys))
+}
+
+fn opt_is_some(o) { match o { Some(_) -> true, None -> false } }
+
+fn opt_get(o) { match o { Some(x) -> x, None -> panic("internal: opt_get of None") } }
+
+// ============================================================ AVL tree maps ==
+// Keys are compared with Lumen's structural ordering, so any non-function
+// type works as a key.
+
+type Map<k, v> { Tip, Bin(Int, Map<k, v>, k, v, Map<k, v>) }
+
+fn m_height(m) { match m { Tip -> 0, Bin(h, _, _, _, _) -> h } }
+
+fn m_node(l, k, v, r) { Bin(1 + max(m_height(l), m_height(r)), l, k, v, r) }
+
+fn m_rotate(l, k, v, r) {
+  let hl = m_height(l);
+  let hr = m_height(r);
+  if hl > hr + 1 {
+    match l {
+      Bin(_, ll, lk, lv, lr) ->
+        if m_height(ll) >= m_height(lr) { m_node(ll, lk, lv, m_node(lr, k, v, r)) }
+        else {
+          match lr {
+            Bin(_, lrl, lrk, lrv, lrr) -> m_node(m_node(ll, lk, lv, lrl), lrk, lrv, m_node(lrr, k, v, r)),
+            Tip -> panic("internal: avl"),
+          }
+        },
+      Tip -> panic("internal: avl"),
+    }
+  } else if hr > hl + 1 {
+    match r {
+      Bin(_, rl, rk, rv, rr) ->
+        if m_height(rr) >= m_height(rl) { m_node(m_node(l, k, v, rl), rk, rv, rr) }
+        else {
+          match rl {
+            Bin(_, rll, rlk, rlv, rlr) -> m_node(m_node(l, k, v, rll), rlk, rlv, m_node(rlr, rk, rv, rr)),
+            Tip -> panic("internal: avl"),
+          }
+        },
+      Tip -> panic("internal: avl"),
+    }
+  } else { m_node(l, k, v, r) }
+}
+
+fn m_set(m, k, v) {
+  match m {
+    Tip -> Bin(1, Tip, k, v, Tip),
+    Bin(h, l, k2, v2, r) ->
+      if k < k2 { m_rotate(m_set(l, k, v), k2, v2, r) }
+      else if k == k2 { Bin(h, l, k, v, r) }
+      else { m_rotate(l, k2, v2, m_set(r, k, v)) },
+  }
+}
+
+fn m_get(m, k) {
+  match m {
+    Tip -> None,
+    Bin(_, l, k2, v, r) -> if k < k2 { m_get(l, k) } else if k == k2 { Some(v) } else { m_get(r, k) },
+  }
+}
+
+fn m_has(m, k) { opt_is_some(m_get(m, k)) }
+
+fn m_find(m, k) { match m_get(m, k) { Some(v) -> v, None -> panic("internal: missing map key") } }
+
+fn m_entries(m) {
+  fn go(m, acc) { match m { Tip -> acc, Bin(_, l, k, v, r) -> go(l, [(k, v), ..go(r, acc)]) } }
+  go(m, [])
+}
+
+fn m_keys(m) { map(m_entries(m), |p| match p { (k, _) -> k }) }
+
+fn m_of_list(pairs) { fold(pairs, Tip, |m, p| match p { (k, v) -> m_set(m, k, v) }) }
+
+// A set is a map to ().
+fn s_add(s, k) { m_set(s, k, ()) }
+fn s_has(s, k) { m_has(s, k) }
+
+// ========================================================= indexable vector ==
+// A balanced tree with subtree sizes, built once from a list; O(log n) access.
+
+type Vec<a> { VNil, VNode(Int, Vec<a>, a, Vec<a>) }
+
+fn v_size(v) { match v { VNil -> 0, VNode(n, _, _, _) -> n } }
+
+fn vec_of_list(xs) {
+  // build(n, xs) -> (tree of the first n elements, remaining elements)
+  fn build(n, xs) {
+    if n == 0 { (VNil, xs) }
+    else {
+      let half = (n - 1) / 2;
+      let (left, rest) = build(half, xs);
+      match rest {
+        [x, ..rest2] -> {
+          let (right, rest3) = build(n - 1 - half, rest2);
+          (VNode(n, left, x, right), rest3)
+        },
+        [] -> panic("internal: vec_of_list"),
+      }
+    }
+  }
+  let (v, _) = build(length(xs), xs);
+  v
+}
+
+fn v_get(v, i) {
+  match v {
+    VNil -> panic("internal: vector index out of range"),
+    VNode(_, l, x, r) -> {
+      let ls = v_size(l);
+      if i < ls { v_get(l, i) } else if i == ls { x } else { v_get(r, i - ls - 1) }
+    },
+  }
+}
+
+// =============================================================== byte rope ==
+// Output is a rope of byte strings with cached sizes, so concatenation is
+// O(1) and section sizes are known before the sections are written.
+
+type Bytes { BEmpty, BStr(String), BCat(Int, Bytes, Bytes) }
+
+fn b_size(b) { match b { BEmpty -> 0, BStr(s) -> string_length(s), BCat(n, _, _) -> n } }
+
+fn b_cat(a, b) {
+  match (a, b) {
+    (BEmpty, _) -> b,
+    (_, BEmpty) -> a,
+    _ -> BCat(b_size(a) + b_size(b), a, b),
+  }
+}
+
+fn b_cats(parts) { fold(parts, BEmpty, b_cat) }
+
+fn b_byte(n) { BStr(char_from_code(n)) }
+
+fn b_bytes(ns) { b_cats(map(ns, b_byte)) }
+
+// Prints the rope, coalescing small pieces into larger chunks.
+fn b_print(b) {
+  // Ropes built by folding are deeply left-nested, so walk with an explicit stack.
+  fn walk(stack, acc) {
+    match stack {
+      [] -> acc,
+      [BEmpty, ..rest] -> walk(rest, acc),
+      [BStr(s), ..rest] -> walk(rest, [s, ..acc]),
+      [BCat(_, x, y), ..rest] -> walk([x, y, ..rest], acc),
+    }
+  }
+  fn chunks(b, acc) { walk([b], acc) }
+  fn emit(pieces, buf, n) {
+    match pieces {
+      [] -> print(join(reverse(buf), "")),
+      [p, ..rest] ->
+        if n > 4096 { print(join(reverse(buf), "")); emit(rest, [p], string_length(p)) }
+        else { emit(rest, [p, ..buf], n + string_length(p)) },
+    }
+  }
+  emit(reverse(chunks(b, [])), [], 0)
+}
+
+// ================================================================== LEB128 ==
+
+fn uleb(n) {
+  if n < 128 { b_byte(n) } else { b_cat(b_byte(n % 128 + 128), uleb(n / 128)) }
+}
+
+fn sleb_from(byte, rest) {
+  if (rest == 0 && byte < 64) || (rest == -1 && byte >= 64) { b_byte(byte) }
+  else { b_cat(b_byte(byte + 128), sleb(rest)) }
+}
+
+fn sleb(n) { sleb_from(floor_mod(n, 128), floor_div(n, 128)) }
+
+// 32-bit constants. Tagged immediates (2n + 1) can exceed Lumen's 31-bit Int,
+// so they are kept as n and encoded without ever forming 2n + 1.
+type I32 { Lit(Int), Tag(Int) }
+
+fn sleb_i32(c) {
+  match c {
+    Lit(n) -> sleb(n),
+    Tag(n) -> sleb_from(2 * floor_mod(n, 64) + 1, floor_div(n, 64)),
+  }
+}
+
+// Little-endian 32-bit word (non-negative values only: headers, table indices).
+fn word_bytes(n) {
+  b_bytes([n % 256, (n / 256) % 256, (n / 65536) % 256, (n / 16777216) % 256])
+}
+
+fn str_bytes(s) { b_cat(uleb(string_length(s)), BStr(s)) }
+
+// ================================================================= strings ==
+
+fn is_digit_code(c) { c >= 48 && c <= 57 }
+fn is_alpha_code(c) { (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c == 95 }
+fn is_upper_code(c) { c >= 65 && c <= 90 }
+
+fn str_starts_with(s, prefix) {
+  string_length(s) >= string_length(prefix) && substring(s, 0, string_length(prefix)) == prefix
+}
+
+fn plural(n, word) { int_to_string(n) ++ " " ++ word ++ if n == 1 { "" } else { "s" } }

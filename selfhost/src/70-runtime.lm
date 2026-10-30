@@ -1,0 +1,258 @@
+// ================================================================ runtime ==
+// Port of src/runtime.js: the allocator, Cheney copying collector, structural
+// equality/ordering and string primitives, emitted as wasm instructions.
+// Instruction for instruction identical to the reference.
+
+fn tag_closure() { 254 }
+fn tag_string() { 255 }
+fn max_string() { 8388607 }
+fn header(kind, size) { size * 512 + kind * 2 + 1 }
+
+fn kind_of(ptr) { code([ptr, ld(0), ic(1), op("i32.shr_u"), ic(255), op("i32.and")]) }
+fn len_of(ptr) { code([ptr, ld(0), ic(9), op("i32.shr_u")]) }
+fn to_bool_ins() { code([ic(1), op("i32.shl"), ic(1), op("i32.or")]) }
+fn obj_bytes(len) { code([len, ic(3), op("i32.add"), ic(-4), op("i32.and"), ic(4), op("i32.add")]) }
+fn trap(n) { code([ic(n), icall("$rt:trap")]) }
+
+fn push_roots(names) {
+  code([gget("$sp"), lset("$fp"), gget("$sp"), ic(4 * length(names)), op("i32.add"), gset("$sp"),
+    flat_map(indexed(names), |p| match p { (i, n) -> code([lget("$fp"), lget(n), st(4 * i)]) })])
+}
+
+fn pop_roots(names) {
+  code([flat_map(indexed(names), |p| match p { (i, n) -> code([lget("$fp"), ld(4 * i), lset(n)]) }), lget("$fp"), gset("$sp")])
+}
+
+fn new_string(len_local) {
+  code([obj_bytes(lget(len_local)), icall("$rt:alloc"), lset("$p"),
+    lget("$p"), lget(len_local), ic(9), op("i32.shl"), ic(tag_string() * 2 + 1), op("i32.or"), st(0)])
+}
+
+// stack_base, scratch_end, empty_string, char_table are layout addresses.
+fn add_runtime(m0, stack_base, scratch_end, empty_string, char_table, gc_stress) {
+  let fnd = |m, name, params, nres, locals, body| wm_add_func(m, WFunc(name, "", params, nres, locals, body));
+  let m1 = wm_add_import(m0, "env", "print", "$host:print", ["i32", "i32"], []);
+  let m2 = wm_add_import(m1, "env", "error", "$host:error", ["i32", "i32"], []);
+  let m3 = wm_add_import(m2, "env", "input_len", "$host:input_len", [], ["i32"]);
+  let m4 = wm_add_import(m3, "env", "input_copy", "$host:input_copy", ["i32"], []);
+
+  let m5 = fnd(m4, "$rt:trap", ["$code"], 0, [], code([lget("$code"), ic(0), icall("$host:error"), op("unreachable")]));
+
+  let m6 = fnd(m5, "$rt:alloc", ["$bytes"], 1, ["$p"], code([
+    gget("$hp"), ltee("$p"), lget("$bytes"), op("i32.add"), gget("$from_end"), op("i32.gt_u"),
+    if gc_stress { code([op("drop"), ic(1)]) } else { [] },
+    if_(false, code([lget("$bytes"), icall("$rt:gc"), gget("$hp"), lset("$p")]), None),
+    lget("$p"), lget("$bytes"), op("i32.add"), gset("$hp"),
+    gget("$alloc_bytes"), lget("$bytes"), op("i64.extend_i32_u"), op("i64.add"), gset("$alloc_bytes"),
+    lget("$p"),
+  ]));
+
+  let m7 = fnd(m6, "$rt:gc", ["$need"], 0, ["$live", "$size", "$base"], code([
+    icall("$rt:collect"),
+    gget("$hp"), gget("$from_start"), op("i32.sub"), lset("$live"),
+    gget("$from_end"), gget("$from_start"), op("i32.sub"), lset("$size"),
+    lget("$live"), lget("$need"), op("i32.add"), ic(1), op("i32.shl"), lget("$size"), op("i32.gt_u"),
+    if_(false, code([
+      lget("$live"), lget("$need"), op("i32.add"), ic(1), op("i32.shl"), lset("$base"),
+      lget("$size"), ic(1), op("i32.shl"), lset("$size"),
+      lget("$size"), lget("$base"), lget("$size"), lget("$base"), op("i32.gt_u"), op("select"),
+      ic(65535), op("i32.add"), ic(-65536), op("i32.and"), lset("$size"),
+      misc("memory.size"), ic(16), op("i32.shl"), lset("$base"),
+      lget("$size"), ic(15), op("i32.shr_u"), misc("memory.grow"), ic(-1), op("i32.eq"),
+      if_(false, trap(6), None),
+      lget("$base"), gset("$to_start"),
+      lget("$base"), lget("$size"), op("i32.add"), gset("$to_end"),
+      icall("$rt:collect"),
+      lget("$base"), lget("$size"), op("i32.add"), gset("$to_start"),
+      lget("$base"), lget("$size"), ic(1), op("i32.shl"), op("i32.add"), gset("$to_end"),
+    ]), None),
+  ]));
+
+  let m8 = fnd(m7, "$rt:collect", [], 0, ["$p", "$scan", "$h", "$end"], code([
+    gget("$gc_count"), ic(1), op("i32.add"), gset("$gc_count"),
+    gget("$to_start"), gset("$next"),
+    ic(stack_base), lset("$p"),
+    loop_("roots", code([lget("$p"), gget("$sp"), op("i32.ge_u")]), code([
+      lget("$p"), lget("$p"), ld(0), icall("$rt:forward"), st(0),
+      lget("$p"), ic(4), op("i32.add"), lset("$p"),
+    ])),
+    gget("$to_start"), lset("$scan"),
+    loop_("scan", code([lget("$scan"), gget("$next"), op("i32.ge_u")]), code([
+      lget("$scan"), ld(0), lset("$h"),
+      lget("$h"), ic(1), op("i32.shr_u"), ic(255), op("i32.and"), ic(tag_string()), op("i32.eq"),
+      if_(false,
+        code([lget("$scan"), obj_bytes(code([lget("$h"), ic(9), op("i32.shr_u")])), op("i32.add"), lset("$scan")]),
+        Some(code([
+          lget("$scan"), ic(4), op("i32.add"), lset("$p"),
+          lget("$p"), lget("$h"), ic(9), op("i32.shr_u"), ic(2), op("i32.shl"), op("i32.add"), lset("$end"),
+          loop_("fields", code([lget("$p"), lget("$end"), op("i32.ge_u")]), code([
+            lget("$p"), lget("$p"), ld(0), icall("$rt:forward"), st(0),
+            lget("$p"), ic(4), op("i32.add"), lset("$p"),
+          ])),
+          lget("$end"), lset("$scan"),
+        ]))),
+    ])),
+    gget("$from_start"), gget("$to_start"), gset("$from_start"), gset("$to_start"),
+    gget("$from_end"), gget("$to_end"), gset("$from_end"), gset("$to_end"),
+    gget("$next"), gset("$hp"),
+    if gc_stress { code([gget("$to_start"), ic(85), gget("$to_end"), gget("$to_start"), op("i32.sub"), misc("memory.fill")]) } else { [] },
+  ]));
+
+  let m9 = fnd(m8, "$rt:forward", ["$v"], 1, ["$h", "$n", "$new"], code([
+    lget("$v"), ic(1), op("i32.and"), if_(false, ret(lget("$v")), None),
+    lget("$v"), gget("$from_start"), op("i32.lt_u"), if_(false, ret(lget("$v")), None),
+    lget("$v"), gget("$from_end"), op("i32.ge_u"), if_(false, ret(lget("$v")), None),
+    lget("$v"), ld(0), ltee("$h"), ic(1), op("i32.and"), op("i32.eqz"), if_(false, ret(lget("$h")), None),
+    lget("$h"), ic(1), op("i32.shr_u"), ic(255), op("i32.and"), ic(tag_string()), op("i32.eq"),
+    if_(true,
+      obj_bytes(code([lget("$h"), ic(9), op("i32.shr_u")])),
+      Some(code([lget("$h"), ic(9), op("i32.shr_u"), ic(2), op("i32.shl"), ic(4), op("i32.add")]))),
+    lset("$n"),
+    gget("$next"), ltee("$new"), lget("$v"), lget("$n"), misc("memory.copy"),
+    gget("$next"), lget("$n"), op("i32.add"), gset("$next"),
+    lget("$v"), lget("$new"), st(0),
+    lget("$new"),
+  ]));
+
+  let field_loads = |cmpf| code([
+    lget("$a"), lget("$i"), ic(2), op("i32.shl"), op("i32.add"), ld(4),
+    lget("$b"), lget("$i"), ic(2), op("i32.shl"), op("i32.add"), ld(4),
+    icall(cmpf),
+  ]);
+  let last_field = code([
+    lget("$a"), lget("$n"), ic(2), op("i32.shl"), op("i32.add"), ld(0), lset("$a"),
+    lget("$b"), lget("$n"), ic(2), op("i32.shl"), op("i32.add"), ld(0), lset("$b"),
+    [IBr("br", "$top"), IOp("end"), IOp("unreachable")],
+  ]);
+
+  let m10 = fnd(m9, "$rt:eq", ["$a", "$b"], 1, ["$h", "$k", "$n", "$i"], code([
+    [IBlock("loop", "$top", false)],
+    lget("$a"), lget("$b"), op("i32.or"), ic(1), op("i32.and"),
+    if_(false, ret(code([lget("$a"), lget("$b"), op("i32.eq")])), None),
+    lget("$a"), ld(0), ltee("$h"), ic(1), op("i32.shr_u"), ic(255), op("i32.and"), ltee("$k"),
+    ic(tag_closure()), op("i32.eq"), if_(false, trap(2), None),
+    lget("$k"), ic(tag_string()), op("i32.eq"), if_(false, ret(code([lget("$a"), lget("$b"), icall("$rt:str_eq")])), None),
+    lget("$h"), lget("$b"), ld(0), op("i32.ne"), if_(false, ret(ic(0)), None),
+    lget("$h"), ic(9), op("i32.shr_u"), ltee("$n"), op("i32.eqz"), if_(false, ret(ic(1)), None),
+    ic(0), lset("$i"),
+    loop_("fields", code([lget("$i"), lget("$n"), ic(1), op("i32.sub"), op("i32.ge_s")]), code([
+      field_loads("$rt:eq"), op("i32.eqz"), if_(false, ret(ic(0)), None),
+      lget("$i"), ic(1), op("i32.add"), lset("$i"),
+    ])),
+    last_field,
+  ]));
+
+  let m11 = fnd(m10, "$rt:compare", ["$a", "$b"], 1, ["$ka", "$kb", "$n", "$i", "$r"], code([
+    [IBlock("loop", "$top", false)],
+    lget("$a"), lget("$b"), op("i32.and"), ic(1), op("i32.and"),
+    if_(false, ret(code([lget("$a"), lget("$b"), op("i32.gt_s"), lget("$a"), lget("$b"), op("i32.lt_s"), op("i32.sub")])), None),
+    lget("$a"), ic(1), op("i32.and"),
+    if_(false, ret(code([lget("$a"), ic(1), op("i32.shr_s"), kind_of(lget("$b")), op("i32.lt_s"), if_(true, ic(-1), Some(ic(1)))])), None),
+    lget("$b"), ic(1), op("i32.and"),
+    if_(false, ret(code([kind_of(lget("$a")), lget("$b"), ic(1), op("i32.shr_s"), op("i32.lt_s"), if_(true, ic(-1), Some(ic(1)))])), None),
+    kind_of(lget("$a")), ltee("$ka"), ic(tag_closure()), op("i32.eq"), if_(false, trap(2), None),
+    lget("$ka"), ic(tag_string()), op("i32.eq"), if_(false, ret(code([lget("$a"), lget("$b"), icall("$rt:str_cmp")])), None),
+    kind_of(lget("$b")), ltee("$kb"), lget("$ka"), op("i32.ne"),
+    if_(false, ret(code([lget("$ka"), lget("$kb"), op("i32.lt_s"), if_(true, ic(-1), Some(ic(1)))])), None),
+    len_of(lget("$a")), ltee("$n"), op("i32.eqz"), if_(false, ret(ic(0)), None),
+    ic(0), lset("$i"),
+    loop_("fields", code([lget("$i"), lget("$n"), ic(1), op("i32.sub"), op("i32.ge_s")]), code([
+      field_loads("$rt:compare"), ltee("$r"), if_(false, ret(lget("$r")), None),
+      lget("$i"), ic(1), op("i32.add"), lset("$i"),
+    ])),
+    last_field,
+  ]));
+
+  let m12 = fnd(m11, "$rt:str_eq", ["$a", "$b"], 1, ["$n", "$i"], code([
+    lget("$a"), lget("$b"), op("i32.eq"), if_(false, ret(ic(1)), None),
+    len_of(lget("$a")), ltee("$n"), len_of(lget("$b")), op("i32.ne"), if_(false, ret(ic(0)), None),
+    ic(0), lset("$i"),
+    loop_("bytes", code([lget("$i"), lget("$n"), op("i32.ge_u")]), code([
+      lget("$a"), lget("$i"), op("i32.add"), [IMem("i32.load8_u", 4)],
+      lget("$b"), lget("$i"), op("i32.add"), [IMem("i32.load8_u", 4)],
+      op("i32.ne"), if_(false, ret(ic(0)), None),
+      lget("$i"), ic(1), op("i32.add"), lset("$i"),
+    ])),
+    ic(1),
+  ]));
+
+  let m13 = fnd(m12, "$rt:str_cmp", ["$a", "$b"], 1, ["$la", "$lb", "$i", "$x", "$y"], code([
+    len_of(lget("$a")), lset("$la"), len_of(lget("$b")), lset("$lb"),
+    ic(0), lset("$i"),
+    loop_("bytes", code([lget("$i"), lget("$la"), op("i32.ge_u"), lget("$i"), lget("$lb"), op("i32.ge_u"), op("i32.or")]), code([
+      lget("$a"), lget("$i"), op("i32.add"), [IMem("i32.load8_u", 4)], ltee("$x"),
+      lget("$b"), lget("$i"), op("i32.add"), [IMem("i32.load8_u", 4)], ltee("$y"),
+      op("i32.ne"), if_(false, ret(code([lget("$x"), lget("$y"), op("i32.lt_u"), if_(true, ic(-1), Some(ic(1)))])), None),
+      lget("$i"), ic(1), op("i32.add"), lset("$i"),
+    ])),
+    lget("$la"), lget("$lb"), op("i32.gt_u"), lget("$la"), lget("$lb"), op("i32.lt_u"), op("i32.sub"),
+  ]));
+
+  let m14 = fnd(m13, "$rt:concat", ["$a", "$b"], 1, ["$la", "$lb", "$n", "$p", "$fp"], code([
+    len_of(lget("$a")), ltee("$la"), op("i32.eqz"), if_(false, ret(lget("$b")), None),
+    len_of(lget("$b")), ltee("$lb"), op("i32.eqz"), if_(false, ret(lget("$a")), None),
+    lget("$la"), lget("$lb"), op("i32.add"), ltee("$n"), ic(max_string()), op("i32.gt_u"), if_(false, trap(9), None),
+    push_roots(["$a", "$b"]),
+    new_string("$n"),
+    pop_roots(["$a", "$b"]),
+    lget("$p"), ic(4), op("i32.add"), lget("$a"), ic(4), op("i32.add"), lget("$la"), misc("memory.copy"),
+    lget("$p"), ic(4), op("i32.add"), lget("$la"), op("i32.add"), lget("$b"), ic(4), op("i32.add"), lget("$lb"), misc("memory.copy"),
+    lget("$p"),
+  ]));
+
+  let m15 = fnd(m14, "$rt:int_to_string", ["$v"], 1, ["$n", "$neg", "$pos", "$len", "$p"], code([
+    lget("$v"), ic(1), op("i32.shr_s"), ltee("$n"), ic(0), op("i32.lt_s"), ltee("$neg"),
+    if_(false, code([ic(0), lget("$n"), op("i32.sub"), lset("$n")]), None),
+    ic(scratch_end), lset("$pos"),
+    [IBlock("loop", "$digits", false)],
+    lget("$pos"), ic(1), op("i32.sub"), ltee("$pos"),
+    lget("$n"), ic(10), op("i32.rem_u"), ic(48), op("i32.add"), [IMem("i32.store8", 0)],
+    lget("$n"), ic(10), op("i32.div_u"), ltee("$n"),
+    [IBr("br_if", "$digits"), IOp("end")],
+    lget("$neg"), if_(false, code([lget("$pos"), ic(1), op("i32.sub"), ltee("$pos"), ic(45), [IMem("i32.store8", 0)]]), None),
+    ic(scratch_end), lget("$pos"), op("i32.sub"), lset("$len"),
+    new_string("$len"),
+    lget("$p"), ic(4), op("i32.add"), lget("$pos"), lget("$len"), misc("memory.copy"),
+    lget("$p"),
+  ]));
+
+  let m16 = fnd(m15, "$rt:string_length", ["$s"], 1, [], code([len_of(lget("$s")), to_bool_ins()]));
+
+  let m17 = fnd(m16, "$rt:substring", ["$s", "$a", "$b"], 1, ["$len", "$n", "$p", "$fp"], code([
+    len_of(lget("$s")), lset("$len"),
+    lget("$a"), ic(1), op("i32.shr_s"), lset("$a"),
+    lget("$a"), ic(0), op("i32.lt_s"), if_(false, code([ic(0), lset("$a")]), None),
+    lget("$a"), lget("$len"), op("i32.gt_s"), if_(false, code([lget("$len"), lset("$a")]), None),
+    lget("$b"), ic(1), op("i32.shr_s"), lset("$b"),
+    lget("$b"), lget("$len"), op("i32.gt_s"), if_(false, code([lget("$len"), lset("$b")]), None),
+    lget("$b"), lget("$a"), op("i32.lt_s"), if_(false, code([lget("$a"), lset("$b")]), None),
+    lget("$b"), lget("$a"), op("i32.sub"), ltee("$n"), lget("$len"), op("i32.eq"), if_(false, ret(lget("$s")), None),
+    lget("$n"), op("i32.eqz"), if_(false, ret(ic(empty_string)), None),
+    push_roots(["$s"]),
+    new_string("$n"),
+    pop_roots(["$s"]),
+    lget("$p"), ic(4), op("i32.add"), lget("$s"), ic(4), op("i32.add"), lget("$a"), op("i32.add"), lget("$n"), misc("memory.copy"),
+    lget("$p"),
+  ]));
+
+  let m18 = fnd(m17, "$rt:char_code_at", ["$s", "$i"], 1, [], code([
+    lget("$i"), ic(1), op("i32.shr_s"), ltee("$i"), len_of(lget("$s")), op("i32.ge_u"), if_(false, trap(4), None),
+    lget("$s"), lget("$i"), op("i32.add"), [IMem("i32.load8_u", 4)], to_bool_ins(),
+  ]));
+
+  let m19 = fnd(m18, "$rt:char_from_code", ["$c"], 1, [], code([
+    lget("$c"), ic(1), op("i32.shr_u"), ic(255), op("i32.and"), ic(3), op("i32.shl"), ic(char_table), op("i32.add"),
+  ]));
+
+  let m20 = fnd(m19, "$rt:print", ["$s"], 1, [], code([lget("$s"), ic(0), icall("$host:print"), ic(1)]));
+  let m21 = fnd(m20, "$rt:println", ["$s"], 1, [], code([lget("$s"), ic(1), icall("$host:print"), ic(1)]));
+  let m22 = fnd(m21, "$rt:panic", ["$s"], 1, [], code([ic(3), lget("$s"), icall("$host:error"), op("unreachable")]));
+  fnd(m22, "$rt:read_input", [], 1, ["$n", "$p"], code([
+    icall("$host:input_len"), ltee("$n"), ic(max_string()), op("i32.gt_u"), if_(false, trap(9), None),
+    new_string("$n"),
+    lget("$p"), ic(4), op("i32.add"), icall("$host:input_copy"),
+    lget("$p"),
+  ]))
+}
+
+fn builtin_runtime(name) { "$rt:" ++ name }

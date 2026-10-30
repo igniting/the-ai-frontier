@@ -1,0 +1,311 @@
+// ================================================================ codegen ==
+// Port of src/codegen.js. Static data (string literals, static closures) and
+// table slots are allocated lazily in emission order, exactly as in the
+// reference, so the two compilers produce byte-identical modules.
+
+fn stack_base() { 1024 }
+fn stack_end() { 1024 + 1048576 }
+fn stack_limit() { stack_end() - 256 }
+fn heap_size() { 1048576 }
+fn align_up(n, a) { (n + a - 1) / a * a }
+
+// module, static data top, string addresses, static closure addresses, string pool
+type CG { CG(WMod, Int, Map<Int, Int>, Map<String, Int>, Vec<String>) }
+
+fn cg_mod(cg) { match cg { CG(m, _, _, _, _) -> m } }
+fn cg_set_mod(cg, m) { match cg { CG(_, t, sa, sc, s) -> CG(m, t, sa, sc, s) } }
+
+fn static_object(cg, words, bytes) {
+  match cg {
+    CG(m, top, sa, sc, strs) -> {
+      let size = 4 * length(words) + b_size(bytes);
+      let padded = align_up(size, 4);
+      let data = b_cats([b_cats(map(words, word_bytes)), bytes, b_bytes(repeat(0, padded - size))]);
+      (top, CG(wm_add_data(m, top, data), top + padded, sa, sc, strs))
+    },
+  }
+}
+
+fn string_addr(cg, idx) {
+  match cg {
+    CG(_, _, sa, _, strs) -> match m_get(sa, idx) {
+      Some(a) -> (a, cg),
+      None -> {
+        let s = v_get(strs, idx);
+        let (a, cg2) = static_object(cg, [header(tag_string(), string_length(s))], BStr(s));
+        match cg2 { CG(m, t, sa2, sc, ss) -> (a, CG(m, t, m_set(sa2, idx, a), sc, ss)) }
+      },
+    },
+  }
+}
+
+fn table_index(cg, fname) {
+  let (i, m2) = wm_table_index(cg_mod(cg), "$" ++ fname);
+  (i, cg_set_mod(cg, m2))
+}
+
+fn static_closure(cg, fname) {
+  match cg {
+    CG(_, _, _, sc, _) -> match m_get(sc, fname) {
+      Some(a) -> (a, cg),
+      None -> {
+        let (ti, cg1) = table_index(cg, fname);
+        let (a, cg2) = static_object(cg1, [header(tag_closure(), 1), 2 * ti + 1], BEmpty);
+        match cg2 { CG(m, t, sa, sc2, ss) -> (a, CG(m, t, sa, m_set(sc2, fname, a), ss)) }
+      },
+    },
+  }
+}
+
+fn fn_type_key(cg, n) {
+  let params = repeat("i32", n + 1);
+  (sig_key(params, ["i32"]), cg_set_mod(cg, wm_type(cg_mod(cg), params, ["i32"])))
+}
+
+type Storage { SSlot(Int), SLocal(String) }
+
+// per-function constants: storage, frame bytes, env slot (-1: none)
+type FI { FI(Map<Int, Storage>, Int, Int) }
+
+// emitted chunks (reversed), label counter, needs $tmp, codegen state
+type FG { FG(List<List<Ins>>, Int, Bool, CG) }
+
+fn emit(fg, ins) { match fg { FG(ch, lc, nt, cg) -> FG([ins, ..ch], lc, nt, cg) } }
+fn fg_cg(fg) { match fg { FG(_, _, _, cg) -> cg } }
+fn fg_set_cg(fg, cg) { match fg { FG(ch, lc, nt, _) -> FG(ch, lc, nt, cg) } }
+fn fg_label(fg, base) { match fg { FG(ch, lc, nt, cg) -> ("$" ++ base ++ int_to_string(lc), FG(ch, lc + 1, nt, cg)) } }
+fn fg_need_tmp(fg) { match fg { FG(ch, lc, _, cg) -> FG(ch, lc, true, cg) } }
+
+fn var_wasm_name(v) { match v { Var(id, name, _) -> "$" ++ name ++ "_" ++ int_to_string(id) } }
+
+fn gen_atom(fi, fg, a) {
+  match fi {
+    FI(storage, _, env_slot) -> match a {
+      AVar(v) -> match m_find(storage, var_id(v)) {
+        SLocal(n) -> emit(fg, lget(n)),
+        SSlot(k) -> emit(fg, code([lget("$fp"), ld(k * 4)])),
+      },
+      AImm(n) -> emit(fg, itag(n)),
+      AStr(i) -> { let (addr, cg) = string_addr(fg_cg(fg), i); emit(fg_set_cg(fg, cg), ic(addr)) },
+      ASclo(f) -> { let (addr, cg) = static_closure(fg_cg(fg), f); emit(fg_set_cg(fg, cg), ic(addr)) },
+      AEnvf(i) -> emit(fg, code([lget("$fp"), ld(env_slot * 4), ld(8 + 4 * i)])),
+      ASelf -> emit(fg, code([lget("$fp"), ld(env_slot * 4)])),
+    },
+  }
+}
+
+fn gen_atoms(fi, fg, atoms) { fold(atoms, fg, |g, a| gen_atom(fi, g, a)) }
+
+fn gen_store(fi, fg, v, value) {
+  match fi {
+    FI(storage, _, _) -> match m_find(storage, var_id(v)) {
+      SLocal(n) -> emit(value(fg), lset(n)),
+      SSlot(k) -> emit(value(emit(fg, lget("$fp"))), st(k * 4)),
+    },
+  }
+}
+
+fn pop_frame(fi, fg) { match fi { FI(_, fb, _) -> if fb > 0 { emit(fg, code([lget("$fp"), gset("$sp")])) } else { fg } } }
+
+// The fields are loaded only after $rt:alloc returns: a collection inside it may move them.
+fn gen_alloc(fi, fg, hdr, fields) {
+  let fg1 = emit(fg_need_tmp(fg), code([ic(4 + 4 * length(fields)), icall("$rt:alloc"), lset("$tmp"), lget("$tmp"), ic(hdr), st(0)]));
+  let fg2 = fold(indexed(fields), fg1, |g, p| match p { (i, a) -> emit(gen_atom(fi, emit(g, lget("$tmp")), a), st(4 + 4 * i)) });
+  emit(fg2, lget("$tmp"))
+}
+
+fn gen_prim(fi, fg, prim, args) {
+  let a = list_get(args, 0);
+  let both = || gen_atom(fi, gen_atom(fi, fg, a), list_get(args, 1));
+  let tb = to_bool_ins();
+  match prim {
+    "add" -> emit(both(), code([op("i32.add"), ic(1), op("i32.sub")])),
+    "sub" -> emit(both(), code([op("i32.sub"), ic(1), op("i32.add")])),
+    "mul" -> {
+      let g1 = emit(gen_atom(fi, fg, a), code([ic(1), op("i32.shr_s")]));
+      emit(gen_atom(fi, g1, list_get(args, 1)), code([ic(1), op("i32.sub"), op("i32.mul"), ic(1), op("i32.add")]))
+    },
+    "div" -> gen_divrem(fi, fg, args, "i32.div_s"),
+    "rem" -> gen_divrem(fi, fg, args, "i32.rem_s"),
+    "neg" -> emit(gen_atom(fi, emit(fg, ic(2)), a), op("i32.sub")),
+    "not" -> emit(gen_atom(fi, emit(fg, ic(4)), a), op("i32.sub")),
+    "concat" -> emit(both(), icall("$rt:concat")),
+    "eq_imm" -> emit(both(), code([op("i32.eq"), tb])),
+    "ne_imm" -> emit(both(), code([op("i32.ne"), tb])),
+    "lt_imm" -> emit(both(), code([op("i32.lt_s"), tb])),
+    "le_imm" -> emit(both(), code([op("i32.le_s"), tb])),
+    "gt_imm" -> emit(both(), code([op("i32.gt_s"), tb])),
+    "ge_imm" -> emit(both(), code([op("i32.ge_s"), tb])),
+    "eq" -> emit(both(), code([icall("$rt:eq"), tb])),
+    "ne" -> emit(both(), code([icall("$rt:eq"), op("i32.eqz"), tb])),
+    _ -> emit(both(), code([icall("$rt:compare"), ic(0), op("i32." ++ prim ++ "_s"), tb])),
+  }
+}
+
+fn gen_divrem(fi, fg, args, opname) {
+  let a = list_get(args, 0);
+  let b = list_get(args, 1);
+  let g1 = emit(gen_atom(fi, fg, b), code([ic(1), op("i32.eq"), [IBlock("if", "", false)], ic(1), icall("$rt:trap"), op("end")]));
+  let g2 = emit(gen_atom(fi, g1, a), code([ic(1), op("i32.shr_s")]));
+  emit(gen_atom(fi, g2, b), code([ic(1), op("i32.shr_s"), op(opname), to_bool_ins()]))
+}
+
+fn gen_path(fi, fg, scrut, path) { fold(path, gen_atom(fi, fg, scrut), |g, i| emit(g, ld(4 + 4 * i))) }
+
+fn gen_test(fi, fg, t, scrut) {
+  match t {
+    TImm(n, p) -> emit(gen_path(fi, fg, scrut, p), code([itag(n), op("i32.eq")])),
+    TIsBlock(p) -> emit(gen_path(fi, fg, scrut, p), code([ic(1), op("i32.and"), op("i32.eqz")])),
+    TTag(tag, p) -> emit(gen_path(fi, fg, scrut, p), code([ld(0), ic(1), op("i32.shr_u"), ic(255), op("i32.and"), ic(tag), op("i32.eq")])),
+    TStrEq(i, p) -> {
+      let g1 = gen_path(fi, fg, scrut, p);
+      let (addr, cg) = string_addr(fg_cg(g1), i);
+      emit(fg_set_cg(g1, cg), code([ic(addr), icall("$rt:str_eq")]))
+    },
+  }
+}
+
+fn gen_binds(fi, fg, binds, scrut) {
+  fold(binds, fg, |g, b| match b { Bind(v, p) -> gen_store(fi, g, v, |gx| gen_path(fi, gx, scrut, p)) })
+}
+
+fn gen_match(fi, fg, scrut, arms, tail) {
+  match arms {
+    [RArm([], binds, None, body)] -> gen_expr(fi, gen_binds(fi, fg, binds, scrut), body, tail),
+    _ -> {
+      let (done, fg1) = fg_label(fg, "match");
+      let fg2 = emit(fg1, [IBlock("block", done, true)]);
+      fn arms_go(g, rest) {
+        match rest {
+          [] -> emit(g, op("unreachable")),
+          [RArm([], binds, None, body), .._] ->
+            emit(gen_expr(fi, gen_binds(fi, g, binds, scrut), body, tail), [IBr("br", done)]),
+          [RArm(tests, binds, guard, body), ..more] -> {
+            let (next, g1) = fg_label(g, "arm");
+            let g2 = emit(g1, [IBlock("block", next, false)]);
+            let g3 = fold(tests, g2, |gx, t| emit(gen_test(fi, gx, t, scrut), code([op("i32.eqz"), [IBr("br_if", next)]])));
+            let g4 = gen_binds(fi, g3, binds, scrut);
+            let g5 = match guard {
+              Some(gd) -> emit(gen_expr(fi, g4, gd, false), code([ic(1), op("i32.shr_u"), op("i32.eqz"), [IBr("br_if", next)]])),
+              None -> g4,
+            };
+            arms_go(emit(gen_expr(fi, g5, body, tail), [IBr("br", done), IOp("end")]), more)
+          },
+        }
+      }
+      emit(arms_go(fg2, arms), op("end"))
+    },
+  }
+}
+
+fn gen_expr(fi, fg, e, tail) {
+  match e {
+    RAtom(a) -> gen_atom(fi, fg, a),
+    RLet(v, rhs, body) -> gen_expr(fi, gen_store(fi, fg, v, |g| gen_expr(fi, g, rhs, false)), body, tail),
+    RSeq(first, rest) -> gen_expr(fi, emit(gen_expr(fi, fg, first, false), op("drop")), rest, tail),
+    RPrim(p, args) -> gen_prim(fi, fg, p, args),
+    RBuiltin(name, args) -> emit(gen_atoms(fi, fg, args), icall(builtin_runtime(name))),
+    RCall(f, env, args) -> {
+      let g1 = match env { Some(a) -> gen_atom(fi, fg, a), None -> emit(fg, ic(0)) };
+      let g2 = gen_atoms(fi, g1, args);
+      if tail { emit(pop_frame(fi, g2), [ICall("return_call", "$" ++ f)]) } else { emit(g2, icall("$" ++ f)) }
+    },
+    RCallc(clo, args) -> {
+      let g1 = gen_atom(fi, gen_atoms(fi, gen_atom(fi, fg, clo), args), clo);
+      let g2 = emit(g1, code([ld(4), ic(1), op("i32.shr_u")]));
+      let (key, cg) = fn_type_key(fg_cg(g2), length(args));
+      let g3 = fg_set_cg(g2, cg);
+      if tail { emit(pop_frame(fi, g3), [ICallInd("return_call_indirect", key)]) } else { emit(g3, [ICallInd("call_indirect", key)]) }
+    },
+    RAlloc(tag, args) -> gen_alloc(fi, fg, header(tag, length(args)), args),
+    RClosure(f, captured) -> {
+      let (ti, cg) = table_index(fg_cg(fg), f);
+      gen_alloc(fi, fg_set_cg(fg, cg), header(tag_closure(), 1 + length(captured)), [AImm(ti), ..captured])
+    },
+    RIf(c, t, el) -> {
+      let g1 = emit(gen_atom(fi, fg, c), code([ic(1), op("i32.shr_u"), [IBlock("if", "", true)]]));
+      let g2 = emit(gen_expr(fi, g1, t, tail), op("else"));
+      emit(gen_expr(fi, g2, el, tail), op("end"))
+    },
+    RMatch(s, arms) -> gen_match(fi, fg, s, arms, tail),
+  }
+}
+
+fn gen_function(cg, f) {
+  match f {
+    Func(name, params, env, vars, body) -> {
+      // Shadow-stack slots: the env, traced parameters, then other traced variables.
+      let s0 = match env { Some(v) -> (m_set(Tip, var_id(v), SSlot(0)), 1), None -> (Tip, 0) };
+      let (st1, slots1) = fold(params, s0, |acc, v| match acc { (m, n) -> if var_traced(v) { (m_set(m, var_id(v), SSlot(n)), n + 1) } else { acc } });
+      let param_slots = slots1;
+      let st2 = fold(params, st1, |m, v| if var_traced(v) { m } else { m_set(m, var_id(v), SLocal(var_wasm_name(v))) });
+      let (storage, slots, locals_rev) = fold(vars, (st2, slots1, []), |acc, v| match acc {
+        (m, n, ls) ->
+          if m_has(m, var_id(v)) { acc }
+          else if var_traced(v) { (m_set(m, var_id(v), SSlot(n)), n + 1, ls) }
+          else { (m_set(m, var_id(v), SLocal(var_wasm_name(v))), n, [var_wasm_name(v), ..ls]) },
+      });
+      let frame_bytes = slots * 4;
+      let env_slot = match env { Some(_) -> 0, None -> -1 };
+      let fi = FI(storage, frame_bytes, env_slot);
+      let locals1 = reverse(locals_rev);
+      let locals2 = if frame_bytes > 0 { append(locals1, ["$fp"]) } else { locals1 };
+      let fg0 = FG([], 0, false, cg);
+      let prologue =
+        if frame_bytes == 0 { [] }
+        else {
+          code([
+            gget("$sp"), ltee("$fp"), ic(frame_bytes), op("i32.add"), gset("$sp"),
+            gget("$sp"), ic(stack_limit()), op("i32.gt_u"), [IBlock("if", "", false)], ic(5), icall("$rt:trap"), op("end"),
+            if slots > param_slots {
+              code([lget("$fp"), if param_slots > 0 { code([ic(param_slots * 4), op("i32.add")]) } else { [] }, ic(0), ic((slots - param_slots) * 4), misc("memory.fill")])
+            } else { [] },
+            match env { Some(v) -> code([lget("$fp"), lget("$env"), st(0)]), None -> [] },
+            flat_map(params, |v| if var_traced(v) { match m_find(storage, var_id(v)) { SSlot(k) -> code([lget("$fp"), lget(var_wasm_name(v)), st(k * 4)]), _ -> [] } } else { [] }),
+          ])
+        };
+      let fg1 = pop_frame(fi, gen_expr(fi, emit(fg0, prologue), body, true));
+      match fg1 {
+        FG(chunks, _, needs_tmp, cg2) -> {
+          let locals = if needs_tmp { append(locals2, ["$tmp"]) } else { locals2 };
+          let pnames = ["$env", ..map(params, |v| match m_find(storage, var_id(v)) { SLocal(n) -> n, SSlot(_) -> var_wasm_name(v) })];
+          cg_set_mod(cg2, wm_add_func(cg_mod(cg2), WFunc("$" ++ name, "", pnames, 1, locals, flatten(reverse(chunks)))))
+        },
+      }
+    },
+  }
+}
+
+fn char_table_bytes() {
+  b_cats(map(range(0, 256), |i| b_cat(word_bytes(header(tag_string(), 1)), b_bytes([i, 0, 0, 0]))))
+}
+
+fn codegen(ir) {
+  match ir {
+    IRProg(_, strings, entry) -> {
+      let cg0 = CG(wmod_new(), stack_end(), Tip, Tip, vec_of_list(strings));
+      let (empty_addr, cg1) = static_object(cg0, [header(tag_string(), 0)], BEmpty);
+      let (char_addr, cg2) = static_object(cg1, [], char_table_bytes());
+      let cg3 = cg_set_mod(cg2, add_runtime(cg_mod(cg2), stack_base(), 64, empty_addr, char_addr, false));
+      let cg4 = fold(reachable_functions(ir), cg3, gen_function);
+      let m1 = wm_add_func(cg_mod(cg4), WFunc("$rt:start", "run", [], 0, [], code([ic(0), icall("$" ++ entry), op("drop")])));
+      let top = match cg4 { CG(_, t, _, _, _) -> t };
+      let from_start = align_up(top, 8);
+      let to_start = from_start + heap_size();
+      let mem_end = to_start + heap_size();
+      let m2 = wm_set_memory(m1, (mem_end + 65535) / 65536, 32768);
+      let globals = [
+        ("$sp", "i32", true, stack_base(), ""),
+        ("$hp", "i32", true, from_start, "hp"),
+        ("$next", "i32", true, 0, ""),
+        ("$from_start", "i32", true, from_start, "from_start"),
+        ("$from_end", "i32", true, from_start + heap_size(), "from_end"),
+        ("$to_start", "i32", true, to_start, ""),
+        ("$to_end", "i32", true, to_start + heap_size(), ""),
+        ("$gc_count", "i32", true, 0, "gc_count"),
+        ("$alloc_bytes", "i64", true, 0, "alloc_bytes"),
+      ];
+      wm_prune(fold(globals, m2, wm_add_global))
+    },
+  }
+}

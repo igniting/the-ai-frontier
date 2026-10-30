@@ -1,0 +1,500 @@
+// ================================================================= parser ==
+// Port of src/parser.js. Every parse function takes the parser state and
+// returns (node, state). Desugarings match the reference exactly, because
+// they determine evaluation order:
+//   [a, b, ..rest] -> Cons(a, Cons(b, rest))     x |> f(a) -> f(x, a)
+
+type Span { Span(Int, Int) }
+
+fn sp_s(sp) { match sp { Span(s, _) -> s } }
+fn sp_e(sp) { match sp { Span(_, e) -> e } }
+
+type TExp { TyName(String, List<TExp>, Span), TyVar(String, Span), TyFun(List<TExp>, TExp, Span), TyTuple(List<TExp>, Span) }
+
+type Pat {
+  PWild(Span), PVar(String, Span), PInt(Int, Span), PStr(String, Span), PBool(Bool, Span), PUnit(Span),
+  PTuple(List<Pat>, Span), PCtor(String, List<Pat>, Bool, Span), // Bool: produced by list syntax
+}
+
+type Param { Param(String, Option<TExp>, Span) }
+
+type Expr {
+  EInt(Int, Span), EStr(String, Span), EBool(Bool, Span), EUnit(Span), EVar(String, Span),
+  // name, args (None: used as a value), list sugar, list literal id (-1: none), span, name span
+  ECtor(String, Option<List<Expr>>, Bool, Int, Span, Span),
+  ECall(Expr, List<Expr>, Span),
+  ELam(List<Param>, Option<TExp>, Expr, Span),
+  EBin(String, Expr, Expr, Span),
+  EUn(String, Expr, Span),
+  EIf(Expr, Expr, Option<Expr>, Span),
+  EMatch(Expr, List<Arm>, Span),
+  EBlock(List<Stmt>, Option<Expr>, Span),
+  ETuple(List<Expr>, Span),
+}
+
+type Arm { Arm(Pat, Option<Expr>, Expr, Span) }
+type Stmt { SLet(Pat, Option<TExp>, Expr, Span), SExpr(Expr, Span), SFn(FnD) }
+type FnD { FnD(String, Span, List<Param>, Option<TExp>, Expr, Span) }
+type CtorD { CtorD(String, List<TExp>, Span) }
+type Decl { DType(String, Span, List<String>, List<CtorD>, Span), DFn(FnD) }
+
+fn texp_span(t) { match t { TyName(_, _, sp) -> sp, TyVar(_, sp) -> sp, TyFun(_, _, sp) -> sp, TyTuple(_, sp) -> sp } }
+
+fn pat_span(p) {
+  match p {
+    PWild(sp) -> sp, PVar(_, sp) -> sp, PInt(_, sp) -> sp, PStr(_, sp) -> sp, PBool(_, sp) -> sp,
+    PUnit(sp) -> sp, PTuple(_, sp) -> sp, PCtor(_, _, _, sp) -> sp,
+  }
+}
+
+fn expr_span(e) {
+  match e {
+    EInt(_, sp) -> sp, EStr(_, sp) -> sp, EBool(_, sp) -> sp, EUnit(sp) -> sp, EVar(_, sp) -> sp,
+    ECtor(_, _, _, _, sp, _) -> sp, ECall(_, _, sp) -> sp, ELam(_, _, _, sp) -> sp, EBin(_, _, _, sp) -> sp,
+    EUn(_, _, sp) -> sp, EIf(_, _, _, sp) -> sp, EMatch(_, _, sp) -> sp, EBlock(_, _, sp) -> sp, ETuple(_, sp) -> sp,
+  }
+}
+
+fn with_pat_span(p, sp) {
+  match p {
+    PWild(_) -> PWild(sp), PVar(x, _) -> PVar(x, sp), PInt(n, _) -> PInt(n, sp), PStr(s, _) -> PStr(s, sp),
+    PBool(b, _) -> PBool(b, sp), PUnit(_) -> PUnit(sp), PTuple(ps, _) -> PTuple(ps, sp), PCtor(c, ps, sg, _) -> PCtor(c, ps, sg, sp),
+  }
+}
+
+fn with_expr_span(e, sp) {
+  match e {
+    EInt(n, _) -> EInt(n, sp), EStr(s, _) -> EStr(s, sp), EBool(b, _) -> EBool(b, sp), EUnit(_) -> EUnit(sp),
+    EVar(x, _) -> EVar(x, sp), ECtor(c, a, sg, lit, _, ns) -> ECtor(c, a, sg, lit, sp, ns), ECall(f, a, _) -> ECall(f, a, sp),
+    ELam(ps, r, b, _) -> ELam(ps, r, b, sp), EBin(o, l, r, _) -> EBin(o, l, r, sp), EUn(o, x, _) -> EUn(o, x, sp),
+    EIf(c, t, f, _) -> EIf(c, t, f, sp), EMatch(x, a, _) -> EMatch(x, a, sp), EBlock(s, r, _) -> EBlock(s, r, sp),
+    ETuple(xs, _) -> ETuple(xs, sp),
+  }
+}
+
+// ------------------------------------------------------------ parser state --
+type PS { PS(Vec<Tok>, Int, Int) } // tokens, position, number of tokens
+
+fn ps_tok(ps, k) { match ps { PS(v, pos, n) -> v_get(v, min(pos + k, n - 1)) } }
+fn ps_peek(ps) { ps_tok(ps, 0) }
+fn ps_at(ps, kind) { tok_kind(ps_peek(ps)) == kind }
+fn ps_next(ps) { match ps { PS(v, pos, n) -> PS(v, pos + 1, n) } }
+fn ps_prev(ps) { ps_tok(ps, -1) }   // the token just consumed
+fn ps_prev2(ps) { ps_tok(ps, -2) }
+fn ps_prev_end(ps) { tok_end(ps_prev(ps)) }
+
+fn ps_fail(ps, msg) {
+  let t = ps_peek(ps);
+  fail_at(tok_start(t), max(tok_end(t), tok_start(t) + 1), "syntax", msg)
+}
+
+fn describe(t) { if tok_kind(t) == "eof" { "end of input" } else { "'" ++ tok_text(t) ++ "'" } }
+
+fn ps_expect_what(ps, kind, what) {
+  if ps_at(ps, kind) { (ps_peek(ps), ps_next(ps)) }
+  else { ps_fail(ps, "expected " ++ what ++ ", found " ++ describe(ps_peek(ps))) }
+}
+
+fn ps_expect(ps, kind) { ps_expect_what(ps, kind, "'" ++ kind ++ "'") }
+
+fn ps_accept(ps, kind) { if ps_at(ps, kind) { (true, ps_next(ps)) } else { (false, ps) } }
+
+// Comma-separated items up to and including `close`; a trailing comma is allowed.
+fn comma_list(ps, close, item) {
+  fn go(ps, acc) {
+    if ps_at(ps, close) { (reverse(acc), ps) }
+    else {
+      let (x, ps2) = item(ps);
+      let (more, ps3) = ps_accept(ps2, ",");
+      if more { go(ps3, [x, ..acc]) } else { (reverse([x, ..acc]), ps3) }
+    }
+  }
+  let (items, ps2) = go(ps, []);
+  let (_, ps3) = ps_expect(ps2, close);
+  (items, ps3)
+}
+
+fn check_int_range(ps, t) {
+  if tok_int(t) < -1073741823 {
+    fail_at(tok_start(t), tok_end(t), "syntax", "integer literal " ++ tok_text(t) ++ " does not fit in 31 bits (max 1073741823)")
+  } else { -tok_int(t) }
+}
+
+// ------------------------------------------------------------------ types --
+fn parse_type(ps) {
+  let t = ps_peek(ps);
+  let k = tok_kind(t);
+  if k == "fn" {
+    let (_, ps1) = ps_expect(ps_next(ps), "(");
+    let (params, ps2) = comma_list(ps1, ")", parse_type);
+    let (_, ps3) = ps_expect(ps2, "->");
+    let (ret, ps4) = parse_type(ps3);
+    (TyFun(params, ret, Span(tok_start(t), sp_e(texp_span(ret)))), ps4)
+  } else if k == "(" {
+    let (elems, ps1) = comma_list(ps_next(ps), ")", parse_type);
+    let sp = Span(tok_start(t), ps_prev_end(ps1));
+    match elems {
+      [] -> (TyName("Unit", [], sp), ps1),
+      [x] if tok_kind(ps_prev2(ps1)) != "," -> (x, ps1),
+      _ -> (TyTuple(elems, sp), ps1),
+    }
+  } else if k == "uid" {
+    let ps1 = ps_next(ps);
+    let (open, ps2) = ps_accept(ps1, "<");
+    if open {
+      fn args(ps, acc) {
+        let (a, ps1) = parse_type(ps);
+        let (more, ps2) = ps_accept(ps1, ",");
+        if more { args(ps2, [a, ..acc]) } else { (reverse([a, ..acc]), ps2) }
+      }
+      let (targs, ps3) = args(ps2, []);
+      let ps4 = close_angle(ps3);
+      (TyName(tok_text(t), targs, Span(tok_start(t), ps_prev_end(ps4))), ps4)
+    } else {
+      (TyName(tok_text(t), [], Span(tok_start(t), tok_end(t))), ps1)
+    }
+  } else if k == "lid" {
+    (TyVar(tok_text(t), Span(tok_start(t), tok_end(t))), ps_next(ps))
+  } else { ps_fail(ps, "expected a type, found " ++ describe(t)) }
+}
+
+// `List<List<Int>>=` lexes its tail as `>` `>=`; split that token in two.
+fn close_angle(ps) {
+  let t = ps_peek(ps);
+  if tok_kind(t) == ">=" {
+    match ps {
+      PS(v, pos, n) -> {
+        let s = tok_start(t);
+        let toks = indexed(map(range(0, n), |i| v_get(v, i)));
+        let split = flat_map(toks, |p| match p {
+          (i, tok) -> if i == pos { [Tok(">", ">", 0, s, s + 1), Tok("=", "=", 0, s + 1, tok_end(t))] } else { [tok] },
+        });
+        let (_, ps2) = ps_expect(PS(vec_of_list(split), pos, n + 1), ">");
+        ps2
+      },
+    }
+  } else {
+    let (_, ps2) = ps_expect(ps, ">");
+    ps2
+  }
+}
+
+// --------------------------------------------------------------- patterns --
+fn parse_pattern(ps) {
+  let t = ps_peek(ps);
+  let k = tok_kind(t);
+  let tsp = Span(tok_start(t), tok_end(t));
+  if k == "lid" {
+    (if tok_text(t) == "_" { PWild(tsp) } else { PVar(tok_text(t), tsp) }, ps_next(ps))
+  } else if k == "int" {
+    (PInt(check_int_range(ps, t), tsp), ps_next(ps))
+  } else if k == "-" {
+    let (n, ps1) = ps_expect_what(ps_next(ps), "int", "an integer literal");
+    (PInt(tok_int(n), Span(tok_start(t), tok_end(n))), ps1)
+  } else if k == "str" {
+    (PStr(tok_text(t), tsp), ps_next(ps))
+  } else if k == "true" || k == "false" {
+    (PBool(k == "true", tsp), ps_next(ps))
+  } else if k == "(" {
+    let (elems, ps1) = comma_list(ps_next(ps), ")", parse_pattern);
+    let sp = Span(tok_start(t), ps_prev_end(ps1));
+    match elems {
+      [] -> (PUnit(sp), ps1),
+      [x] if tok_kind(ps_prev2(ps1)) != "," -> (x, ps1),
+      _ -> (PTuple(elems, sp), ps1),
+    }
+  } else if k == "uid" {
+    let ps1 = ps_next(ps);
+    let (open, ps2) = ps_accept(ps1, "(");
+    if open {
+      let (args, ps3) = comma_list(ps2, ")", parse_pattern);
+      (PCtor(tok_text(t), args, false, Span(tok_start(t), ps_prev_end(ps3))), ps3)
+    } else {
+      (PCtor(tok_text(t), [], false, Span(tok_start(t), ps_prev_end(ps1))), ps1)
+    }
+  } else if k == "[" {
+    fn elems(ps, acc) {
+      if ps_at(ps, "]") { (reverse(acc), None, ps) }
+      else if ps_at(ps, "..") {
+        let dots = ps_peek(ps);
+        let ps1 = ps_next(ps);
+        let (tail, ps2) = if ps_at(ps1, "]") || ps_at(ps1, ",") { (PWild(Span(tok_start(dots), tok_end(dots))), ps1) } else { parse_pattern(ps1) };
+        let (_, ps3) = ps_accept(ps2, ",");
+        (reverse(acc), Some(tail), ps3)
+      } else {
+        let (p, ps1) = parse_pattern(ps);
+        let (more, ps2) = ps_accept(ps1, ",");
+        if more { elems(ps2, [p, ..acc]) } else { (reverse([p, ..acc]), None, ps2) }
+      }
+    }
+    let (items, tail, ps1) = elems(ps_next(ps), []);
+    let (close, ps2) = ps_expect(ps1, "]");
+    let e = tok_end(close);
+    let init = match tail { Some(p) -> p, None -> PCtor("Nil", [], true, Span(tok_start(close), e)) };
+    let result = fold(reverse(items), init, |acc, p| PCtor("Cons", [p, acc], true, Span(sp_s(pat_span(p)), e)));
+    (with_pat_span(result, Span(tok_start(t), e)), ps2)
+  } else { ps_fail(ps, "expected a pattern, found " ++ describe(t)) }
+}
+
+// ------------------------------------------------------------ expressions --
+fn parse_params(ps, close) {
+  comma_list(ps, close, |ps| {
+    let t = ps_peek(ps);
+    if tok_kind(t) != "lid" { ps_fail(ps, "expected a parameter name, found " ++ describe(t)) }
+    else {
+      let ps1 = ps_next(ps);
+      let (has_ann, ps2) = ps_accept(ps1, ":");
+      if has_ann {
+        let (ann, ps3) = parse_type(ps2);
+        (Param(tok_text(t), Some(ann), Span(tok_start(t), tok_end(t))), ps3)
+      } else { (Param(tok_text(t), None, Span(tok_start(t), tok_end(t))), ps2) }
+    }
+  })
+}
+
+fn parse_expr(ps) { parse_pipe(ps) }
+
+fn parse_pipe(ps) {
+  fn go(lhs, ps) {
+    if !ps_at(ps, "|>") { (lhs, ps) }
+    else {
+      let (rhs, ps1) = parse_binary(ps_next(ps), 0);
+      let sp = Span(sp_s(expr_span(lhs)), sp_e(expr_span(rhs)));
+      let piped = match rhs {
+        ECall(f, args, _) -> ECall(f, [lhs, ..args], sp),
+        ECtor(name, Some(args), _, _, _, ns) -> ECtor(name, Some([lhs, ..args]), false, -1, sp, ns),
+        ECtor(name, None, _, _, _, ns) -> ECtor(name, Some([lhs]), false, -1, sp, ns),
+        _ -> ECall(rhs, [lhs], sp),
+      };
+      go(piped, ps1)
+    }
+  }
+  let (lhs, ps1) = parse_binary(ps, 0);
+  go(lhs, ps1)
+}
+
+// Precedence levels, loosest first: || && comparisons ++ (+ -) (* / %).
+fn level_ops(level) {
+  match level {
+    0 -> ["||"], 1 -> ["&&"], 2 -> ["==", "!=", "<", "<=", ">", ">="], 3 -> ["++"], 4 -> ["+", "-"], _ -> ["*", "/", "%"],
+  }
+}
+
+fn parse_binary(ps, level) {
+  if level == 6 { parse_unary(ps) }
+  else {
+    let ops = level_ops(level);
+    fn go(lhs, ps) {
+      let op = tok_kind(ps_peek(ps));
+      if !contains(ops, op) { (lhs, ps) }
+      else {
+        let (rhs, ps1) = if level == 3 { parse_binary(ps_next(ps), level) } else { parse_binary(ps_next(ps), level + 1) };
+        let node = EBin(op, lhs, rhs, Span(sp_s(expr_span(lhs)), sp_e(expr_span(rhs))));
+        if level == 2 && contains(ops, tok_kind(ps_peek(ps1))) {
+          ps_fail(ps1, "comparison operators cannot be chained; use parentheses")
+        } else if level == 3 { (node, ps1) }
+        else { go(node, ps1) }
+      }
+    }
+    let (lhs, ps1) = parse_binary(ps, level + 1);
+    go(lhs, ps1)
+  }
+}
+
+fn parse_unary(ps) {
+  let t = ps_peek(ps);
+  let k = tok_kind(t);
+  let t1 = ps_tok(ps, 1);
+  if k == "-" && tok_kind(t1) == "int" && tok_start(t1) == tok_end(t) {
+    parse_postfix(EInt(tok_int(t1), Span(tok_start(t), tok_end(t1))), ps_next(ps_next(ps)))
+  } else if k == "-" || k == "!" {
+    let (e, ps1) = parse_unary(ps_next(ps));
+    (EUn(k, e, Span(tok_start(t), sp_e(expr_span(e)))), ps1)
+  } else {
+    let (e, ps1) = parse_primary(ps);
+    parse_postfix(e, ps1)
+  }
+}
+
+fn parse_postfix(e, ps) {
+  if ps_at(ps, "(") {
+    let (args, ps1) = comma_list(ps_next(ps), ")", parse_expr);
+    parse_postfix(ECall(e, args, Span(sp_s(expr_span(e)), ps_prev_end(ps1))), ps1)
+  } else { (e, ps) }
+}
+
+fn parse_primary(ps) {
+  let t = ps_peek(ps);
+  let k = tok_kind(t);
+  let tsp = Span(tok_start(t), tok_end(t));
+  if k == "int" { (EInt(check_int_range(ps, t), tsp), ps_next(ps)) }
+  else if k == "str" { (EStr(tok_text(t), tsp), ps_next(ps)) }
+  else if k == "true" || k == "false" { (EBool(k == "true", tsp), ps_next(ps)) }
+  else if k == "lid" {
+    if tok_text(t) == "_" { fail_at(tok_start(t), tok_end(t), "syntax", "'_' can only be used in patterns") }
+    else { (EVar(tok_text(t), tsp), ps_next(ps)) }
+  } else if k == "uid" {
+    let ps1 = ps_next(ps);
+    let (open, ps2) = ps_accept(ps1, "(");
+    if open {
+      let (args, ps3) = comma_list(ps2, ")", parse_expr);
+      (ECtor(tok_text(t), Some(args), false, -1, Span(tok_start(t), ps_prev_end(ps3)), tsp), ps3)
+    } else { (ECtor(tok_text(t), None, false, -1, tsp, tsp), ps1) }
+  } else if k == "(" {
+    let (elems, ps1) = comma_list(ps_next(ps), ")", parse_expr);
+    let sp = Span(tok_start(t), ps_prev_end(ps1));
+    match elems {
+      [] -> (EUnit(sp), ps1),
+      [x] if tok_kind(ps_prev2(ps1)) != "," -> (with_expr_span(x, sp), ps1),
+      _ -> (ETuple(elems, sp), ps1),
+    }
+  } else if k == "[" {
+    fn elems(ps, acc) {
+      if ps_at(ps, "]") { (reverse(acc), None, ps) }
+      else if ps_at(ps, "..") {
+        let (tail, ps1) = parse_expr(ps_next(ps));
+        let (_, ps2) = ps_accept(ps1, ",");
+        (reverse(acc), Some(tail), ps2)
+      } else {
+        let (x, ps1) = parse_expr(ps);
+        let (more, ps2) = ps_accept(ps1, ",");
+        if more { elems(ps2, [x, ..acc]) } else { (reverse([x, ..acc]), None, ps2) }
+      }
+    }
+    let (items, tail, ps1) = elems(ps_next(ps), []);
+    let (close, ps2) = ps_expect(ps1, "]");
+    let e = tok_end(close);
+    let csp = Span(tok_start(close), e);
+    let init = match tail { Some(x) -> x, None -> ECtor("Nil", None, true, -1, csp, csp) };
+    let lit = tok_start(t);
+    let result = fold(reverse(items), init, |acc, x| ECtor("Cons", Some([x, acc]), true, lit, Span(sp_s(expr_span(x)), e), tsp));
+    (with_expr_span(result, Span(tok_start(t), e)), ps2)
+  } else if k == "fn" {
+    let (_, ps1) = ps_expect(ps_next(ps), "(");
+    let (params, ps2) = parse_params(ps1, ")");
+    let (has_ret, ps3) = ps_accept(ps2, "->");
+    let (ret, ps4) = if has_ret { let (r, p) = parse_type(ps3); (Some(r), p) } else { (None, ps3) };
+    let (body, ps5) = parse_block(ps4);
+    (ELam(params, ret, body, Span(tok_start(t), sp_e(expr_span(body)))), ps5)
+  } else if k == "|" || k == "||" {
+    let (params, ps1) = if k == "||" { ([], ps_next(ps)) } else { parse_params(ps_next(ps), "|") };
+    let (body, ps2) = parse_expr(ps1);
+    (ELam(params, None, body, Span(tok_start(t), sp_e(expr_span(body)))), ps2)
+  } else if k == "if" { parse_if(ps) }
+  else if k == "match" { parse_match(ps) }
+  else if k == "{" { parse_block(ps) }
+  else { ps_fail(ps, "expected an expression, found " ++ describe(t)) }
+}
+
+fn parse_if(ps) {
+  let (t, ps1) = ps_expect(ps, "if");
+  let (c, ps2) = parse_expr(ps1);
+  let (then_b, ps3) = parse_block(ps2);
+  let (has_else, ps4) = ps_accept(ps3, "else");
+  if has_else {
+    let (else_b, ps5) = if ps_at(ps4, "if") { parse_if(ps4) } else { parse_block(ps4) };
+    (EIf(c, then_b, Some(else_b), Span(tok_start(t), sp_e(expr_span(else_b)))), ps5)
+  } else {
+    (EIf(c, then_b, None, Span(tok_start(t), sp_e(expr_span(then_b)))), ps4)
+  }
+}
+
+fn is_block_like(e) { match e { EBlock(_, _, _) -> true, EMatch(_, _, _) -> true, EIf(_, _, _, _) -> true, _ -> false } }
+
+fn parse_match(ps) {
+  let (t, ps1) = ps_expect(ps, "match");
+  let (scrut, ps2) = parse_expr(ps1);
+  let (_, ps3) = ps_expect_what(ps2, "{", "'{' to start the match arms");
+  fn arms(ps, acc) {
+    if ps_at(ps, "}") { (reverse(acc), ps) }
+    else {
+      let (pat, ps1) = parse_pattern(ps);
+      let (has_guard, ps2) = ps_accept(ps1, "if");
+      let (guard, ps3) = if has_guard { let (g, p) = parse_expr(ps2); (Some(g), p) } else { (None, ps2) };
+      let (_, ps4) = ps_expect_what(ps3, "->", "'->' after the match pattern");
+      let (body, ps5) = parse_expr(ps4);
+      let arm = Arm(pat, guard, body, Span(sp_s(pat_span(pat)), sp_e(expr_span(body))));
+      let (comma, ps6) = ps_accept(ps5, ",");
+      if !comma && !ps_at(ps6, "}") && !is_block_like(body) {
+        ps_fail(ps6, "expected ',' or '}' after match arm, found " ++ describe(ps_peek(ps6)))
+      } else { arms(ps6, [arm, ..acc]) }
+    }
+  }
+  let (all, ps4) = arms(ps3, []);
+  let (close, ps5) = ps_expect(ps4, "}");
+  if is_empty(all) { fail_at(tok_start(close), tok_end(close), "syntax", "match needs at least one arm") }
+  else { (EMatch(scrut, all, Span(tok_start(t), tok_end(close))), ps5) }
+}
+
+fn parse_fn_decl(ps) {
+  let (start, ps1) = ps_expect(ps, "fn");
+  let (name, ps2) = ps_expect_what(ps1, "lid", "a function name");
+  let (_, ps3) = ps_expect(ps2, "(");
+  let (params, ps4) = parse_params(ps3, ")");
+  let (has_ret, ps5) = ps_accept(ps4, "->");
+  let (ret, ps6) = if has_ret { let (r, p) = parse_type(ps5); (Some(r), p) } else { (None, ps5) };
+  let (body, ps7) = parse_block(ps6);
+  (FnD(tok_text(name), Span(tok_start(name), tok_end(name)), params, ret, body, Span(tok_start(start), sp_e(expr_span(body)))), ps7)
+}
+
+fn parse_block(ps) {
+  let (open, ps1) = ps_expect(ps, "{");
+  fn stmts(ps, acc) {
+    if ps_at(ps, "}") { (reverse(acc), None, ps) }
+    else if ps_at(ps, "let") {
+      let t = ps_peek(ps);
+      let (pat, ps1) = parse_pattern(ps_next(ps));
+      let (has_ann, ps2) = ps_accept(ps1, ":");
+      let (ann, ps3) = if has_ann { let (a, p) = parse_type(ps2); (Some(a), p) } else { (None, ps2) };
+      let (_, ps4) = ps_expect(ps3, "=");
+      let (e, ps5) = parse_expr(ps4);
+      let (_, ps6) = ps_expect_what(ps5, ";", "';' after let binding");
+      stmts(ps6, [SLet(pat, ann, e, Span(tok_start(t), sp_e(expr_span(e)))), ..acc])
+    } else if ps_at(ps, "fn") && tok_kind(ps_tok(ps, 1)) == "lid" {
+      let (d, ps1) = parse_fn_decl(ps);
+      stmts(ps1, [SFn(d), ..acc])
+    } else {
+      let (e, ps1) = parse_expr(ps);
+      let (semi, ps2) = ps_accept(ps1, ";");
+      if semi { stmts(ps2, [SExpr(e, expr_span(e)), ..acc]) }
+      else if ps_at(ps2, "}") { (reverse(acc), Some(e), ps2) }
+      else if is_block_like(e) { stmts(ps2, [SExpr(e, expr_span(e)), ..acc]) }
+      else { ps_fail(ps2, "expected ';' or '}' after expression, found " ++ describe(ps_peek(ps2))) }
+    }
+  }
+  let (body, result, ps2) = stmts(ps1, []);
+  let (close, ps3) = ps_expect(ps2, "}");
+  (EBlock(body, result, Span(tok_start(open), tok_end(close))), ps3)
+}
+
+fn parse_type_decl(ps) {
+  let (t, ps1) = ps_expect(ps, "type");
+  let (name, ps2) = ps_expect_what(ps1, "uid", "a type name (capitalized)");
+  let (open, ps3) = ps_accept(ps2, "<");
+  fn tparams(ps, acc) {
+    let (p, ps1) = ps_expect_what(ps, "lid", "a type parameter");
+    let (more, ps2) = ps_accept(ps1, ",");
+    if more { tparams(ps2, [tok_text(p), ..acc]) } else { (reverse([tok_text(p), ..acc]), ps2) }
+  }
+  let (params, ps4) = if open { let (xs, p) = tparams(ps3, []); (xs, close_angle(p)) } else { ([], ps3) };
+  let (_, ps5) = ps_expect(ps4, "{");
+  let (ctors, ps6) = comma_list(ps5, "}", |ps| {
+    let (c, ps1) = ps_expect_what(ps, "uid", "a constructor name (capitalized)");
+    let (has_fields, ps2) = ps_accept(ps1, "(");
+    let (fields, ps3) = if has_fields { comma_list(ps2, ")", parse_type) } else { ([], ps2) };
+    (CtorD(tok_text(c), fields, Span(tok_start(c), ps_prev_end(ps3))), ps3)
+  });
+  (DType(tok_text(name), Span(tok_start(name), tok_end(name)), params, ctors, Span(tok_start(t), ps_prev_end(ps6))), ps6)
+}
+
+fn parse_program(src) {
+  let toks = lex(src);
+  let ps = PS(vec_of_list(toks), 0, length(toks));
+  fn decls(ps, acc) {
+    if ps_at(ps, "eof") { reverse(acc) }
+    else if ps_at(ps, "type") { let (d, ps1) = parse_type_decl(ps); decls(ps1, [d, ..acc]) }
+    else if ps_at(ps, "fn") { let (d, ps1) = parse_fn_decl(ps); decls(ps1, [DFn(d), ..acc]) }
+    else { ps_fail(ps, "expected a top-level 'fn' or 'type' declaration, found " ++ describe(ps_peek(ps))) }
+  }
+  decls(ps, [])
+}

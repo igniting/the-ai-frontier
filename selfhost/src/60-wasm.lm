@@ -1,0 +1,228 @@
+// =================================================================== wasm ==
+// Port of src/wasm.js: a module builder and binary encoder. Functions,
+// locals, globals and labels are referenced by name and resolved to indices
+// (labels to relative depths) at encoding time.
+
+type Ins {
+  IOp(String),                  // no immediates: i32.add, drop, end, ...
+  IConst(I32),                  // i32.const
+  ILocal(String, String),       // local.get / local.set / local.tee, name
+  IGlobal(String, String),      // global.get / global.set, name
+  IMem(String, Int),            // i32.load / i32.store / i32.load8_u / i32.store8, offset
+  IBlock(String, String, Bool), // block / loop / if, label ("" for none), has an i32 result
+  IBr(String, String),          // br / br_if, label
+  ICall(String, String),        // call / return_call, function
+  ICallInd(String, String),     // call_indirect / return_call_indirect, type signature key
+  IMisc(String),                // memory.size / memory.grow / memory.copy / memory.fill
+}
+
+// --------------------------------------------------- instruction builders --
+fn ic(n) { [IConst(Lit(n))] }
+fn itag(n) { [IConst(Tag(n))] }
+fn lget(x) { [ILocal("local.get", x)] }
+fn lset(x) { [ILocal("local.set", x)] }
+fn ltee(x) { [ILocal("local.tee", x)] }
+fn gget(x) { [IGlobal("global.get", x)] }
+fn gset(x) { [IGlobal("global.set", x)] }
+fn ld(off) { [IMem("i32.load", off)] }
+fn st(off) { [IMem("i32.store", off)] }
+fn icall(f) { [ICall("call", f)] }
+fn op(name) { [IOp(name)] }
+fn misc(name) { [IMisc(name)] }
+fn code(parts) { flatten(parts) }
+
+fn if_(result, then, els) {
+  code([[IBlock("if", "", result)], then, match els { Some(e) -> [IOp("else"), ..e], None -> [] }, [IOp("end")]])
+}
+
+// while (!exit_when) { body }
+fn loop_(name, exit_when, body) {
+  code([[IBlock("block", "$" ++ name ++ "_done", false), IBlock("loop", "$" ++ name, false)], exit_when,
+    [IBr("br_if", "$" ++ name ++ "_done")], body, [IBr("br", "$" ++ name), IOp("end"), IOp("end")]])
+}
+
+fn ret(xs) { append(xs, [IOp("return")]) }
+
+// ------------------------------------------------------------------- module --
+// name, export name ("" for none), parameter names, number of results (0/1), local names, body
+type WFunc { WFunc(String, String, List<String>, Int, List<String>, List<Ins>) }
+fn wf_name(f) { match f { WFunc(n, _, _, _, _, _) -> n } }
+
+fn sig_key(params, results) { join(params, ",") ++ "->" ++ join(results, ",") }
+fn wf_key(f) { match f { WFunc(_, _, ps, nr, _, _) -> sig_key(map(ps, |_| "i32"), if nr == 1 { ["i32"] } else { [] }) } }
+
+// types (key, params, results; reversed), type index by key, imports (module, field, name, key; reversed),
+// functions (reversed), globals (name, type, mutable, init, export; reversed), table (reversed),
+// table index, data segments (offset, bytes; reversed), memory min pages, memory max pages
+type WMod { WMod(List<(String, List<String>, List<String>)>, Map<String, Int>, List<(String, String, String, String)>, List<WFunc>,
+  List<(String, String, Bool, Int, String)>, List<String>, Map<String, Int>, List<(Int, Bytes)>, Int, Int) }
+
+fn wmod_new() { WMod([], Tip, [], [], [], [], Tip, [], 1, 0) }
+
+fn wm_type(m, params, results) {
+  match m {
+    WMod(ts, ti, im, fs, gs, tb, tbi, dt, mn, mx) -> {
+      let key = sig_key(params, results);
+      if m_has(ti, key) { m } else { WMod([(key, params, results), ..ts], m_set(ti, key, length(ts)), im, fs, gs, tb, tbi, dt, mn, mx) }
+    },
+  }
+}
+
+fn wm_add_import(m, module, field, name, params, results) {
+  match wm_type(m, params, results) {
+    WMod(ts, ti, im, fs, gs, tb, tbi, dt, mn, mx) -> WMod(ts, ti, [(module, field, name, sig_key(params, results)), ..im], fs, gs, tb, tbi, dt, mn, mx),
+  }
+}
+
+fn wm_add_func(m, f) {
+  let m2 = match f { WFunc(_, _, ps, nr, _, _) -> wm_type(m, map(ps, |_| "i32"), if nr == 1 { ["i32"] } else { [] }) };
+  match m2 { WMod(ts, ti, im, fs, gs, tb, tbi, dt, mn, mx) -> WMod(ts, ti, im, [f, ..fs], gs, tb, tbi, dt, mn, mx) }
+}
+
+fn wm_add_global(m, g) { match m { WMod(ts, ti, im, fs, gs, tb, tbi, dt, mn, mx) -> WMod(ts, ti, im, fs, [g, ..gs], tb, tbi, dt, mn, mx) } }
+
+fn wm_table_index(m, name) {
+  match m {
+    WMod(ts, ti, im, fs, gs, tb, tbi, dt, mn, mx) -> match m_get(tbi, name) {
+      Some(i) -> (i, m),
+      None -> { let i = length(tb); (i, WMod(ts, ti, im, fs, gs, [name, ..tb], m_set(tbi, name, i), dt, mn, mx)) },
+    },
+  }
+}
+
+fn wm_add_data(m, offset, bytes) { match m { WMod(ts, ti, im, fs, gs, tb, tbi, dt, mn, mx) -> WMod(ts, ti, im, fs, gs, tb, tbi, [(offset, bytes), ..dt], mn, mx) } }
+fn wm_set_memory(m, mn, mx) { match m { WMod(ts, ti, im, fs, gs, tb, tbi, dt, _, _) -> WMod(ts, ti, im, fs, gs, tb, tbi, dt, mn, mx) } }
+
+// Removes functions (and imports) not reachable from exports or the table.
+fn wm_prune(m) {
+  match m {
+    WMod(ts, ti, im, fs, gs, tb, tbi, dt, mn, mx) -> {
+      let by_name = m_of_list(map(fs, |f| (wf_name(f), f)));
+      let roots = append(flat_map(reverse(fs), |f| match f { WFunc(n, ex, _, _, _, _) -> if ex != "" { [n] } else { [] } }), reverse(tb));
+      fn go(work, live) {
+        match work {
+          [] -> live,
+          [n, ..rest] -> if s_has(live, n) { go(rest, live) } else {
+            let callees = match m_get(by_name, n) {
+              Some(WFunc(_, _, _, _, _, body)) -> flat_map(body, |i| match i { ICall(_, f) -> [f], _ -> [] }),
+              None -> [],
+            };
+            go(append(callees, rest), s_add(live, n))
+          },
+        }
+      }
+      let live = go(roots, Tip);
+      WMod(ts, ti, filter(im, |x| match x { (_, _, n, _) -> s_has(live, n) }), filter(fs, |f| s_has(live, wf_name(f))), gs, tb, tbi, dt, mn, mx)
+    },
+  }
+}
+
+// --------------------------------------------------------------- encoding --
+fn opcode(name) {
+  match name {
+    "unreachable" -> [0], "nop" -> [1], "else" -> [5], "end" -> [11], "return" -> [15], "drop" -> [26], "select" -> [27],
+    "i32.eqz" -> [69], "i32.eq" -> [70], "i32.ne" -> [71], "i32.lt_s" -> [72], "i32.lt_u" -> [73],
+    "i32.gt_s" -> [74], "i32.gt_u" -> [75], "i32.le_s" -> [76], "i32.le_u" -> [77], "i32.ge_s" -> [78], "i32.ge_u" -> [79],
+    "i32.add" -> [106], "i32.sub" -> [107], "i32.mul" -> [108], "i32.div_s" -> [109], "i32.div_u" -> [110],
+    "i32.rem_s" -> [111], "i32.rem_u" -> [112], "i32.and" -> [113], "i32.or" -> [114], "i32.xor" -> [115],
+    "i32.shl" -> [116], "i32.shr_s" -> [117], "i32.shr_u" -> [118],
+    "i64.add" -> [124], "i64.extend_i32_u" -> [173],
+    "block" -> [2], "loop" -> [3], "if" -> [4], "br" -> [12], "br_if" -> [13],
+    "call" -> [16], "call_indirect" -> [17], "return_call" -> [18], "return_call_indirect" -> [19],
+    "local.get" -> [32], "local.set" -> [33], "local.tee" -> [34], "global.get" -> [35], "global.set" -> [36],
+    "i32.load" -> [40], "i32.load8_u" -> [45], "i32.store" -> [54], "i32.store8" -> [58],
+    "memory.size" -> [63, 0], "memory.grow" -> [64, 0], "memory.copy" -> [252, 10, 0, 0], "memory.fill" -> [252, 11, 0],
+    _ -> panic("internal: unknown instruction " ++ name),
+  }
+}
+
+fn valtype(t) { if t == "i64" { 126 } else { 127 } }
+
+fn b_vec(items) { b_cat(uleb(length(items)), b_cats(items)) }
+
+fn section(id, content) { b_cats([b_byte(id), uleb(b_size(content)), content]) }
+
+fn encode_body(f, func_index, global_index, type_index) {
+  match f {
+    WFunc(name, _, params, _, locals, body) -> {
+      let local_index = m_of_list(indexed(append(params, locals)) |> map(|p| match p { (i, n) -> (n, i) }));
+      let lookup = |m, k, what| match m_get(m, k) { Some(i) -> i, None -> panic("internal: unknown " ++ what ++ " " ++ k ++ " in " ++ name) };
+      fn depth(labels, target) {
+        fn go(ls, d) { match ls { [] -> panic("internal: unknown label " ++ target ++ " in " ++ name), [l, ..rest] -> if l == target { d } else { go(rest, d + 1) } } }
+        go(labels, 0)
+      }
+      let (parts, labels) = fold(body, ([], []), |acc, ins| match acc {
+        (out, labels) -> match ins {
+          IOp(o) -> ([b_bytes(opcode(o)), ..out], if o == "end" { drop(labels, 1) } else { labels }),
+          IConst(cv) -> ([b_cat(b_byte(65), sleb_i32(cv)), ..out], labels),
+          ILocal(o, x) -> ([b_cat(b_bytes(opcode(o)), uleb(lookup(local_index, x, "local"))), ..out], labels),
+          IGlobal(o, x) -> ([b_cat(b_bytes(opcode(o)), uleb(lookup(global_index, x, "global"))), ..out], labels),
+          IMem(o, off) -> ([b_cats([b_bytes(opcode(o)), b_byte(if o == "i32.load" || o == "i32.store" { 2 } else { 0 }), uleb(off)]), ..out], labels),
+          IBlock(o, l, res) -> ([b_cat(b_bytes(opcode(o)), b_byte(if res { 127 } else { 64 })), ..out], [l, ..labels]),
+          IBr(o, l) -> ([b_cat(b_bytes(opcode(o)), uleb(depth(labels, l))), ..out], labels),
+          ICall(o, fname) -> ([b_cat(b_bytes(opcode(o)), uleb(lookup(func_index, fname, "function"))), ..out], labels),
+          ICallInd(o, key) -> ([b_cats([b_bytes(opcode(o)), uleb(lookup(type_index, key, "type")), b_byte(0)]), ..out], labels),
+          IMisc(o) -> ([b_bytes(opcode(o)), ..out], labels),
+        },
+      });
+      if !is_empty(labels) { panic("internal: unbalanced blocks in " ++ name) } else { () };
+      let groups = if is_empty(locals) { uleb(0) } else { b_cats([uleb(1), uleb(length(locals)), b_byte(127)]) };
+      let content = b_cats([groups, b_cats(reverse(parts)), b_byte(11)]);
+      b_cat(uleb(b_size(content)), content)
+    },
+  }
+}
+
+fn const_expr(t, v) { b_cats([b_byte(if t == "i64" { 66 } else { 65 }), sleb(v), b_byte(11)]) }
+
+fn strip_dollar(n) { if str_starts_with(n, "$") { substring(n, 1, string_length(n)) } else { n } }
+
+fn wm_encode(m) {
+  match m {
+    WMod(rts, type_index, rim, rfs, rgs, rtb, _, rdt, mn, mx) -> {
+      let types = reverse(rts);
+      let imports = reverse(rim);
+      let funcs = reverse(rfs);
+      let globals = reverse(rgs);
+      let table = reverse(rtb);
+      let data = reverse(rdt);
+      let n_imports = length(imports);
+      let import_names = map(imports, |x| match x { (_, _, n, _) -> n });
+      let func_index = m_of_list(append(
+        map(indexed(import_names), |p| match p { (i, n) -> (n, i) }),
+        map(indexed(funcs), |p| match p { (i, f) -> (wf_name(f), n_imports + i) })));
+      let global_index = m_of_list(map(indexed(globals), |p| match p { (i, (n, _, _, _, _)) -> (n, i) }));
+      let ti = |key| m_find(type_index, key);
+      let s_types = section(1, b_vec(map(types, |t| match t {
+        (_, ps, rs) -> b_cats([b_byte(96), b_vec(map(ps, |p| b_byte(valtype(p)))), b_vec(map(rs, |r| b_byte(valtype(r))))]),
+      })));
+      let s_imports = section(2, b_vec(map(imports, |x| match x {
+        (module, field, _, key) -> b_cats([str_bytes(module), str_bytes(field), b_byte(0), uleb(ti(key))]),
+      })));
+      let s_funcs = section(3, b_vec(map(funcs, |f| uleb(ti(wf_key(f))))));
+      let s_table = section(4, b_vec([b_cats([b_byte(112), b_byte(0), uleb(length(table))])]));
+      let s_memory = section(5, b_vec([b_cats([b_byte(1), uleb(mn), uleb(mx)])]));
+      let s_globals = section(6, b_vec(map(globals, |g| match g {
+        (_, t, mutable, init, _) -> b_cats([b_byte(valtype(t)), b_byte(if mutable { 1 } else { 0 }), const_expr(t, init)]),
+      })));
+      let exports = flatten([
+        flat_map(funcs, |f| match f { WFunc(n, ex, _, _, _, _) -> if ex != "" { [b_cats([str_bytes(ex), b_byte(0), uleb(m_find(func_index, n))])] } else { [] } }),
+        [b_cats([str_bytes("memory"), b_byte(2), uleb(0)])],
+        flat_map(globals, |g| match g { (n, _, _, _, ex) -> if ex != "" { [b_cats([str_bytes(ex), b_byte(3), uleb(m_find(global_index, n))])] } else { [] } }),
+      ]);
+      let s_exports = section(7, b_vec(exports));
+      let s_elem = section(9, b_vec([b_cats([b_byte(0), const_expr("i32", 0), b_vec(map(table, |n| uleb(m_find(func_index, n))))])]));
+      let s_code = section(10, b_vec(map(funcs, |f| encode_body(f, func_index, global_index, type_index))));
+      let s_data = section(11, b_vec(map(data, |d| match d {
+        (offset, bytes) -> b_cats([b_byte(0), const_expr("i32", offset), uleb(b_size(bytes)), bytes]),
+      })));
+      let sub = b_vec(map(indexed(append(import_names, map(funcs, wf_name))), |p| match p { (i, n) -> b_cat(uleb(i), str_bytes(strip_dollar(n))) }));
+      let names = b_cats([str_bytes("name"), b_byte(1), uleb(b_size(sub)), sub]);
+      b_cats([
+        b_bytes([0, 97, 115, 109, 1, 0, 0, 0]),
+        s_types, s_imports, s_funcs, s_table, s_memory, s_globals, s_exports, s_elem, s_code, s_data,
+        b_byte(0), uleb(b_size(names)), names,
+      ])
+    },
+  }
+}

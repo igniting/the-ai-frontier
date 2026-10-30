@@ -1,0 +1,89 @@
+// ================================================================= driver ==
+// Input (via read_input): "<mode> <prelude byte length>\n<prelude><program>".
+// Modes: tokens | ast | types | ir | wasm.
+
+fn dump_texp(t) {
+  match t {
+    TyName(n, args, _) -> if is_empty(args) { n } else { n ++ "<" ++ join(map(args, dump_texp), ",") ++ ">" },
+    TyVar(n, _) -> "'" ++ n,
+    TyFun(ps, r, _) -> "fn(" ++ join(map(ps, dump_texp), ",") ++ ")->" ++ dump_texp(r),
+    TyTuple(xs, _) -> "(" ++ join(map(xs, dump_texp), ",") ++ ")",
+  }
+}
+
+fn dump_opt(o, f) { match o { Some(x) -> f(x), None -> "_" } }
+
+fn dump_pat(p) {
+  match p {
+    PWild(_) -> "_", PVar(x, _) -> x, PInt(n, _) -> int_to_string(n), PStr(s, _) -> "\"" ++ s ++ "\"",
+    PBool(b, _) -> if b { "true" } else { "false" }, PUnit(_) -> "()",
+    PTuple(ps, _) -> "(tuple " ++ join(map(ps, dump_pat), " ") ++ ")",
+    PCtor(c, ps, sugar, _) -> "(" ++ c ++ (if sugar { "*" } else { "" }) ++ join(map(ps, |x| " " ++ dump_pat(x)), "") ++ ")",
+  }
+}
+
+fn dump_params(ps) { join(map(ps, |p| match p { Param(x, ann, _) -> x ++ ":" ++ dump_opt(ann, dump_texp) }), " ") }
+
+fn dump_expr(e) {
+  match e {
+    EInt(n, _) -> int_to_string(n), EStr(s, _) -> "\"" ++ s ++ "\"", EBool(b, _) -> if b { "true" } else { "false" },
+    EUnit(_) -> "()", EVar(x, _) -> x,
+    ECtor(c, args, sugar, lit, _, _) -> "(" ++ c ++ (if sugar { "*" ++ int_to_string(lit) } else { "" }) ++ dump_opt(args, |xs| "[" ++ join(map(xs, dump_expr), " ") ++ "]") ++ ")",
+    ECall(f, args, _) -> "(call " ++ dump_expr(f) ++ join(map(args, |x| " " ++ dump_expr(x)), "") ++ ")",
+    ELam(ps, ret, body, _) -> "(lambda [" ++ dump_params(ps) ++ "] " ++ dump_opt(ret, dump_texp) ++ " " ++ dump_expr(body) ++ ")",
+    EBin(op, l, r, _) -> "(" ++ op ++ " " ++ dump_expr(l) ++ " " ++ dump_expr(r) ++ ")",
+    EUn(op, x, _) -> "(un" ++ op ++ " " ++ dump_expr(x) ++ ")",
+    EIf(c, t, f, _) -> "(if " ++ dump_expr(c) ++ " " ++ dump_expr(t) ++ " " ++ dump_opt(f, dump_expr) ++ ")",
+    EMatch(x, arms, _) -> "(match " ++ dump_expr(x) ++ join(map(arms, |a| match a { Arm(p, g, b, _) -> " [" ++ dump_pat(p) ++ " " ++ dump_opt(g, dump_expr) ++ " " ++ dump_expr(b) ++ "]" }), "") ++ ")",
+    EBlock(stmts, r, _) -> "(block" ++ join(map(stmts, |s| " " ++ dump_stmt(s)), "") ++ " => " ++ dump_opt(r, dump_expr) ++ ")",
+    ETuple(xs, _) -> "(tuple " ++ join(map(xs, dump_expr), " ") ++ ")",
+  }
+}
+
+fn dump_fn(d) { match d { FnD(name, _, ps, ret, body, _) -> "(fn " ++ name ++ " [" ++ dump_params(ps) ++ "] " ++ dump_opt(ret, dump_texp) ++ " " ++ dump_expr(body) ++ ")" } }
+
+fn dump_stmt(s) {
+  match s {
+    SLet(p, ann, e, _) -> "(let " ++ dump_pat(p) ++ " " ++ dump_opt(ann, dump_texp) ++ " " ++ dump_expr(e) ++ ")",
+    SExpr(e, _) -> dump_expr(e),
+    SFn(d) -> dump_fn(d),
+  }
+}
+
+fn dump_decl(d) {
+  match d {
+    DType(name, _, params, ctors, _) -> "(type " ++ name ++ " [" ++ join(params, " ") ++ "]" ++ join(map(ctors, |c| match c { CtorD(n, fs, _) -> " (" ++ n ++ join(map(fs, |f| " " ++ dump_texp(f)), "") ++ ")" }), "") ++ ")",
+    DFn(f) -> dump_fn(f),
+  }
+}
+
+fn split_input(input) {
+  let n = string_length(input);
+  fn line_end(i) { if i < n && char_code_at(input, i) != 10 { line_end(i + 1) } else { i } }
+  fn word_end(i) { if i < n && char_code_at(input, i) != 32 && char_code_at(input, i) != 10 { word_end(i + 1) } else { i } }
+  let nl = line_end(0);
+  let sp = word_end(0);
+  let mode = substring(input, 0, sp);
+  let plen = unwrap_or(parse_int(substring(input, sp + 1, nl)), 0);
+  (mode, substring(input, nl + 1, nl + 1 + plen), substring(input, nl + 1 + plen, n))
+}
+
+fn main() {
+  let (mode, prelude, src) = split_input(read_input());
+  if mode == "tokens" {
+    each(lex(src), |t| println(tok_kind(t) ++ " " ++ int_to_string(tok_start(t)) ++ " " ++ int_to_string(tok_end(t))))
+  } else if mode == "ast" {
+    each(parse_program(src), |d| println(dump_decl(d)))
+  } else if mode == "ir" {
+    let prog = typecheck(parse_program(prelude), parse_program(src));
+    println(print_ir(reachable_functions(lower(prog))))
+  } else if mode == "wasm" {
+    let prog = typecheck(parse_program(prelude), parse_program(src));
+    b_print(wm_encode(codegen(lower(prog))))
+  } else if mode == "types" {
+    let prog = typecheck(parse_program(prelude), parse_program(src));
+    each(signatures(prog), println)
+  } else {
+    panic("unknown mode " ++ mode)
+  }
+}

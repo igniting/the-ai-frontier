@@ -1,0 +1,55 @@
+// =============================================================== IR print ==
+// Port of src/irprint.js (used to compare lowering with the reference).
+
+fn ir_var(v) { match v { Var(id, name, tr) -> name ++ (if tr { "" } else { "#" }) ++ int_to_string(id) } }
+
+fn ir_atom(a) {
+  match a {
+    AVar(v) -> ir_var(v), AImm(n) -> int_to_string(n), AStr(i) -> "str" ++ int_to_string(i),
+    ASclo(f) -> "&" ++ f, AEnvf(i) -> "env[" ++ int_to_string(i) ++ "]", ASelf -> "self",
+  }
+}
+
+fn ir_atoms(as) { join(map(as, ir_atom), ", ") }
+fn ir_path(p) { join(map(p, |i| "." ++ int_to_string(i)), "") }
+
+fn ir_expr(e, ind) {
+  let pad = repeat_string("  ", ind);
+  match e {
+    RAtom(a) -> ir_atom(a),
+    RLet(v, rhs, body) -> "let " ++ ir_var(v) ++ " = " ++ ir_expr(rhs, ind + 1) ++ "\n" ++ pad ++ ir_expr(body, ind),
+    RSeq(a, b) -> ir_expr(a, ind + 1) ++ ";\n" ++ pad ++ ir_expr(b, ind),
+    RPrim(op, as) -> op ++ "(" ++ ir_atoms(as) ++ ")",
+    RBuiltin(n, as) -> n ++ "(" ++ ir_atoms(as) ++ ")",
+    RCall(f, env, as) -> "call " ++ f ++ (match env { Some(x) -> "[" ++ ir_atom(x) ++ "]", None -> "" }) ++ "(" ++ ir_atoms(as) ++ ")",
+    RCallc(c, as) -> "callc " ++ ir_atom(c) ++ "(" ++ ir_atoms(as) ++ ")",
+    RAlloc(tag, as) -> "alloc tag" ++ int_to_string(tag) ++ "(" ++ ir_atoms(as) ++ ")",
+    RClosure(f, as) -> "closure " ++ f ++ "[" ++ ir_atoms(as) ++ "]",
+    RIf(c, t, el) -> "if " ++ ir_atom(c) ++ " {\n" ++ pad ++ "  " ++ ir_expr(t, ind + 1) ++ "\n" ++ pad ++ "} else {\n" ++ pad ++ "  " ++ ir_expr(el, ind + 1) ++ "\n" ++ pad ++ "}",
+    RMatch(s, arms) -> {
+      let sa = ir_atom(s);
+      let shown = map(arms, |arm| match arm {
+        RArm(tests, binds, guard, body) -> {
+          let ts = map(tests, |t| match t {
+            TImm(n, p) -> sa ++ ir_path(p) ++ " == " ++ int_to_string(n),
+            TIsBlock(p) -> "is_block(" ++ sa ++ ir_path(p) ++ ")",
+            TTag(tag, p) -> "tag(" ++ sa ++ ir_path(p) ++ ") == " ++ int_to_string(tag),
+            TStrEq(i, p) -> sa ++ ir_path(p) ++ " == str" ++ int_to_string(i),
+          });
+          let bs = map(binds, |b| match b { Bind(v, p) -> ir_var(v) ++ " = " ++ sa ++ ir_path(p) });
+          let head = join([if is_empty(ts) { "always" } else { join(ts, " && ") }, ..if is_empty(bs) { [] } else { ["bind " ++ join(bs, ", ")] }], "; ");
+          let g = match guard { Some(gx) -> " if " ++ ir_expr(gx, ind + 2), None -> "" };
+          pad ++ "  [" ++ head ++ "]" ++ g ++ " =>\n" ++ pad ++ "    " ++ ir_expr(body, ind + 2)
+        },
+      });
+      "match " ++ sa ++ " {\n" ++ join(shown, "\n") ++ "\n" ++ pad ++ "}"
+    },
+  }
+}
+
+fn print_ir(funcs) {
+  join(map(funcs, |f| match f {
+    Func(name, params, env, _, body) ->
+      "fn " ++ name ++ "(" ++ join(map(params, ir_var), ", ") ++ ")" ++ (if opt_is_some(env) { " [closure]" } else { "" }) ++ " {\n  " ++ ir_expr(body, 1) ++ "\n}",
+  }), "\n\n") ++ "\n\n// `x#3` = untraced (immediate-only) variable, kept out of the GC root set"
+}

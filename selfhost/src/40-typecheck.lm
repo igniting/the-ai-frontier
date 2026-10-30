@@ -1,0 +1,676 @@
+// ============================================================= typecheck ==
+// Port of src/typecheck.js: Hindley–Milner inference with level-based
+// generalization; top-level functions are inferred one strongly connected
+// component of the call graph at a time (Tarjan). The output is a typed AST
+// (TE) that carries the bindings, constructors and types that lowering needs.
+
+// Bindings: local (id, name, type), global function (name, internal name,
+// declaration index), builtin (name, type scheme).
+type Bnd { BL(Int, String, Ty), BG(String, String, Int), BB(String, Ty) }
+
+// name, index, arity, field types, result type, type's internal name,
+// type's display name, #nullary constructors, #constructors with fields, #constructors
+type Ctor { Ctor(String, Int, Int, List<Ty>, Ty, String, String, Int, Int, Int) }
+
+fn ctor_name(c) { match c { Ctor(n, _, _, _, _, _, _, _, _, _) -> n } }
+fn ctor_index(c) { match c { Ctor(_, i, _, _, _, _, _, _, _, _) -> i } }
+fn ctor_arity(c) { match c { Ctor(_, _, a, _, _, _, _, _, _, _) -> a } }
+fn ctor_fields(c) { match c { Ctor(_, _, _, f, _, _, _, _, _, _) -> f } }
+fn ctor_result(c) { match c { Ctor(_, _, _, _, r, _, _, _, _, _) -> r } }
+fn ctor_type_name(c) { match c { Ctor(_, _, _, _, _, t, _, _, _, _) -> t } }
+fn ctor_display(c) { match c { Ctor(_, _, _, _, _, _, d, _, _, _) -> d } }
+fn ctor_nullary(c) { match c { Ctor(_, _, _, _, _, _, _, n, _, _) -> n } }
+fn ctor_nblock(c) { match c { Ctor(_, _, _, _, _, _, _, _, n, _) -> n } }
+fn ctor_count(c) { match c { Ctor(_, _, _, _, _, _, _, _, _, n) -> n } }
+
+// internal name, display name, parameters, parameter type-variable ids, constructors
+type TInfo { TInfo(String, String, List<String>, List<Int>, List<Ctor>) }
+
+type GScope { GScope(Map<String, Bnd>, Map<String, TInfo>, Map<String, Ctor>) }
+fn gs_values(s) { match s { GScope(v, _, _) -> v } }
+fn gs_types(s) { match s { GScope(_, t, _) -> t } }
+fn gs_ctors(s) { match s { GScope(_, _, c) -> c } }
+
+// builtin scope, prelude scope, user scope, every type by internal name
+type G { G(GScope, GScope, GScope, Map<String, TInfo>) }
+
+fn g_scope(g, kind) { match g { G(b, p, u, _) -> if kind == "builtin" { b } else if kind == "prelude" { p } else { u } } }
+fn g_type_infos(g) { match g { G(_, _, _, t) -> t } }
+fn g_set_scope(g, kind, s) { match g { G(b, p, u, t) -> if kind == "prelude" { G(b, s, u, t) } else { G(b, p, s, t) } } }
+fn g_set_infos(g, t) { match g { G(b, p, u, _) -> G(b, p, u, t) } }
+
+fn scope_chain(kind) { if kind == "user" { ["user", "prelude", "builtin"] } else { ["prelude", "builtin"] } }
+
+fn find_in(g, kind, get) {
+  fn go(kinds) { match kinds { [] -> None, [k, ..rest] -> match get(g_scope(g, k)) { Some(x) -> Some(x), None -> go(rest) } } }
+  go(scope_chain(kind))
+}
+
+fn lookup_type(g, kind, name) { find_in(g, kind, |s| m_get(gs_types(s), name)) }
+fn lookup_ctor(g, kind, name) { find_in(g, kind, |s| m_get(gs_ctors(s), name)) }
+fn lookup_global(g, kind, name) { find_in(g, kind, |s| m_get(gs_values(s), name)) }
+
+// --------------------------------------------------------------- typed AST --
+type TE {
+  XInt(Int), XStr(String), XBool(Bool), XUnit,
+  XVar(Bnd),
+  XCtor(Ctor, Option<List<TE>>, Ty),
+  XCall(TE, List<TE>, Ty),
+  XLam(List<Bnd>, TE, Ty),
+  XBin(String, TE, TE, Ty, Ty), // op, left, right, result type, operand type
+  XUn(String, TE, Ty),
+  XIf(TE, TE, Option<TE>, Ty),
+  XMatch(TE, List<XArm>, Ty, Ty, Span), // scrutinee, arms, result type, scrutinee type
+  XBlock(List<XStmt>, Option<TE>, Ty),
+  XTuple(List<TE>, Ty),
+}
+type XArm { XArm(XP, Option<TE>, TE) }
+type XStmt { XSExpr(TE), XSLet(XP, TE, Span), XSFn(String, Bnd, List<Bnd>, TE) }
+type XP { QWild(Ty), QVar(Bnd, Ty), QInt(Int, Ty), QStr(String, Ty), QBool(Bool, Ty), QUnit(Ty), QTuple(List<XP>, Ty), QCtor(Ctor, List<XP>, Ty) }
+
+// internal name, source name, origin ("prelude" | "user"), parameters, body
+type XFn { XFn(String, String, String, List<Bnd>, TE) }
+type TProg { TProg(List<XFn>, G, TS, String) }
+
+fn te_ty(e) {
+  match e {
+    XInt(_) -> t_int(), XStr(_) -> t_string(), XBool(_) -> t_bool(), XUnit -> t_unit(),
+    XVar(_) -> panic("internal: te_ty of a variable"),
+    XCtor(_, _, t) -> t, XCall(_, _, t) -> t, XLam(_, _, t) -> t, XBin(_, _, _, t, _) -> t, XUn(_, _, t) -> t,
+    XIf(_, _, _, t) -> t, XMatch(_, _, t, _, _) -> t, XBlock(_, _, t) -> t, XTuple(_, t) -> t,
+  }
+}
+
+fn bnd_type(st, b) {
+  match b {
+    BL(_, _, t) -> t,
+    BB(_, t) -> t,
+    BG(name, internal, _) -> match global_type(st, internal) {
+      Some(t) -> t,
+      None -> panic("internal: `" ++ name ++ "` used before its type was inferred"),
+    },
+  }
+}
+
+// ------------------------------------------------------------------ errors --
+fn tc_fail(sp, msg) { fail_at(sp_s(sp), sp_e(sp), "type", msg) }
+
+fn expect_ty(st, actual, expected, sp, prefix) {
+  match unify(st, actual, expected) {
+    UOk(st2) -> st2,
+    UErr(kind, a, b, st2) ->
+      if kind == "occurs" {
+        let ss = show_types(st2, [a, b]);
+        tc_fail(sp, prefix ++ "cannot construct the infinite type " ++ list_get(ss, 0) ++ " = " ++ list_get(ss, 1))
+      } else {
+        let ss = show_types(st2, [expected, actual]);
+        tc_fail(sp, prefix ++ "expected " ++ list_get(ss, 0) ++ ", found " ++ list_get(ss, 1))
+      },
+  }
+}
+
+// -------------------------------------------------------- type expressions --
+fn convert_type(g, kind, st, tvars, allow_fresh, lvl, te) {
+  match te {
+    TyVar(name, sp) -> match m_get(tvars, name) {
+      Some(t) -> (t, tvars, st),
+      None ->
+        if !allow_fresh { tc_fail(sp, "unknown type variable `" ++ name ++ "`") }
+        else { let (v, st2) = new_var(st, lvl); (v, m_set(tvars, name, v), st2) },
+    },
+    TyName(name, args, sp) -> match lookup_type(g, kind, name) {
+      None -> tc_fail(sp, "unknown type `" ++ name ++ "`"),
+      Some(TInfo(internal, _, params, _, _)) ->
+        if length(params) != length(args) {
+          tc_fail(sp, "type `" ++ name ++ "` expects " ++ plural(length(params), "type argument") ++ ", found " ++ int_to_string(length(args)))
+        } else {
+          let (ts, tv2, st2) = convert_types(g, kind, st, tvars, allow_fresh, lvl, args);
+          (TC(internal, ts), tv2, st2)
+        },
+    },
+    TyFun(ps, r, _) -> {
+      let (pts, tv2, st2) = convert_types(g, kind, st, tvars, allow_fresh, lvl, ps);
+      let (rt, tv3, st3) = convert_type(g, kind, st2, tv2, allow_fresh, lvl, r);
+      (TF(pts, rt), tv3, st3)
+    },
+    TyTuple(xs, _) -> { let (ts, tv2, st2) = convert_types(g, kind, st, tvars, allow_fresh, lvl, xs); (TT(ts), tv2, st2) },
+  }
+}
+
+fn convert_types(g, kind, st, tvars, allow_fresh, lvl, tes) {
+  fn go(st, tvars, tes, acc) {
+    match tes {
+      [] -> (reverse(acc), tvars, st),
+      [t, ..rest] -> { let (ty, tv2, st2) = convert_type(g, kind, st, tvars, allow_fresh, lvl, t); go(st2, tv2, rest, [ty, ..acc]) },
+    }
+  }
+  go(st, tvars, tes, [])
+}
+
+// ------------------------------------------------------------ declarations --
+fn is_builtin_type(name) { name == "Int" || name == "Bool" || name == "String" || name == "Unit" }
+
+fn declare_types(g, decls, kind, suffix, st) {
+  let tdecls = filter(decls, |d| match d { DType(_, _, _, _, _) -> true, _ -> false });
+  // Pass 1: register every type name, so declarations may refer to each other.
+  let g1 = fold(tdecls, g, |g, d| match d {
+    DType(name, nsp, _, ctors, _) -> {
+      let scope = g_scope(g, kind);
+      if is_builtin_type(name) { tc_fail(nsp, "cannot redefine built-in type `" ++ name ++ "`") }
+      else if m_has(gs_types(scope), name) { tc_fail(nsp, "type `" ++ name ++ "` is defined twice") }
+      else if length(ctors) > 240 { tc_fail(nsp, "type `" ++ name ++ "` has too many constructors (max 240)") }
+      else {
+        let internal = if m_has(g_type_infos(g), name) { name ++ "#" ++ suffix } else { name };
+        let info = match d { DType(_, _, params, _, _) -> TInfo(internal, name, params, [], []), _ -> panic("internal") };
+        match scope {
+          GScope(v, t, c) -> g_set_infos(g_set_scope(g, kind, GScope(v, m_set(t, name, info), c)), m_set(g_type_infos(g), internal, info)),
+        }
+      }
+    },
+    _ -> g,
+  });
+  // Pass 2: constructors.
+  fold(tdecls, (g1, st), |acc, d| match (acc, d) {
+    ((g, st), DType(name, _, params, ctors, dsp)) -> {
+      let info = m_find(gs_types(g_scope(g, kind)), name);
+      let internal = match info { TInfo(i, _, _, _, _) -> i };
+      let (tvars, pvars, st2) = fold(params, (Tip, [], st), |a, p| match a {
+        (tv, pv, s) ->
+          if m_has(tv, p) { tc_fail(dsp, "type parameter `" ++ p ++ "` is declared twice") }
+          else { let (v, s2) = new_var(s, generic_level()); (m_set(tv, p, v), [v, ..pv], s2) },
+      });
+      let param_vars = reverse(pvars);
+      let result = TC(internal, param_vars);
+      let (field_lists, st3) = fold(ctors, ([], st2), |a, c| match (a, c) {
+        ((fl, s), CtorD(_, fields, _)) -> { let (ts, _, s2) = convert_types(g, kind, s, tvars, false, 0, fields); ([ts, ..fl], s2) },
+      });
+      let fields_in_order = reverse(field_lists);
+      let n_nullary = length(filter(fields_in_order, is_empty));
+      let n_ctors = length(ctors);
+      let built = map(zip(indexed(ctors), fields_in_order), |p| match p {
+        ((i, CtorD(cname, _, csp)), fs) -> (Ctor(cname, i, length(fs), fs, result, internal, name, n_nullary, n_ctors - n_nullary, n_ctors), csp),
+      });
+      let ids = map(param_vars, |v| match v { TV(id) -> id, _ -> -1 });
+      let full = TInfo(internal, name, params, ids, map(built, |p| match p { (c, _) -> c }));
+      let g2 = fold(built, g, |g, p| match p {
+        (c, csp) -> match g_scope(g, kind) {
+          GScope(v, t, cs) ->
+            if m_has(cs, ctor_name(c)) { tc_fail(csp, "constructor `" ++ ctor_name(c) ++ "` is defined twice") }
+            else { g_set_scope(g, kind, GScope(v, t, m_set(cs, ctor_name(c), c))) },
+        },
+      });
+      let g3 = match g_scope(g2, kind) { GScope(v, t, cs) -> g_set_scope(g2, kind, GScope(v, m_set(t, name, full), cs)) };
+      (g_set_infos(g3, m_set(g_type_infos(g3), internal, full)), st3)
+    },
+    _ -> acc,
+  })
+}
+
+// A top-level function: declaration, scope kind, internal name, global index.
+type FnI { FnI(FnD, String, String, Int) }
+fn fni_decl(f) { match f { FnI(d, _, _, _) -> d } }
+fn fni_kind(f) { match f { FnI(_, k, _, _) -> k } }
+fn fni_internal(f) { match f { FnI(_, _, i, _) -> i } }
+fn fni_index(f) { match f { FnI(_, _, _, i) -> i } }
+
+fn declare_fns(g, decls, kind, st, start) {
+  let fds = flat_map(decls, |d| match d { DFn(f) -> [f], _ -> [] });
+  let (g2, st2, fnis) = fold(indexed(fds), (g, st, []), |acc, p| match (acc, p) {
+    ((g, st, out), (i, FnD(name, nsp, _, _, _, _))) -> {
+      let scope = g_scope(g, kind);
+      if m_has(gs_values(scope), name) { tc_fail(nsp, "function `" ++ name ++ "` is defined twice") }
+      else {
+        let shadowed = kind == "user" && m_has(gs_values(g_scope(g, "prelude")), name);
+        let internal = if shadowed { name ++ "#user" } else { name };
+        let (_, st2) = new_binding_id(st);
+        let b = BG(name, internal, start + i);
+        let g2 = match scope { GScope(v, t, c) -> g_set_scope(g, kind, GScope(m_set(v, name, b), t, c)) };
+        (g2, st2, [FnI(list_get(fds, i), kind, internal, start + i), ..out])
+      }
+    },
+  });
+  (g2, st2, reverse(fnis))
+}
+
+// ------------------------------------------------------ call graph + SCCs --
+fn pat_names(p, bound) {
+  match p {
+    PVar(x, _) -> s_add(bound, x),
+    PTuple(ps, _) -> fold(ps, bound, |b, q| pat_names(q, b)),
+    PCtor(_, ps, _, _) -> fold(ps, bound, |b, q| pat_names(q, b)),
+    _ -> bound,
+  }
+}
+
+// Global functions referenced by a function body, honouring local shadowing.
+fn global_refs(g, f) {
+  let kind = fni_kind(f);
+  fn walk(e, bound, refs) {
+    match e {
+      EVar(x, _) ->
+        if s_has(bound, x) { refs }
+        else {
+          match lookup_global(g, kind, x) {
+            Some(BG(_, _, idx)) -> if contains(refs, idx) { refs } else { [idx, ..refs] },
+            _ -> refs,
+          }
+        },
+      ELam(ps, _, body, _) -> walk(body, fold(ps, bound, |b, p| match p { Param(x, _, _) -> s_add(b, x) }), refs),
+      EBlock(stmts, result, _) -> {
+        let (cur, refs2) = fold(stmts, (bound, refs), |acc, s| match (acc, s) {
+          ((cur, rs), SLet(p, _, x, _)) -> (pat_names(p, cur), walk(x, cur, rs)),
+          ((cur, rs), SFn(FnD(name, _, ps, _, body, _))) -> {
+            let cur2 = s_add(cur, name);
+            (cur2, walk(body, fold(ps, cur2, |b, p| match p { Param(x, _, _) -> s_add(b, x) }), rs))
+          },
+          ((cur, rs), SExpr(x, _)) -> (cur, walk(x, cur, rs)),
+        });
+        match result { Some(r) -> walk(r, cur, refs2), None -> refs2 }
+      },
+      EMatch(x, arms, _) -> fold(arms, walk(x, bound, refs), |rs, a| match a {
+        Arm(p, guard, body, _) -> {
+          let inner = pat_names(p, bound);
+          let rs2 = match guard { Some(gd) -> walk(gd, inner, rs), None -> rs };
+          walk(body, inner, rs2)
+        },
+      }),
+      ECall(fe, args, _) -> fold(args, walk(fe, bound, refs), |rs, a| walk(a, bound, rs)),
+      ECtor(_, args, _, _, _, _) -> match args { Some(xs) -> fold(xs, refs, |rs, a| walk(a, bound, rs)), None -> refs },
+      EBin(_, l, r, _) -> walk(r, bound, walk(l, bound, refs)),
+      EUn(_, x, _) -> walk(x, bound, refs),
+      EIf(c, t, el, _) -> {
+        let rs = walk(t, bound, walk(c, bound, refs));
+        match el { Some(x) -> walk(x, bound, rs), None -> rs }
+      },
+      ETuple(xs, _) -> fold(xs, refs, |rs, x| walk(x, bound, rs)),
+      _ -> refs,
+    }
+  }
+  match fni_decl(f) {
+    FnD(_, _, ps, _, body, _) -> reverse(walk(body, fold(ps, Tip, |b, p| match p { Param(x, _, _) -> s_add(b, x) }), [])),
+  }
+}
+
+// Tarjan's algorithm. State: index, lowlink, on-stack flags, stack, counter, output.
+type TJ { TJ(Map<Int, Int>, Map<Int, Int>, Map<Int, Bool>, List<Int>, Int, List<List<Int>>) }
+
+fn sccs(edges, nodes) {
+  fn on_stack(on, w) { unwrap_or(m_get(on, w), false) }
+  fn visit(s, v) {
+    let s1 = match s { TJ(ix, lo, on, stack, c, out) -> TJ(m_set(ix, v, c), m_set(lo, v, c), m_set(on, v, true), [v, ..stack], c + 1, out) };
+    let s2 = fold(m_find(edges, v), s1, |s, w| match s {
+      TJ(ix, lo, on, stack, c, out) ->
+        if !m_has(ix, w) {
+          match visit(s, w) {
+            TJ(ix2, lo2, on2, stack2, c2, out2) -> TJ(ix2, m_set(lo2, v, min(m_find(lo2, v), m_find(lo2, w))), on2, stack2, c2, out2),
+          }
+        } else if on_stack(on, w) { TJ(ix, m_set(lo, v, min(m_find(lo, v), m_find(ix, w))), on, stack, c, out) }
+        else { s },
+    });
+    match s2 {
+      TJ(ix, lo, on, stack, c, out) ->
+        if m_find(lo, v) == m_find(ix, v) {
+          // Pop the component; `comp` collects it in pop order, as the reference does.
+          fn pop(stack, on, comp) {
+            match stack {
+              [w, ..rest] -> if w == v { (rest, m_set(on, w, false), reverse([w, ..comp])) } else { pop(rest, m_set(on, w, false), [w, ..comp]) },
+              [] -> panic("internal: tarjan"),
+            }
+          }
+          let (stack2, on2, comp) = pop(stack, on, []);
+          TJ(ix, lo, on2, stack2, c, [comp, ..out])
+        } else { s2 },
+    }
+  }
+  let final = fold(nodes, TJ(Tip, Tip, Tip, [], 0, []), |s, v| match s { TJ(ix, _, _, _, _, _) -> if m_has(ix, v) { s } else { visit(s, v) } });
+  match final { TJ(_, _, _, _, _, out) -> reverse(out) }
+}
+
+// --------------------------------------------------------------- inference --
+type Env { Env(Map<String, Bnd>, String) } // local bindings, scope kind
+
+fn env_add(env, name, b) { match env { Env(l, k) -> Env(m_set(l, name, b), k) } }
+
+fn lookup_value(g, env, name) {
+  match env { Env(locals, kind) -> match m_get(locals, name) { Some(b) -> Some(b), None -> lookup_global(g, kind, name) } }
+}
+
+fn infer_pattern(g, kind, lvl, st, env, seen, p, expected) {
+  // returns (typed pattern, env, seen names, new bindings, state)
+  let literal = |t, what, sp, q| (q, env, seen, [], expect_ty(st, t, expected, sp, what ++ " pattern: "));
+  match p {
+    PWild(_) -> (QWild(expected), env, seen, [], st),
+    PVar(x, sp) ->
+      if s_has(seen, x) { tc_fail(sp, "variable `" ++ x ++ "` is bound twice in the same pattern") }
+      else {
+        let (id, st2) = new_binding_id(st);
+        let b = BL(id, x, expected);
+        (QVar(b, expected), env_add(env, x, b), s_add(seen, x), [b], st2)
+      },
+    PInt(n, sp) -> literal(t_int(), "integer", sp, QInt(n, expected)),
+    PStr(s, sp) -> literal(t_string(), "string", sp, QStr(s, expected)),
+    PBool(b, sp) -> literal(t_bool(), "boolean", sp, QBool(b, expected)),
+    PUnit(sp) -> literal(t_unit(), "unit", sp, QUnit(expected)),
+    PTuple(ps, sp) -> {
+      let (vs, st2) = new_vars(st, lvl, length(ps));
+      let st3 = expect_ty(st2, TT(vs), expected, sp, "tuple pattern: ");
+      let (qs, env2, seen2, bs, st4) = infer_patterns(g, kind, lvl, st3, env, seen, zip(ps, vs));
+      (QTuple(qs, expected), env2, seen2, bs, st4)
+    },
+    PCtor(name, ps, sugar, sp) -> {
+      let found = if sugar { m_get(gs_ctors(g_scope(g, "prelude")), name) } else { lookup_ctor(g, kind, name) };
+      match found {
+        None -> tc_fail(sp, "unknown constructor `" ++ name ++ "`"),
+        Some(c) ->
+          if ctor_arity(c) != length(ps) {
+            tc_fail(sp, "constructor `" ++ name ++ "` has " ++ plural(ctor_arity(c), "field") ++ ", but the pattern has " ++ int_to_string(length(ps)))
+          } else {
+            match instantiate(st, TF(ctor_fields(c), ctor_result(c)), lvl) {
+              (TF(fts, rt), st2) -> {
+                let st3 = expect_ty(st2, rt, expected, sp, "constructor pattern `" ++ name ++ "`: ");
+                let (qs, env2, seen2, bs, st4) = infer_patterns(g, kind, lvl, st3, env, seen, zip(ps, fts));
+                (QCtor(c, qs, expected), env2, seen2, bs, st4)
+              },
+              _ -> panic("internal: constructor scheme"),
+            }
+          },
+      }
+    },
+  }
+}
+
+fn infer_patterns(g, kind, lvl, st, env, seen, pairs) {
+  fn go(st, env, seen, pairs, qs, bs) {
+    match pairs {
+      [] -> (reverse(qs), env, seen, bs, st),
+      [(p, t), ..rest] -> {
+        let (q, env2, seen2, b2, st2) = infer_pattern(g, kind, lvl, st, env, seen, p, t);
+        go(st2, env2, seen2, rest, [q, ..qs], append(bs, b2))
+      },
+    }
+  }
+  go(st, env, seen, pairs, [], [])
+}
+
+fn env_kind(env) { match env { Env(_, k) -> k } }
+
+// Infers a function (lambda, local or top-level); returns (params, body, type, state).
+fn infer_fn(g, env, lvl, st, params, ret_ann, body, self_bnd, self_span) {
+  let kind = env_kind(env);
+  let env0 = match self_bnd { Some(b) -> match b { BL(_, x, _) -> env_add(env, x, b), BG(x, _, _) -> env_add(env, x, b), BB(_, _) -> env } , None -> env };
+  let (bnds, ptys, inner, tvars, st2, _) = fold(params, ([], [], env0, Tip, st, Tip), |acc, p| match (acc, p) {
+    ((bs, ts, en, tv, s, seen), Param(x, ann, psp)) ->
+      if s_has(seen, x) && x != "_" { tc_fail(psp, "parameter `" ++ x ++ "` is declared twice") }
+      else {
+        let (t, tv2, s2) = match ann { Some(a) -> convert_type(g, kind, s, tv, true, lvl, a), None -> { let (v, s1) = new_var(s, lvl); (v, tv, s1) } };
+        let (id, s3) = new_binding_id(s2);
+        let b = BL(id, x, t);
+        ([b, ..bs], [t, ..ts], if x != "_" { env_add(en, x, b) } else { en }, tv2, s3, s_add(seen, x))
+      },
+  });
+  let (ret, _, st3) = match ret_ann { Some(a) -> convert_type(g, kind, st2, tvars, true, lvl, a), None -> { let (v, s1) = new_var(st2, lvl); (v, tvars, s1) } };
+  let fn_ty = TF(reverse(ptys), ret);
+  let st4 = match self_bnd { Some(b) -> expect_ty(st3, fn_ty, bnd_type(st3, b), self_span, ""), None -> st3 };
+  let (body2, body_ty, st5) = infer(g, inner, lvl, st4, body);
+  let st6 = expect_ty(st5, body_ty, ret, expr_span(body), match ret_ann { Some(_) -> "return type: ", None -> "" });
+  (reverse(bnds), body2, fn_ty, st6)
+}
+
+fn infer_call(g, env, lvl, st, fn_ty, args, sp, callee) {
+  let (f, st2) = match prune(st, fn_ty) {
+    TV(id) -> {
+      let (vs, s1) = new_vars(st, lvl, length(args));
+      let (r, s2) = new_var(s1, lvl);
+      let shape = TF(vs, r);
+      match unify(s2, TV(id), shape) { UOk(s3) -> (shape, s3), _ -> panic("internal: call shape") }
+    },
+    other -> (other, st),
+  };
+  match f {
+    TF(ps, r) ->
+      if length(ps) != length(args) {
+        tc_fail(sp, callee ++ " takes " ++ plural(length(ps), "argument") ++ " but " ++ int_to_string(length(args)) ++ (if length(args) == 1 { " was" } else { " were" }) ++ " supplied")
+      } else {
+        let (targs, st3) = fold(zip(args, ps), ([], st2), |acc, p| match (acc, p) {
+          ((out, s), (a, pt)) -> {
+            let (a2, at, s2) = infer(g, env, lvl, s, a);
+            ([a2, ..out], expect_ty(s2, at, pt, expr_span(a), ""))
+          },
+        });
+        (reverse(targs), r, st3)
+      },
+    other -> tc_fail(sp, "cannot call a value of type " ++ show_type(st2, other)),
+  }
+}
+
+fn infer_list_literal(g, env, lvl, st, e) {
+  let cons = m_find(gs_ctors(g_scope(g, "prelude")), "Cons");
+  let (elem, st1) = new_var(st, lvl);
+  let list_ty = TC(ctor_type_name(cons), [elem]);
+  let lit = match e { ECtor(_, _, _, l, _, _) -> l, _ -> -1 };
+  fn cells(node, acc) {
+    match node {
+      ECtor(_, Some([x, rest]), _, l, _, _) if l == lit -> cells(rest, [x, ..acc]),
+      _ -> (reverse(acc), node),
+    }
+  }
+  let (items, tail) = cells(e, []);
+  let (typed_items, st2) = fold(indexed(items), ([], st1), |acc, p| match (acc, p) {
+    ((out, s), (i, x)) -> {
+      let (x2, xt, s2) = infer(g, env, lvl, s, x);
+      ([x2, ..out], expect_ty(s2, xt, elem, expr_span(x), if i > 0 { "list elements must all have the same type: " } else { "" }))
+    },
+  });
+  let own_nil = match tail { ECtor("Nil", None, true, _, _, _) -> true, _ -> false };
+  let (tail2, tt, st3) = infer(g, env, lvl, st2, tail);
+  let st4 = expect_ty(st3, tt, list_ty, expr_span(tail), if own_nil { "" } else { "the tail of a list (`..rest`): " });
+  let result = fold(typed_items, tail2, |acc, x| XCtor(cons, Some([x, acc]), list_ty));
+  (result, list_ty, st4)
+}
+
+fn infer(g, env, lvl, st, e) {
+  match e {
+    EInt(n, _) -> (XInt(n), t_int(), st),
+    EStr(s, _) -> (XStr(s), t_string(), st),
+    EBool(b, _) -> (XBool(b), t_bool(), st),
+    EUnit(_) -> (XUnit, t_unit(), st),
+    EVar(x, sp) -> match lookup_value(g, env, x) {
+      None -> tc_fail(sp, "unknown variable `" ++ x ++ "`"),
+      Some(b) -> { let (t, st2) = instantiate(st, bnd_type(st, b), lvl); (XVar(b), t, st2) },
+    },
+    ECtor(name, args, sugar, _, sp, nsp) ->
+      if sugar && name == "Cons" { infer_list_literal(g, env, lvl, st, e) }
+      else {
+        let found = if sugar { m_get(gs_ctors(g_scope(g, "prelude")), name) } else { lookup_ctor(g, env_kind(env), name) };
+        match found {
+          None -> tc_fail(nsp, "unknown constructor `" ++ name ++ "`"),
+          Some(c) -> match instantiate(st, TF(ctor_fields(c), ctor_result(c)), lvl) {
+            (inst, st2) -> match (args, inst) {
+              (None, TF(_, r)) -> if ctor_arity(c) == 0 { (XCtor(c, None, r), r, st2) } else { (XCtor(c, None, inst), inst, st2) },
+              (Some(xs), _) ->
+                if ctor_arity(c) == 0 { tc_fail(sp, "constructor `" ++ name ++ "` takes no arguments") }
+                else {
+                  let (targs, r, st3) = infer_call(g, env, lvl, st2, inst, xs, sp, "`" ++ name ++ "`");
+                  (XCtor(c, Some(targs), r), r, st3)
+                },
+              _ -> panic("internal: ctor"),
+            },
+          },
+        }
+      },
+    ECall(fe, args, sp) -> {
+      let (f2, ft, st2) = infer(g, env, lvl, st, fe);
+      let callee = match fe { EVar(x, _) -> "`" ++ x ++ "`", _ -> "this function" };
+      let (targs, r, st3) = infer_call(g, env, lvl, st2, ft, args, sp, callee);
+      (XCall(f2, targs, r), r, st3)
+    },
+    ELam(params, ret, body, sp) -> {
+      let (bnds, body2, t, st2) = infer_fn(g, env, lvl, st, params, ret, body, None, sp);
+      (XLam(bnds, body2, t), t, st2)
+    },
+    EBin(op, l, r, _) -> {
+      let operand = |s, x, t, what| {
+        let (x2, xt, s2) = infer(g, env, lvl, s, x);
+        (x2, expect_ty(s2, xt, t, expr_span(x), "`" ++ op ++ "` " ++ what ++ ": "))
+      };
+      if op == "+" || op == "-" || op == "*" || op == "/" || op == "%" {
+        let (l2, st2) = operand(st, l, t_int(), "needs Int operands");
+        let (r2, st3) = operand(st2, r, t_int(), "needs Int operands");
+        (XBin(op, l2, r2, t_int(), t_int()), t_int(), st3)
+      } else if op == "++" {
+        let (l2, st2) = operand(st, l, t_string(), "concatenates Strings");
+        let (r2, st3) = operand(st2, r, t_string(), "concatenates Strings");
+        (XBin(op, l2, r2, t_string(), t_string()), t_string(), st3)
+      } else if op == "&&" || op == "||" {
+        let (l2, st2) = operand(st, l, t_bool(), "needs Bool operands");
+        let (r2, st3) = operand(st2, r, t_bool(), "needs Bool operands");
+        (XBin(op, l2, r2, t_bool(), t_bool()), t_bool(), st3)
+      } else {
+        let (l2, lt, st2) = infer(g, env, lvl, st, l);
+        let (r2, rt, st3) = infer(g, env, lvl, st2, r);
+        let st4 = expect_ty(st3, rt, lt, expr_span(r), "`" ++ op ++ "` compares values of the same type: ");
+        (XBin(op, l2, r2, t_bool(), lt), t_bool(), st4)
+      }
+    },
+    EUn(op, x, _) -> {
+      let (x2, xt, st2) = infer(g, env, lvl, st, x);
+      if op == "-" { (XUn(op, x2, t_int()), t_int(), expect_ty(st2, xt, t_int(), expr_span(x), "negation: ")) }
+      else { (XUn(op, x2, t_bool()), t_bool(), expect_ty(st2, xt, t_bool(), expr_span(x), "`!`: ")) }
+    },
+    EIf(c, t, el, _) -> {
+      let (c2, ct, st1) = infer(g, env, lvl, st, c);
+      let st2 = expect_ty(st1, ct, t_bool(), expr_span(c), "if condition: ");
+      let (t2, tt, st3) = infer(g, env, lvl, st2, t);
+      match el {
+        None -> (XIf(c2, t2, None, t_unit()), t_unit(), expect_ty(st3, tt, t_unit(), expr_span(t), "`if` without `else`: ")),
+        Some(x) -> {
+          let (x2, xt, st4) = infer(g, env, lvl, st3, x);
+          (XIf(c2, t2, Some(x2), tt), tt, expect_ty(st4, xt, tt, expr_span(x), "`if` and `else` have incompatible types: "))
+        },
+      }
+    },
+    EMatch(scrut, arms, _) -> {
+      let (s2, sty, st1) = infer(g, env, lvl, st, scrut);
+      let (result, st2) = new_var(st1, lvl);
+      let (tarms, st3) = fold(arms, ([], st2), |acc, a| match (acc, a) {
+        ((out, s), Arm(p, guard, body, _)) -> {
+          let (q, inner, _, _, s1) = infer_pattern(g, env_kind(env), lvl, s, env, Tip, p, sty);
+          let (g2, s2) = match guard {
+            Some(gd) -> { let (gd2, gt, s1b) = infer(g, inner, lvl, s1, gd); (Some(gd2), expect_ty(s1b, gt, t_bool(), expr_span(gd), "match guard: ")) },
+            None -> (None, s1),
+          };
+          let (b2, bt, s3) = infer(g, inner, lvl, s2, body);
+          ([XArm(q, g2, b2), ..out], expect_ty(s3, bt, result, expr_span(body), "match arms have incompatible types: "))
+        },
+      });
+      (XMatch(s2, reverse(tarms), result, sty, expr_span(scrut)), result, st3)
+    },
+    EBlock(stmts, result, _) -> {
+      let (tstmts, cur, st2) = fold(stmts, ([], env, st), |acc, s| match (acc, s) {
+        ((out, en, s0), SExpr(x, _)) -> { let (x2, _, s1) = infer(g, en, lvl, s0, x); ([XSExpr(x2), ..out], en, s1) },
+        ((out, en, s0), SLet(p, ann, x, lsp)) -> {
+          let (x2, xt, s1) = infer(g, en, lvl + 1, s0, x);
+          let s2 = match ann {
+            Some(a) -> { let (at, _, s1b) = convert_type(g, env_kind(en), s1, Tip, true, lvl + 1, a); expect_ty(s1b, xt, at, expr_span(x), "") },
+            None -> s1,
+          };
+          let (q, en2, _, bs, s3) = infer_pattern(g, env_kind(en), lvl + 1, s2, en, Tip, p, xt);
+          let s4 = fold(bs, s3, |s, b| match b { BL(_, _, t) -> generalize(s, t, lvl), _ -> s });
+          ([XSLet(q, x2, pat_span(p)), ..out], en2, s4)
+        },
+        ((out, en, s0), SFn(FnD(name, nsp, ps, ret, body, _))) -> {
+          let (v, s1) = new_var(s0, lvl + 1);
+          let (id, s2) = new_binding_id(s1);
+          let b = BL(id, name, v);
+          let (pb, body2, _, s3) = infer_fn(g, en, lvl + 1, s2, ps, ret, body, Some(b), nsp);
+          ([XSFn(name, b, pb, body2), ..out], env_add(en, name, b), generalize(s3, v, lvl))
+        },
+      });
+      match result {
+        Some(r) -> { let (r2, rt, st3) = infer(g, cur, lvl, st2, r); (XBlock(reverse(tstmts), Some(r2), rt), rt, st3) },
+        None -> (XBlock(reverse(tstmts), None, t_unit()), t_unit(), st2),
+      }
+    },
+    ETuple(xs, _) -> {
+      let (txs, tys, st2) = fold(xs, ([], [], st), |acc, x| match acc {
+        (out, ts, s) -> { let (x2, xt, s1) = infer(g, env, lvl, s, x); ([x2, ..out], [xt, ..ts], s1) },
+      });
+      let t = TT(reverse(tys));
+      (XTuple(reverse(txs), t), t, st2)
+    },
+  }
+}
+
+// ------------------------------------------------------------------ driver --
+fn builtin_signatures(a) {
+  [
+    ("print", TF([t_string()], t_unit())),
+    ("println", TF([t_string()], t_unit())),
+    ("int_to_string", TF([t_int()], t_string())),
+    ("string_length", TF([t_string()], t_int())),
+    ("substring", TF([t_string(), t_int(), t_int()], t_string())),
+    ("char_code_at", TF([t_string(), t_int()], t_int())),
+    ("char_from_code", TF([t_int()], t_string())),
+    ("panic", TF([t_string()], a)),
+    ("read_input", TF([], t_string())),
+  ]
+}
+
+fn builtin_arity(name) {
+  match find(builtin_signatures(t_unit()), |p| match p { (n, _) -> n == name }) {
+    Some((_, TF(ps, _))) -> length(ps),
+    _ -> panic("internal: unknown builtin " ++ name),
+  }
+}
+
+fn typecheck(prelude_decls, user_decls) {
+  let (a, st0) = new_var(ts_new(), generic_level());
+  let (bvals, st1) = fold(builtin_signatures(a), (Tip, st0), |acc, p| match (acc, p) {
+    ((m, s), (name, t)) -> { let (_, s2) = new_binding_id(s); (m_set(m, name, BB(name, t)), s2) },
+  });
+  let btypes = m_of_list(map(["Int", "Bool", "String", "Unit"], |n| (n, TInfo(n, n, [], [], []))));
+  let g0 = G(GScope(bvals, btypes, Tip), GScope(Tip, Tip, Tip), GScope(Tip, Tip, Tip), Tip);
+  let (g1, st2) = declare_types(g0, prelude_decls, "prelude", "prelude", st1);
+  let (g2, st3) = declare_types(g1, user_decls, "user", "user", st2);
+  let (g3, st4, pfns) = declare_fns(g2, prelude_decls, "prelude", st3, 0);
+  let (g, st5, ufns) = declare_fns(g3, user_decls, "user", st4, length(pfns));
+  let all = append(pfns, ufns);
+  let by_index = m_of_list(map(all, |f| (fni_index(f), f)));
+  let edges = m_of_list(map(all, |f| (fni_index(f), global_refs(g, f))));
+  let comps = sccs(edges, map(all, fni_index));
+  let (typed, st6) = fold(comps, (Tip, st5), |acc, comp| match acc {
+    (done, s) -> {
+      let s1 = fold(comp, s, |s, i| { let (v, s2) = new_var(s, 1); set_global_type(s2, fni_internal(m_find(by_index, i)), v) });
+      let (done2, s2) = fold(comp, (done, s1), |acc2, i| match acc2 {
+        (d, sx) -> {
+          let f = m_find(by_index, i);
+          match fni_decl(f) {
+            FnD(name, nsp, ps, ret, body, _) -> {
+              let self_b = BG(name, fni_internal(f), i);
+              let (pb, body2, _, sy) = infer_fn(g, Env(Tip, fni_kind(f)), 1, sx, ps, ret, body, Some(self_b), nsp);
+              (m_set(d, i, XFn(fni_internal(f), name, fni_kind(f), pb, body2)), sy)
+            },
+          }
+        },
+      });
+      let s3 = fold(comp, s2, |s, i| generalize(s, opt_get(global_type(s, fni_internal(m_find(by_index, i)))), 0));
+      (done2, s3)
+    },
+  });
+  let main_f = match find(ufns, |f| match fni_decl(f) { FnD(n, _, _, _, _, _) -> n == "main" }) {
+    Some(f) -> f,
+    None -> fail_at(0, 0, "type", "no `main` function found"),
+  };
+  match fni_decl(main_f) {
+    FnD(_, nsp, ps, _, _, _) -> if !is_empty(ps) { tc_fail(nsp, "`main` must not take any parameters") } else { () },
+  };
+  TProg(map(all, |f| m_find(typed, fni_index(f))), g, st6, fni_internal(main_f))
+}
+
+fn signatures(prog) {
+  match prog {
+    TProg(fns, _, st, _) -> flat_map(fns, |f| match f {
+      XFn(internal, name, origin, _, _) -> if origin == "user" { [name ++ ": " ++ show_type(st, opt_get(global_type(st, internal)))] } else { [] },
+    }),
+  }
+}

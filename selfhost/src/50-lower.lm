@@ -1,0 +1,428 @@
+// ================================================================== lower ==
+// Port of src/lower.js: A-normal form, closure conversion and pattern-match
+// compilation. The reference mutates per-function contexts while lowering;
+// here a stack of immutable contexts is threaded through the LS state, and
+// continuations take and return that state.
+
+type Var { Var(Int, String, Bool) } // id, name, traced
+type Atom { AVar(Var), AImm(Int), AStr(Int), ASclo(String), AEnvf(Int), ASelf }
+type Test { TImm(Int, List<Int>), TIsBlock(List<Int>), TTag(Int, List<Int>), TStrEq(Int, List<Int>) }
+type Bind { Bind(Var, List<Int>) }
+type IR {
+  RAtom(Atom), RLet(Var, IR, IR), RSeq(IR, IR), RPrim(String, List<Atom>), RBuiltin(String, List<Atom>),
+  RCall(String, Option<Atom>, List<Atom>), RCallc(Atom, List<Atom>), RAlloc(Int, List<Atom>), RClosure(String, List<Atom>),
+  RIf(Atom, IR, IR), RMatch(Atom, List<RArm>),
+}
+type RArm { RArm(List<Test>, List<Bind>, Option<IR>, IR) }
+type Func { Func(String, List<Var>, Option<Var>, List<Var>, IR) } // name, params, env, all vars, body
+
+fn var_id(v) { match v { Var(i, _, _) -> i } }
+fn var_traced(v) { match v { Var(_, _, t) -> t } }
+fn func_name(f) { match f { Func(n, _, _, _, _) -> n } }
+
+// Per-function context: name, self binding id (-1: none), bound vars,
+// captured binding ids -> index, captured bindings (reversed), all vars (reversed), env var.
+type FCtx { FCtx(String, Int, Map<Int, Var>, Map<Int, Int>, List<Bnd>, List<Var>, Option<Var>) }
+
+// var counter, functions (None while reserved), function order (reversed),
+// string pool, strings (reversed), known local functions, context stack.
+type LS { LS(Int, Map<String, Option<Func>>, List<String>, Map<String, Int>, List<String>, Map<Int, String>, List<FCtx>) }
+
+type LC { LC(Map<String, TInfo>, TS) } // read-only: type infos, final substitution
+
+fn is_immediate_type(lc, t) {
+  match lc {
+    LC(infos, st) -> match prune(st, t) {
+      TC(name, _) ->
+        if name == "Int" || name == "Bool" || name == "Unit" { true }
+        else {
+          match m_get(infos, name) {
+            Some(TInfo(_, _, _, _, ctors)) -> all(ctors, |c| ctor_arity(c) == 0),
+            None -> false,
+          }
+        },
+      _ -> false,
+    }
+  }
+}
+
+fn traced(lc, t) { !is_immediate_type(lc, t) }
+
+fn ls_top(ls) { match ls { LS(_, _, _, _, _, _, stack) -> match stack { [c, .._] -> c, [] -> panic("internal: no context") } } }
+fn ls_set_top(ls, c) { match ls { LS(n, f, o, sp, sl, k, stack) -> match stack { [_, ..rest] -> LS(n, f, o, sp, sl, k, [c, ..rest]), [] -> panic("internal") } } }
+fn ls_push(ls, c) { match ls { LS(n, f, o, sp, sl, k, stack) -> LS(n, f, o, sp, sl, k, [c, ..stack]) } }
+fn ls_pop(ls) { match ls { LS(n, f, o, sp, sl, k, stack) -> match stack { [c, ..rest] -> (c, LS(n, f, o, sp, sl, k, rest)), [] -> panic("internal") } } }
+fn ls_depth(ls) { match ls { LS(_, _, _, _, _, _, stack) -> length(stack) } }
+
+fn fctx_new(name, self_id) { FCtx(name, self_id, Tip, Tip, [], [], None) }
+fn fctx_name(c) { match c { FCtx(n, _, _, _, _, _, _) -> n } }
+
+// A fresh IR variable in the current function.
+fn new_ir_var(ls, name, is_traced) {
+  match ls {
+    LS(n, f, o, sp, sl, k, stack) -> {
+      let v = Var(n, name, is_traced);
+      match stack {
+        [FCtx(cn, si, vars, caps, cl, all_vars, env), ..rest] -> (v, LS(n + 1, f, o, sp, sl, k, [FCtx(cn, si, vars, caps, cl, [v, ..all_vars], env), ..rest])),
+        [] -> panic("internal"),
+      }
+    },
+  }
+}
+
+// A variable outside any context (wrapper parameters); still uses the global counter.
+fn new_loose_var(ls, name) { match ls { LS(n, f, o, sp, sl, k, stack) -> (Var(n, name, true), LS(n + 1, f, o, sp, sl, k, stack)) } }
+
+fn bnd_id(b) { match b { BL(id, _, _) -> id, _ -> -1 } }
+
+fn ctx_bind(lc, ls, b) {
+  match b {
+    BL(id, name, t) -> {
+      let (v, ls2) = new_ir_var(ls, name, traced(lc, t));
+      match ls_top(ls2) { FCtx(cn, si, vars, caps, cl, av, env) -> (v, ls_set_top(ls2, FCtx(cn, si, m_set(vars, id, v), caps, cl, av, env))) }
+    },
+    _ -> panic("internal: binding a non-local"),
+  }
+}
+
+fn ctx_set_var(ls, id, v) {
+  match ls_top(ls) { FCtx(cn, si, vars, caps, cl, av, env) -> ls_set_top(ls, FCtx(cn, si, m_set(vars, id, v), caps, cl, av, env)) }
+}
+
+fn ctx_env(ls) {
+  match ls_top(ls) {
+    FCtx(_, _, _, _, _, _, Some(_)) -> ls,
+    FCtx(_, _, _, _, _, _, None) -> {
+      let (v, ls2) = new_ir_var(ls, "env", true);
+      match ls_top(ls2) { FCtx(cn, si, vars, caps, cl, av, _) -> ls_set_top(ls2, FCtx(cn, si, vars, caps, cl, av, Some(v))) }
+    },
+  }
+}
+
+fn reserve_func(ls, name) { match ls { LS(n, f, o, sp, sl, k, st) -> LS(n, m_set(f, name, None), [name, ..o], sp, sl, k, st) } }
+fn has_func(ls, name) { match ls { LS(_, f, _, _, _, _, _) -> m_has(f, name) } }
+fn set_func(ls, fnc) {
+  match ls {
+    LS(n, f, o, sp, sl, k, st) -> {
+      let name = func_name(fnc);
+      if m_has(f, name) { LS(n, m_set(f, name, Some(fnc)), o, sp, sl, k, st) } else { LS(n, m_set(f, name, Some(fnc)), [name, ..o], sp, sl, k, st) }
+    },
+  }
+}
+
+fn unique_name(ls, base) {
+  fn go(name, n) { if has_func(ls, name) { go(base ++ int_to_string(n + 1), n + 1) } else { name } }
+  let name = go(base, 1);
+  (name, reserve_func(ls, name))
+}
+
+fn str_atom(ls, s) {
+  match ls {
+    LS(n, f, o, pool, strs, k, st) -> match m_get(pool, s) {
+      Some(i) -> (AStr(i), ls),
+      None -> { let i = length(strs); (AStr(i), LS(n, f, o, m_set(pool, s, i), [s, ..strs], k, st)) },
+    },
+  }
+}
+
+fn known_fn(ls, id) { match ls { LS(_, _, _, _, _, k, _) -> m_get(k, id) } }
+fn set_known_fn(ls, id, name) { match ls { LS(n, f, o, sp, sl, k, st) -> LS(n, f, o, sp, sl, m_set(k, id, name), st) } }
+
+fn builtin_wrapper(ls, name) {
+  let fname = "builtin:" ++ name;
+  if has_func(ls, fname) { (fname, ls) }
+  else {
+    let (params, ls2) = fold(range(0, builtin_arity(name)), ([], ls), |acc, i| match acc {
+      (ps, l) -> { let (v, l2) = new_loose_var(l, "a" ++ int_to_string(i)); ([v, ..ps], l2) },
+    });
+    let ps = reverse(params);
+    (fname, set_func(ls2, Func(fname, ps, None, ps, RBuiltin(name, map(ps, AVar)))))
+  }
+}
+
+fn ctor_wrapper(ls, c) {
+  let fname = "ctor:" ++ ctor_display(c) ++ "." ++ ctor_name(c);
+  if has_func(ls, fname) { (fname, ls) }
+  else {
+    let (params, ls2) = fold(range(0, ctor_arity(c)), ([], ls), |acc, i| match acc {
+      (ps, l) -> { let (v, l2) = new_loose_var(l, "a" ++ int_to_string(i)); ([v, ..ps], l2) },
+    });
+    let ps = reverse(params);
+    (fname, set_func(ls2, Func(fname, ps, None, ps, RAlloc(ctor_index(c), map(ps, AVar)))))
+  }
+}
+
+fn atom_for(lc, ls, b) {
+  match b {
+    BG(_, internal, _) -> (ASclo(internal), ls),
+    BB(name, _) -> { let (f, ls2) = builtin_wrapper(ls, name); (ASclo(f), ls2) },
+    BL(id, name, _) -> match ls_top(ls) {
+      FCtx(cn, si, vars, caps, cl, av, env) -> match m_get(vars, id) {
+        Some(v) -> (AVar(v), ls),
+        None ->
+          if si == id { (ASelf, ctx_env(ls)) }
+          else if ls_depth(ls) <= 1 { panic("internal: unbound variable " ++ name) }
+          else {
+            match m_get(caps, id) {
+              Some(i) -> (AEnvf(i), ctx_env(ls)),
+              None -> {
+                let i = length(cl);
+                (AEnvf(i), ctx_env(ls_set_top(ls, FCtx(cn, si, vars, m_set(caps, id, i), [b, ..cl], av, env))))
+              },
+            }
+          },
+      },
+    },
+  }
+}
+
+fn simple_atom(lc, ls, e) {
+  match e {
+    XInt(n) -> (Some(AImm(n)), ls),
+    XBool(b) -> (Some(AImm(if b { 1 } else { 0 })), ls),
+    XUnit -> (Some(AImm(0)), ls),
+    XStr(s) -> { let (a, ls2) = str_atom(ls, s); (Some(a), ls2) },
+    XVar(b) -> { let (a, ls2) = atom_for(lc, ls, b); (Some(a), ls2) },
+    XCtor(c, None, _) ->
+      if ctor_arity(c) == 0 { (Some(AImm(ctor_index(c))), ls) }
+      else { let (f, ls2) = ctor_wrapper(ls, c); (Some(ASclo(f)), ls2) },
+    _ -> (None, ls),
+  }
+}
+
+fn with_atom(lc, ls, e, k) {
+  match simple_atom(lc, ls, e) {
+    (Some(a), ls1) -> k(a, ls1),
+    (None, ls1) -> {
+      let (rhs, ls2) = lower_expr(lc, ls1, e);
+      match rhs {
+        RAtom(a) -> k(a, ls2),
+        _ -> {
+          let (v, ls3) = new_ir_var(ls2, "t", traced(lc, te_ty(e)));
+          let (body, ls4) = k(AVar(v), ls3);
+          (RLet(v, rhs, body), ls4)
+        },
+      }
+    },
+  }
+}
+
+fn with_atoms(lc, ls, es, k) {
+  fn go(ls, rest, acc) {
+    match rest {
+      [] -> k(reverse(acc), ls),
+      [e, ..more] -> with_atom(lc, ls, e, |a, ls2| go(ls2, more, [a, ..acc])),
+    }
+  }
+  go(ls, es, [])
+}
+
+fn arith_prim(op) {
+  match op { "+" -> "add", "-" -> "sub", "*" -> "mul", "/" -> "div", "%" -> "rem", "++" -> "concat", _ -> "" }
+}
+
+fn cmp_prim(op) {
+  match op { "==" -> "eq", "!=" -> "ne", "<" -> "lt", "<=" -> "le", ">" -> "gt", ">=" -> "ge", _ -> panic("internal: op " ++ op) }
+}
+
+fn lower_expr(lc, ls, e) {
+  match simple_atom(lc, ls, e) {
+    (Some(a), ls1) -> (RAtom(a), ls1),
+    (None, ls1) -> match e {
+      XCtor(c, Some(args), _) -> with_atoms(lc, ls1, args, |as, l| (RAlloc(ctor_index(c), as), l)),
+      XTuple(xs, _) -> with_atoms(lc, ls1, xs, |as, l| (RAlloc(0, as), l)),
+      XCall(fe, args, _) -> lower_call(lc, ls1, fe, args),
+      XLam(params, body, _) -> lower_function(lc, ls1, "lambda", params, body, None),
+      XBin(op, l, r, _, opty) ->
+        if op == "&&" {
+          with_atom(lc, ls1, l, |a, l1| { let (t, l2) = lower_expr(lc, l1, r); (RIf(a, t, RAtom(AImm(0))), l2) })
+        } else if op == "||" {
+          with_atom(lc, ls1, l, |a, l1| { let (f, l2) = lower_expr(lc, l1, r); (RIf(a, RAtom(AImm(1)), f), l2) })
+        } else {
+          let prim = if arith_prim(op) != "" { arith_prim(op) } else { cmp_prim(op) ++ if is_immediate_type(lc, opty) { "_imm" } else { "" } };
+          with_atom(lc, ls1, l, |a, l1| with_atom(lc, l1, r, |b, l2| (RPrim(prim, [a, b]), l2)))
+        },
+      XUn(op, x, _) -> with_atom(lc, ls1, x, |a, l| (RPrim(if op == "-" { "neg" } else { "not" }, [a]), l)),
+      XIf(c, t, el, _) -> with_atom(lc, ls1, c, |a, l1| {
+        let (t2, l2) = lower_expr(lc, l1, t);
+        let (e2, l3) = match el { Some(x) -> lower_expr(lc, l2, x), None -> (RAtom(AImm(0)), l2) };
+        (RIf(a, t2, e2), l3)
+      }),
+      XMatch(s, arms, _, _, _) -> with_atom(lc, ls1, s, |a, l1| {
+        let (rarms, l2) = fold(arms, ([], l1), |acc, arm| match (acc, arm) {
+          ((out, l), XArm(p, guard, body)) -> {
+            let (tests, binds, la) = compile_pattern(lc, l, p);
+            let (g, lb) = match guard { Some(gd) -> { let (g2, lx) = lower_expr(lc, la, gd); (Some(g2), lx) }, None -> (None, la) };
+            let (b2, lc2) = lower_expr(lc, lb, body);
+            ([RArm(tests, binds, g, b2), ..out], lc2)
+          },
+        });
+        (RMatch(a, reverse(rarms)), l2)
+      }),
+      XBlock(stmts, result, _) -> lower_block(lc, ls1, stmts, result),
+      _ -> panic("internal: lower_expr"),
+    },
+  }
+}
+
+fn lower_call(lc, ls, fe, args) {
+  match fe {
+    XVar(BG(_, internal, _)) -> with_atoms(lc, ls, args, |as, l| (RCall(internal, None, as), l)),
+    XVar(BB(name, _)) -> with_atoms(lc, ls, args, |as, l| (RBuiltin(name, as), l)),
+    XVar(b) if opt_is_some(known_fn(ls, bnd_id(b))) -> {
+      let (env, ls2) = atom_for(lc, ls, b);
+      let target = opt_get(known_fn(ls2, bnd_id(b)));
+      with_atoms(lc, ls2, args, |as, l| (RCall(target, Some(env), as), l))
+    },
+    _ -> with_atom(lc, ls, fe, |clo, l1| with_atoms(lc, l1, args, |as, l2| (RCallc(clo, as), l2))),
+  }
+}
+
+// Lowers a lambda or local function to a lifted IR function; returns the
+// expression that builds its closure (a static closure if it captures nothing).
+fn lower_function(lc, ls, fname, params, body, self_bnd) {
+  let parent = fctx_name(ls_top(ls));
+  let base = match self_bnd { Some(_) -> parent ++ "." ++ fname, None -> parent ++ ".lambda" };
+  let (name, ls1) = unique_name(ls, base);
+  let ls2 = match self_bnd { Some(b) -> set_known_fn(ls1, bnd_id(b), name), None -> ls1 };
+  let ls3 = ls_push(ls2, fctx_new(name, match self_bnd { Some(b) -> bnd_id(b), None -> -1 }));
+  let (pvars, ls4) = fold(params, ([], ls3), |acc, p| match acc { (vs, l) -> { let (v, l2) = ctx_bind(lc, l, p); ([v, ..vs], l2) } });
+  let (body2, ls5) = lower_expr(lc, ls4, body);
+  let (ctx, ls6) = ls_pop(ls5);
+  match ctx {
+    FCtx(_, _, _, _, captured, all_vars, env) -> {
+      let ls7 = set_func(ls6, Func(name, reverse(pvars), env, reverse(all_vars), body2));
+      if is_empty(captured) { (RAtom(ASclo(name)), ls7) }
+      else {
+        let (atoms, ls8) = fold(reverse(captured), ([], ls7), |acc, b| match acc { (as, l) -> { let (a, l2) = atom_for(lc, l, b); ([a, ..as], l2) } });
+        (RClosure(name, reverse(atoms)), ls8)
+      }
+    },
+  }
+}
+
+fn lower_block(lc, ls, stmts, result) {
+  match stmts {
+    [] -> match result { Some(r) -> lower_expr(lc, ls, r), None -> (RAtom(AImm(0)), ls) },
+    [s, ..rest] -> match s {
+      XSExpr(e) -> {
+        let (first, ls1) = lower_expr(lc, ls, e);
+        let (more, ls2) = lower_block(lc, ls1, rest, result);
+        (RSeq(first, more), ls2)
+      },
+      XSFn(name, b, params, body) -> {
+        let (v, ls1) = new_ir_var(ls, name, true);
+        let (clo, ls2) = lower_function(lc, ls1, name, params, body, Some(b));
+        let ls3 = ctx_set_var(ls2, bnd_id(b), v);
+        let (more, ls4) = lower_block(lc, ls3, rest, result);
+        (RLet(v, clo, more), ls4)
+      },
+      XSLet(QVar(b, _), e, _) -> {
+        let (rhs, ls1) = lower_expr(lc, ls, e);
+        let (v, ls2) = ctx_bind(lc, ls1, b);
+        let (more, ls3) = lower_block(lc, ls2, rest, result);
+        (RLet(v, rhs, more), ls3)
+      },
+      XSLet(QWild(_), e, _) -> {
+        let (first, ls1) = lower_expr(lc, ls, e);
+        let (more, ls2) = lower_block(lc, ls1, rest, result);
+        (RSeq(first, more), ls2)
+      },
+      XSLet(p, e, _) -> with_atom(lc, ls, e, |scrut, l1| {
+        let (tests, binds, l2) = compile_pattern(lc, l1, p);
+        let (more, l3) = lower_block(lc, l2, rest, result);
+        (RMatch(scrut, [RArm(tests, binds, None, more)]), l3)
+      }),
+    },
+  }
+}
+
+// Flattens a pattern into tag tests and bindings addressed by field paths, in
+// pre-order, so a field is loaded only after its parent's tag is checked.
+fn compile_pattern(lc, ls, pat) {
+  fn walk(acc, p, path) {
+    match acc {
+      (tests, binds, ls) -> match p {
+        QWild(_) -> acc,
+        QUnit(_) -> acc,
+        QVar(b, _) -> { let (v, ls2) = ctx_bind(lc, ls, b); (tests, [Bind(v, path), ..binds], ls2) },
+        QInt(n, _) -> ([TImm(n, path), ..tests], binds, ls),
+        QBool(b, _) -> ([TImm(if b { 1 } else { 0 }, path), ..tests], binds, ls),
+        QStr(s, _) -> match str_atom(ls, s) { (AStr(i), ls2) -> ([TStrEq(i, path), ..tests], binds, ls2), _ -> panic("internal") },
+        QTuple(ps, _) -> fold(indexed(ps), acc, |a, ip| match ip { (i, q) -> walk(a, q, append(path, [i])) }),
+        QCtor(c, ps, _) -> {
+          let t1 =
+            if ctor_arity(c) == 0 { if ctor_count(c) > 1 { [TImm(ctor_index(c), path), ..tests] } else { tests } }
+            else {
+              let ta = if ctor_nullary(c) > 0 { [TIsBlock(path), ..tests] } else { tests };
+              if ctor_nblock(c) > 1 { [TTag(ctor_index(c), path), ..ta] } else { ta }
+            };
+          fold(indexed(ps), (t1, binds, ls), |a, ip| match ip { (i, q) -> walk(a, q, append(path, [i])) })
+        },
+      },
+    }
+  }
+  let (tests, binds, ls2) = walk(([], [], ls), pat, []);
+  (reverse(tests), reverse(binds), ls2)
+}
+
+type IRProg { IRProg(List<Func>, List<String>, String) } // functions in order, string pool, entry
+
+fn lower(prog) {
+  match prog {
+    TProg(fns, g, st, main_name) -> {
+      let lc = LC(g_type_infos(g), st);
+      let ls0 = fold(fns, LS(0, Tip, [], Tip, [], Tip, []), |l, f| match f { XFn(internal, _, _, _, _) -> reserve_func(l, internal) });
+      let ls1 = fold(fns, ls0, |l, f| match f {
+        XFn(internal, _, _, params, body) -> {
+          let l1 = ls_push(l, fctx_new(internal, -1));
+          let (pvars, l2) = fold(params, ([], l1), |acc, p| match acc { (vs, lx) -> { let (v, ly) = ctx_bind(lc, lx, p); ([v, ..vs], ly) } });
+          let (body2, l3) = lower_expr(lc, l2, body);
+          let (ctx, l4) = ls_pop(l3);
+          match ctx { FCtx(_, _, _, _, _, all_vars, _) -> set_func(l4, Func(internal, reverse(pvars), None, reverse(all_vars), body2)) }
+        },
+      });
+      match ls1 {
+        LS(_, funcs, order, _, strs, _, _) -> IRProg(map(reverse(order), |n| opt_get(m_find(funcs, n))), reverse(strs), main_name),
+      }
+    },
+  }
+}
+
+// Functions reachable from the entry point, in definition order.
+fn reachable_functions(ir) {
+  match ir {
+    IRProg(funcs, _, entry) -> {
+      let by_name = m_of_list(map(funcs, |f| (func_name(f), f)));
+      fn atom_fn(a, work) { match a { ASclo(f) -> [f, ..work], _ -> work } }
+      fn opt_atom(o, work) { match o { Some(a) -> atom_fn(a, work), None -> work } }
+      fn visit(e, work) {
+        match e {
+          RAtom(a) -> atom_fn(a, work),
+          RLet(_, r, b) -> visit(b, visit(r, work)),
+          RSeq(a, b) -> visit(b, visit(a, work)),
+          RPrim(_, as) -> fold(as, work, |w, a| atom_fn(a, w)),
+          RBuiltin(_, as) -> fold(as, work, |w, a| atom_fn(a, w)),
+          RAlloc(_, as) -> fold(as, work, |w, a| atom_fn(a, w)),
+          RCall(f, env, as) -> fold(as, opt_atom(env, [f, ..work]), |w, a| atom_fn(a, w)),
+          RCallc(c, as) -> fold(as, atom_fn(c, work), |w, a| atom_fn(a, w)),
+          RClosure(f, as) -> fold(as, [f, ..work], |w, a| atom_fn(a, w)),
+          RIf(c, t, el) -> visit(el, visit(t, atom_fn(c, work))),
+          RMatch(s, arms) -> fold(arms, atom_fn(s, work), |w, arm| match arm {
+            RArm(_, _, g, b) -> visit(b, match g { Some(gx) -> visit(gx, w), None -> w }),
+          }),
+        }
+      }
+      fn go(work, seen) {
+        match work {
+          [] -> seen,
+          [name, ..rest] -> if s_has(seen, name) { go(rest, seen) } else {
+            match m_find(by_name, name) { Func(_, _, _, _, body) -> go(visit(body, rest), s_add(seen, name)) }
+          },
+        }
+      }
+      let seen = go([entry], Tip);
+      filter(funcs, |f| s_has(seen, func_name(f)))
+    },
+  }
+}

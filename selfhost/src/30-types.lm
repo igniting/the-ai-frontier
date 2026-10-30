@@ -1,0 +1,195 @@
+// ================================================================== types ==
+// Port of src/types.js. The reference mutates type variables (union-find
+// links and levels); here the substitution and the levels are persistent maps
+// threaded through inference in the TS state.
+
+type Ty { TV(Int), TC(String, List<Ty>), TF(List<Ty>, Ty), TT(List<Ty>) }
+
+fn t_int() { TC("Int", []) }
+fn t_bool() { TC("Bool", []) }
+fn t_string() { TC("String", []) }
+fn t_unit() { TC("Unit", []) }
+
+fn generic_level() { 1000000000 }
+
+// next type variable id, substitution, levels, next binding id, types of global functions
+type TS { TS(Int, Map<Int, Ty>, Map<Int, Int>, Int, Map<String, Ty>) }
+
+fn ts_new() { TS(0, Tip, Tip, 0, Tip) }
+
+fn new_var(st, lvl) {
+  match st { TS(n, sub, lv, b, g) -> (TV(n), TS(n + 1, sub, m_set(lv, n, lvl), b, g)) }
+}
+
+fn new_vars(st, lvl, count) {
+  fn go(st, k, acc) {
+    if k == 0 { (reverse(acc), st) } else { let (v, st2) = new_var(st, lvl); go(st2, k - 1, [v, ..acc]) }
+  }
+  go(st, count, [])
+}
+
+fn new_binding_id(st) { match st { TS(n, sub, lv, b, g) -> (b, TS(n, sub, lv, b + 1, g)) } }
+
+fn level_of(st, id) { match st { TS(_, _, lv, _, _) -> unwrap_or(m_get(lv, id), 0) } }
+fn set_level(st, id, l) { match st { TS(n, sub, lv, b, g) -> TS(n, sub, m_set(lv, id, l), b, g) } }
+fn bind_tv(st, id, t) { match st { TS(n, sub, lv, b, g) -> TS(n, m_set(sub, id, t), lv, b, g) } }
+fn global_type(st, name) { match st { TS(_, _, _, _, g) -> m_get(g, name) } }
+fn set_global_type(st, name, t) { match st { TS(n, sub, lv, b, g) -> TS(n, sub, lv, b, m_set(g, name, t)) } }
+
+fn prune(st, t) {
+  match t {
+    TV(id) -> match st { TS(_, sub, _, _, _) -> match m_get(sub, id) { Some(t2) -> prune(st, t2), None -> t } },
+    _ -> t,
+  }
+}
+
+type UR { UOk(TS), UErr(String, Ty, Ty, TS) }
+
+// Occurs check that also lowers the levels of the variables in t to at most vl.
+fn occurs_adjust(st, v, vl, t) {
+  match prune(st, t) {
+    TV(id) -> if id == v { None } else if level_of(st, id) > vl { Some(set_level(st, id, vl)) } else { Some(st) },
+    TC(_, args) -> occurs_list(st, v, vl, args),
+    TF(ps, r) -> occurs_list(st, v, vl, append(ps, [r])),
+    TT(xs) -> occurs_list(st, v, vl, xs),
+  }
+}
+
+fn occurs_list(st, v, vl, ts) {
+  match ts {
+    [] -> Some(st),
+    [t, ..rest] -> match occurs_adjust(st, v, vl, t) { Some(st2) -> occurs_list(st2, v, vl, rest), None -> None },
+  }
+}
+
+fn unify(st, a, b) {
+  let a1 = prune(st, a);
+  let b1 = prune(st, b);
+  match (a1, b1) {
+    (TV(x), TV(y)) if x == y -> UOk(st),
+    (TV(x), _) -> bind_checked(st, x, b1),
+    (_, TV(y)) -> bind_checked(st, y, a1),
+    (TC(n1, as1), TC(n2, as2)) ->
+      if n1 != n2 || length(as1) != length(as2) { UErr("mismatch", a1, b1, st) } else { unify_lists(st, as1, as2) },
+    (TF(p1, r1), TF(p2, r2)) ->
+      if length(p1) != length(p2) { UErr("arity", a1, b1, st) } else { unify_lists(st, append(p1, [r1]), append(p2, [r2])) },
+    (TT(x1), TT(x2)) ->
+      if length(x1) != length(x2) { UErr("mismatch", a1, b1, st) } else { unify_lists(st, x1, x2) },
+    _ -> UErr("mismatch", a1, b1, st),
+  }
+}
+
+fn bind_checked(st, v, t) {
+  match occurs_adjust(st, v, level_of(st, v), t) {
+    Some(st2) -> UOk(bind_tv(st2, v, t)),
+    None -> UErr("occurs", TV(v), t, st),
+  }
+}
+
+fn unify_lists(st, xs, ys) {
+  match (xs, ys) {
+    ([x, ..xr], [y, ..yr]) -> match unify(st, x, y) { UOk(st2) -> unify_lists(st2, xr, yr), err -> err },
+    _ -> UOk(st),
+  }
+}
+
+fn generalize(st, t, lvl) {
+  match prune(st, t) {
+    TV(id) -> {
+      let l = level_of(st, id);
+      if l > lvl && l != generic_level() { set_level(st, id, generic_level()) } else { st }
+    },
+    TC(_, args) -> fold(args, st, |s, a| generalize(s, a, lvl)),
+    TF(ps, r) -> generalize(fold(ps, st, |s, p| generalize(s, p, lvl)), r, lvl),
+    TT(xs) -> fold(xs, st, |s, x| generalize(s, x, lvl)),
+  }
+}
+
+// Copies t, replacing generic variables with fresh ones (shared within one call).
+fn inst_ty(st, memo, lvl, t) {
+  match prune(st, t) {
+    TV(id) ->
+      if level_of(st, id) != generic_level() { (TV(id), st, memo) }
+      else {
+        match m_get(memo, id) {
+          Some(v) -> (v, st, memo),
+          None -> { let (v, st2) = new_var(st, lvl); (v, st2, m_set(memo, id, v)) },
+        }
+      },
+    TC(name, args) -> { let (args2, st2, memo2) = inst_tys(st, memo, lvl, args); (TC(name, args2), st2, memo2) },
+    TF(ps, r) -> {
+      let (ps2, st2, memo2) = inst_tys(st, memo, lvl, ps);
+      let (r2, st3, memo3) = inst_ty(st2, memo2, lvl, r);
+      (TF(ps2, r2), st3, memo3)
+    },
+    TT(xs) -> { let (xs2, st2, memo2) = inst_tys(st, memo, lvl, xs); (TT(xs2), st2, memo2) },
+  }
+}
+
+fn inst_tys(st, memo, lvl, ts) {
+  fn go(st, memo, ts, acc) {
+    match ts {
+      [] -> (reverse(acc), st, memo),
+      [t, ..rest] -> { let (t2, st2, memo2) = inst_ty(st, memo, lvl, t); go(st2, memo2, rest, [t2, ..acc]) },
+    }
+  }
+  go(st, memo, ts, [])
+}
+
+fn instantiate(st, t, lvl) {
+  let (t2, st2, _) = inst_ty(st, Tip, lvl, t);
+  (t2, st2)
+}
+
+// Replaces variables by identity (used to specialize constructor field types).
+fn subst_ty(st, t, mapping) {
+  match prune(st, t) {
+    TV(id) -> unwrap_or(m_get(mapping, id), TV(id)),
+    TC(name, args) -> TC(name, map(args, |a| subst_ty(st, a, mapping))),
+    TF(ps, r) -> TF(map(ps, |p| subst_ty(st, p, mapping)), subst_ty(st, r, mapping)),
+    TT(xs) -> TT(map(xs, |x| subst_ty(st, x, mapping))),
+  }
+}
+
+fn display_name(name) {
+  let n = string_length(name);
+  fn hash_at(i) { if i >= n { n } else if char_code_at(name, i) == 35 { i } else { hash_at(i + 1) } }
+  substring(name, 0, hash_at(0))
+}
+
+// Prints several types with one shared naming of variables (a, b, ...), in
+// order of first appearance, like the reference TypePrinter.
+fn var_name(k) { char_from_code(97 + k % 26) ++ if k >= 26 { int_to_string(k / 26) } else { "" } }
+
+fn show_ty(st, names, t) {
+  match prune(st, t) {
+    TV(id) -> match m_get(names, id) {
+      Some(k) -> (var_name(k), names),
+      None -> { let k = length(m_keys(names)); (var_name(k), m_set(names, id, k)) },
+    },
+    TC(name, args) ->
+      if name == "Unit" { ("()", names) }
+      else if is_empty(args) { (display_name(name), names) }
+      else { let (ss, n2) = show_tys(st, names, args); (display_name(name) ++ "<" ++ join(ss, ", ") ++ ">", n2) },
+    TF(ps, r) -> {
+      let (ss, n2) = show_tys(st, names, ps);
+      let (rs, n3) = show_ty(st, n2, r);
+      ("fn(" ++ join(ss, ", ") ++ ") -> " ++ rs, n3)
+    },
+    TT(xs) -> {
+      let (ss, n2) = show_tys(st, names, xs);
+      ("(" ++ join(ss, ", ") ++ (if length(xs) == 1 { "," } else { "" }) ++ ")", n2)
+    },
+  }
+}
+
+fn show_tys(st, names, ts) {
+  fn go(ts, names, acc) {
+    match ts { [] -> (reverse(acc), names), [t, ..rest] -> { let (s, n2) = show_ty(st, names, t); go(rest, n2, [s, ..acc]) } }
+  }
+  go(ts, names, [])
+}
+
+fn show_types(st, ts) { let (out, _) = show_tys(st, Tip, ts); out }
+
+fn show_type(st, t) { list_get(show_types(st, [t]), 0) }
