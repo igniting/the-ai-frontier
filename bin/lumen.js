@@ -40,7 +40,7 @@ switch (cmd) {
       const r = interpretSource(src, { input });
       report(r);
       out(r.output);
-      if (r.error) { console.error(color(31, `runtime error: ${r.error}`)); process.exit(1); }
+      if (r.error) { console.error(color(31, `runtime error: ${r.error}`)); process.exitCode = 1; } // not process.exit(), which can drop output still queued for a pipe
       break;
     }
     const c = compile(src, { gcStress: flag('--gc-stress'), optimize });
@@ -56,7 +56,7 @@ switch (cmd) {
         `run:     ${ms(r.timeMs)}, ${r.stats.gcCount} collections, ${(r.stats.allocatedBytes / 1e6).toFixed(1)} MB allocated, heap ${(r.stats.heapBytes / 1024).toFixed(0)} KiB`,
       ].join('\n')));
     }
-    if (r.error) { console.error(color(31, `runtime error: ${r.error}`)); process.exit(1); }
+    if (r.error) { console.error(color(31, `runtime error: ${r.error}`)); process.exitCode = 1; } // not process.exit(), which can drop output still queued for a pipe
     break;
   }
   case 'build': {
