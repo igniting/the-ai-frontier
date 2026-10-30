@@ -6,7 +6,7 @@
 //   * instructions: wasm instructions executed (deterministic; counted by
 //     an instrumented build — the campaign's primary metric),
 //   * time: best wall-clock time of N runs of the uninstrumented build,
-//   * bytes: size of the uninstrumented binary,
+//   * bytes: size of the uninstrumented binary (and memory: final linear memory size),
 // and checks that every configuration prints exactly what the baseline does.
 // --record LABEL appends the -O results to bench/history.json.
 
@@ -57,7 +57,7 @@ export function benchProgram(p, config, runs = RUNS) {
     times.push(r.timeMs);
   }
   if (c.output !== output) throw new Error(`${p.name} (${config}): the instrumented build printed something else`);
-  return { instructions: c.stats.instructions, ms: +Math.min(...times).toFixed(2), bytes: plain.wasm.length, output };
+  return { instructions: c.stats.instructions, ms: +Math.min(...times).toFixed(2), bytes: plain.wasm.length, memory: c.stats.memoryBytes, output };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
@@ -83,7 +83,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   if (configs.length > 1) {
     const [a, b] = configs;
     const geo = (key) => Math.exp(Object.values(results).reduce((s, r) => s + Math.log(r[b][key] / r[a][key]), 0) / Object.keys(results).length);
-    console.log(`\ngeometric mean ${b} vs ${a}: instructions ${((geo('instructions') - 1) * 100).toFixed(1)}%, time ${((geo('ms') - 1) * 100).toFixed(1)}%, size ${((geo('bytes') - 1) * 100).toFixed(1)}%`);
+    console.log(`\ngeometric mean ${b} vs ${a}: instructions ${((geo('instructions') - 1) * 100).toFixed(1)}%, time ${((geo('ms') - 1) * 100).toFixed(1)}%, size ${((geo('bytes') - 1) * 100).toFixed(1)}%, memory ${((geo('memory') - 1) * 100).toFixed(1)}%`);
   }
   if (record) {
     const file = 'bench/history.json';

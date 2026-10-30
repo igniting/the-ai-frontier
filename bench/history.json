@@ -234,5 +234,145 @@
     "bytes": 12268
    }
   }
+ },
+ {
+  "label": "2. re-mine the superoptimizer on forwarded code (43 rules)",
+  "commit": "03df892",
+  "results": {
+   "lumenc": {
+    "instructions": 2916078800,
+    "ms": 612.35,
+    "bytes": 270990,
+    "memory": 133234688
+   },
+   "fib": {
+    "instructions": 46085652,
+    "ms": 7.35,
+    "bytes": 3603,
+    "memory": 3211264
+   },
+   "sort": {
+    "instructions": 937992108,
+    "ms": 116.27,
+    "bytes": 8331,
+    "memory": 16187392
+   },
+   "strings": {
+    "instructions": 266068904,
+    "ms": 37.32,
+    "bytes": 7032,
+    "memory": 3211264
+   },
+   "gc_torture": {
+    "instructions": 1843880691,
+    "ms": 244.18,
+    "bytes": 6215,
+    "memory": 34013184
+   },
+   "red_black_tree": {
+    "instructions": 549549185,
+    "ms": 80.54,
+    "bytes": 10545,
+    "memory": 32571392
+   },
+   "tail_calls": {
+    "instructions": 680526769,
+    "ms": 78.97,
+    "bytes": 5155,
+    "memory": 67567616
+   },
+   "nqueens": {
+    "instructions": 278020568,
+    "ms": 46.73,
+    "bytes": 8040,
+    "memory": 3211264
+   },
+   "life": {
+    "instructions": 71141178,
+    "ms": 10.14,
+    "bytes": 10106,
+    "memory": 3211264
+   },
+   "mandelbrot": {
+    "instructions": 10139089,
+    "ms": 1.16,
+    "bytes": 6586,
+    "memory": 3211264
+   },
+   "huffman": {
+    "instructions": 1008522,
+    "ms": 0.23,
+    "bytes": 11974,
+    "memory": 3211264
+   }
+  },
+  "base": {
+   "lumenc": {
+    "instructions": 3104348933,
+    "ms": 688.53,
+    "bytes": 280769,
+    "memory": 133234688
+   },
+   "fib": {
+    "instructions": 75743500,
+    "ms": 7.49,
+    "bytes": 3669,
+    "memory": 3211264
+   },
+   "sort": {
+    "instructions": 975728419,
+    "ms": 114.12,
+    "bytes": 8545,
+    "memory": 16187392
+   },
+   "strings": {
+    "instructions": 279633925,
+    "ms": 36.21,
+    "bytes": 7184,
+    "memory": 3211264
+   },
+   "gc_torture": {
+    "instructions": 1886016845,
+    "ms": 244.7,
+    "bytes": 6352,
+    "memory": 34013184
+   },
+   "red_black_tree": {
+    "instructions": 578604750,
+    "ms": 83.22,
+    "bytes": 10818,
+    "memory": 32571392
+   },
+   "tail_calls": {
+    "instructions": 851699575,
+    "ms": 87.72,
+    "bytes": 5345,
+    "memory": 67567616
+   },
+   "nqueens": {
+    "instructions": 318967128,
+    "ms": 46.23,
+    "bytes": 8236,
+    "memory": 3211264
+   },
+   "life": {
+    "instructions": 73452932,
+    "ms": 10.48,
+    "bytes": 10359,
+    "memory": 3211264
+   },
+   "mandelbrot": {
+    "instructions": 11476510,
+    "ms": 1.25,
+    "bytes": 6750,
+    "memory": 3211264
+   },
+   "huffman": {
+    "instructions": 1080496,
+    "ms": 0.24,
+    "bytes": 12268,
+    "memory": 3211264
+   }
+  }
  }
 ]

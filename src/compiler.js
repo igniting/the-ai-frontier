@@ -110,6 +110,7 @@ function finish(state, instance, run) {
   return {
     output: state.output,
     error,
+    exports: ex,
     timeMs: now() - t,
     stats: {
       gcCount: ex.gc_count.value,

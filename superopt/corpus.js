@@ -8,6 +8,7 @@ import { typecheck } from '../src/typecheck.js';
 import { PRELUDE } from '../src/prelude.js';
 import { lower } from '../src/lower.js';
 import { codegen } from '../src/codegen.js';
+import { forwardTemps } from '../src/optimize.js';
 import { PURE_OPS, arity } from './bv.js';
 import { generateProgram, renderProgram } from '../fuzz/generate.js';
 
@@ -20,7 +21,10 @@ export function corpusModules({ fuzz = 60, options = {} } = {}) {
   for (const src of sources) {
     try {
       const checked = typecheck(parse(PRELUDE), parse(src));
-      mods.push(codegen(lower(checked), options).mod);
+      const { mod } = codegen(lower(checked), options);
+      // The rules run after -O's earlier passes, so mine code in that shape.
+      for (const f of mod.funcs) if (f.oddLocals) forwardTemps(f);
+      mods.push(mod);
     } catch { /* error examples */ }
   }
   return mods;
