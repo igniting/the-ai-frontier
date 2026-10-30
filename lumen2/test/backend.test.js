@@ -90,6 +90,15 @@ test('reuse: rebuilding a uniquely owned list or tree allocates nothing new', ()
   const shared = allocs('fn main() { let xs = range(0, 100000); println(int_to_string(length(reverse(xs)) + length(xs))) }');
   assert.ok(reversed - base < 10, `reverse of a unique list reuses its cells (${reversed - base} extra allocations)`);
   assert.ok(shared - base >= 100000, 'reverse of a shared list copies it');
+  // Inserting into a tree held once allocates only the new leaf; into a shared
+  // tree, it copies the path to the leaf.
+  const tree = (extra) => `type Tree { Leaf, Node(Tree, Int, Tree) }
+    fn insert(t, x) { match t { Leaf -> Node(Leaf, x, Leaf), Node(l, y, r) -> if x < y { Node(insert(l, x), y, r) } else if x > y { Node(l, y, insert(r, x)) } else { t } } }
+    fn size(t) { match t { Leaf -> 0, Node(l, _, r) -> size(l) + 1 + size(r) } }
+    fn main() { let t = fold(range(0, 1000), Leaf, |t, i| insert(t, (i * 7919) % 1000)); ${extra} }`;
+  const t0 = allocs(tree('println(int_to_string(size(t)))'));
+  assert.equal(allocs(tree('let u = insert(t, 5000); println(int_to_string(size(u)))')) - t0, 1);
+  assert.ok(allocs(tree('let u = insert(t, 5000); println(int_to_string(size(u) + size(t)))')) - t0 > 1);
   // Without reuse, the same program allocates a second list.
   const noReuse = runWasm(compileSource('fn main() { let xs = range(0, 100000); println(int_to_string(length(reverse(xs)))) }', { reuse: false }).bytes);
   assert.ok(noReuse.allocs - base >= 100000);
