@@ -3,6 +3,7 @@
 const $ = (id) => document.getElementById(id);
 const num = (n) => n.toLocaleString('en-US');
 const ms = (x) => (x < 10 ? `${x.toFixed(1)} ms` : `${Math.round(x)} ms`);
+const secs = (x) => (x < 1000 ? ms(x) : `${(x / 1000).toFixed(1)} s`);
 const kib = (n) => (n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KiB`);
 
 // Old playground links (…/#nqueens) now live on their own page.
@@ -195,14 +196,14 @@ function proveSchur(k, n) {
   const mark = (step, ok, text) => { const c = cell(step); c.className = `verdict-cell ${ok ? 'ok' : 'bad'}`; c.textContent = text; };
   schur.onmessage = ({ data: m }) => {
     if (m.step === 'encode') mark('encode', m.agree, `${m.agree ? '✓' : '✗'} ${num(m.clauses[0])} and ${num(m.clauses[1])} clauses, ${m.agree ? 'identical' : 'DIFFERENT'}`);
-    else if (m.step === 'witness' && !m.done) cell('witness').textContent = `searching… ${num(m.progress)} clauses learnt`;
+    else if (m.step === 'witness' && !m.done) cell('witness').textContent = `searching… ${num(m.progress)} clauses learned`;
     else if (m.step === 'witness') {
-      mark('witness', m.ok, m.ok ? `✓ found in ${ms(m.ms)}; every group is sum-free` : `✗ ${m.error}`);
+      mark('witness', m.ok, m.ok ? `✓ found in ${secs(m.ms)}; every group is sum-free` : `✗ ${m.error}`);
       if (m.groups) { groupsEl.hidden = false; groupsEl.textContent = m.groups.map((g, i) => `group ${i + 1}: ${g.join(' ')}`).join('\n'); }
-    } else if (m.step === 'refute' && !m.done) cell('refute').textContent = `${num(m.progress)} clauses learnt so far…`;
-    else if (m.step === 'refute') mark('refute', !m.sat, m.sat ? '✗ a split exists?!' : `✓ refuted: ${num(m.lemmas)} learnt clauses in ${(m.ms / 1000).toFixed(1)} s`);
+    } else if (m.step === 'refute' && !m.done) cell('refute').textContent = `${num(m.progress)} clauses learned so far…`;
+    else if (m.step === 'refute') mark('refute', !m.sat, m.sat ? '✗ a split exists?!' : `✓ refuted: ${num(m.lemmas)} learned clauses in ${secs(m.ms)}`);
     else if (m.step === 'check' && !m.done) cell('check').textContent = `checked ${num(m.progress)} of ${num(m.total)}…`;
-    else if (m.step === 'check') mark('check', m.ok, m.ok ? `✓ all ${num(m.lemmas)} steps valid (${(m.ms / 1000).toFixed(1)} s)` : `✗ rejected: ${m.reason}`);
+    else if (m.step === 'check') mark('check', m.ok, m.ok ? `✓ all ${num(m.lemmas)} steps valid (${secs(m.ms)})` : `✗ rejected: ${m.reason}`);
     else if (m.step === 'done' || m.step === 'failed') {
       buttons.forEach((b) => { b.disabled = false; });
       verdict.hidden = false;
