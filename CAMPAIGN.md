@@ -42,8 +42,8 @@ kept:
 2. Differential fuzzing on fresh random seeds: 4,500 programs, each run those
    five ways, with exact agreement required.
 3. Mutation testing: every deliberately injected compiler or optimizer bug must
-   be caught. The suite grew from 18 to 27 mutants during the campaign. Every
-   new pass got mutants of its own.
+   be caught. The suite grew from 18 to 27 mutants over steps 0–8, and to 34
+   with arrays and step 9. Every new pass got mutants of its own.
 4. Every superoptimizer rule re-proved from scratch, with its proof checked.
 5. The self-hosted bootstrap reaches its byte-identical fixed point.
 6. The benchmarks: every `-O` build must print exactly what the default build
@@ -69,7 +69,8 @@ output.
 | 5 | zero only frame slots a collection could see unwritten | −23.9% | −22.6% | +2.8% | +26.6% |
 | 6 | mine rules to a fixed point, with side conditions | −24.0% | −22.6% | +2.8% | +26.6% |
 | 7 | forward frame-slot loads between GC points | −25.2% | −24.6% | +0.9% | +26.6% |
-| 8 | self tail calls become loops | **−27.3%** | **−26.9%** | +1.3% | +26.6% |
+| 8 | self tail calls become loops | −27.3% | −26.9% | +1.3% | +26.6% |
+| 9 | inline array access; no frame where nothing can collect | **−31.2%** | **−35.1%** | −1.8% | +26.6% |
 
 All figures are relative to the default build. The raw numbers for every
 benchmark are in `bench/history.json`.
@@ -161,6 +162,31 @@ against step 7: `lumenc` −10%, `sort` −14%, `nqueens` −10%, `gc_torture` �
   stays in baseline code. The `return_call` version re-enters the function and is
   promoted early.
 
+**9. Inline array access; no frame where nothing can collect.** Chosen by
+profiling the SAT solver that proves S(4) = 44 (`proofs/sat.lm`, the first
+program here that uses arrays):
+- 24% of its instructions were spent in the runtime's array functions.
+  `array_get`, `array_set` and `array_length` are now emitted inline: a bounds
+  check against the length in the block header, then a load or a store.
+- Many small functions pushed a shadow-stack frame although no collection can
+  happen while they run. Two greatest fixed points over the call graph now find
+  them. `never(g)`: calling `g` can never collect, even through `g`'s own tail
+  calls. `frameless(f)`: `f` allocates nothing, and each of its non-tail calls
+  is to a `never` function; tail calls may collect, because `f`'s activation
+  has ended by then. Frameless functions keep pointers in wasm locals and have
+  no prologue or epilogue. (The first version merged the two properties; see
+  below.)
+
+Result: −31.2%, and code 3 points smaller than at step 8. Every benchmark but
+`fib` improved; `nqueens`, `huffman` and `life` by 10–12%. The solver, in A/B
+against the previous commit on the 1…44 search: −30.4% instructions, −27.4%
+time, identical output. It joined the benchmarks as `sat` at this step; the
+geometric mean stays over the original 11, so the steps remain comparable.
+`lumenc`'s default build executes 6% more instructions than at step 8, because
+its input, the self-hosted compiler's own source, grew to support arrays. Each
+step is measured against the default build of the same commit, so the ratio is
+unaffected.
+
 ## Experiments that did not make it
 
 - **Inline the collector's "is it an immediate?" test** (call `$rt:forward` only
@@ -224,6 +250,6 @@ against step 7: `lumenc` −10%, `sort` −14%, `nqueens` −10%, `gc_torture` �
 node bench/bench.js                                  # instructions, time, size, memory per benchmark
 node bench/profile.js lumenc -O                      # where the instructions go
 node bench/ab.js . . --flagsA base --flagsB O        # wall time, default vs -O, interleaved
-node bench/gate.js                                   # the full gate (about 5 minutes)
+node bench/gate.js                                   # the full gate (about 7 minutes)
 node bench/chart.js                                  # redraw the two charts
 ```

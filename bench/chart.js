@@ -12,7 +12,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 const history = JSON.parse(readFileSync('bench/history.json', 'utf8'));
 const ab = JSON.parse(readFileSync('bench/ab-final.json', 'utf8'));
 
-export const SHORT = ['start', 'temps', 're-mine', 'headroom', 'inline alloc', 'zeroing', 'fixpoint', 'slot loads', 'self loops'];
+export const SHORT = ['start', 'temps', 're-mine', 'headroom', 'inline alloc', 'zeroing', 'fixpoint', 'slot loads', 'self loops', 'frameless'];
 
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const pct = (x) => `${x < 0 ? '−' : ''}${Math.abs(x).toFixed(1)}%`;

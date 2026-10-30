@@ -1214,5 +1214,157 @@
     "memory": 3211264
    }
   }
+ },
+ {
+  "label": "9. inline array access; no shadow-stack frame where nothing can collect",
+  "commit": "cf3b7b7",
+  "results": {
+   "lumenc": {
+    "instructions": 2136688634,
+    "ms": 775.48,
+    "bytes": 307887,
+    "memory": 267452416
+   },
+   "sat": {
+    "instructions": 189138424,
+    "ms": 48.22,
+    "bytes": 22393,
+    "memory": 7405568
+   },
+   "fib": {
+    "instructions": 46541045,
+    "ms": 9.16,
+    "bytes": 3660,
+    "memory": 3211264
+   },
+   "sort": {
+    "instructions": 607320227,
+    "ms": 74.87,
+    "bytes": 8039,
+    "memory": 28770304
+   },
+   "strings": {
+    "instructions": 251229607,
+    "ms": 47.14,
+    "bytes": 7063,
+    "memory": 3211264
+   },
+   "gc_torture": {
+    "instructions": 1297338809,
+    "ms": 186.34,
+    "bytes": 6160,
+    "memory": 99811328
+   },
+   "red_black_tree": {
+    "instructions": 425731146,
+    "ms": 104.32,
+    "bytes": 10516,
+    "memory": 61931520
+   },
+   "tail_calls": {
+    "instructions": 452996880,
+    "ms": 51.41,
+    "bytes": 5124,
+    "memory": 45285376
+   },
+   "nqueens": {
+    "instructions": 203491602,
+    "ms": 30.37,
+    "bytes": 8036,
+    "memory": 3211264
+   },
+   "life": {
+    "instructions": 55763134,
+    "ms": 10.29,
+    "bytes": 10753,
+    "memory": 3211264
+   },
+   "mandelbrot": {
+    "instructions": 9177008,
+    "ms": 1.45,
+    "bytes": 6595,
+    "memory": 3211264
+   },
+   "huffman": {
+    "instructions": 764086,
+    "ms": 0.79,
+    "bytes": 11713,
+    "memory": 3211264
+   }
+  },
+  "base": {
+   "lumenc": {
+    "instructions": 3290622158,
+    "ms": 802.44,
+    "bytes": 289651,
+    "memory": 133234688
+   },
+   "sat": {
+    "instructions": 352062954,
+    "ms": 87.52,
+    "bytes": 23351,
+    "memory": 3211264
+   },
+   "fib": {
+    "instructions": 75743500,
+    "ms": 8.84,
+    "bytes": 3669,
+    "memory": 3211264
+   },
+   "sort": {
+    "instructions": 975728419,
+    "ms": 127.71,
+    "bytes": 8591,
+    "memory": 16187392
+   },
+   "strings": {
+    "instructions": 279633925,
+    "ms": 49.78,
+    "bytes": 7184,
+    "memory": 3211264
+   },
+   "gc_torture": {
+    "instructions": 1886016845,
+    "ms": 305.67,
+    "bytes": 6352,
+    "memory": 34013184
+   },
+   "red_black_tree": {
+    "instructions": 578604750,
+    "ms": 103.63,
+    "bytes": 10864,
+    "memory": 32571392
+   },
+   "tail_calls": {
+    "instructions": 851699575,
+    "ms": 137.69,
+    "bytes": 5345,
+    "memory": 67567616
+   },
+   "nqueens": {
+    "instructions": 318967128,
+    "ms": 55.8,
+    "bytes": 8236,
+    "memory": 3211264
+   },
+   "life": {
+    "instructions": 73452932,
+    "ms": 12.85,
+    "bytes": 10359,
+    "memory": 3211264
+   },
+   "mandelbrot": {
+    "instructions": 11476510,
+    "ms": 2.42,
+    "bytes": 6796,
+    "memory": 3211264
+   },
+   "huffman": {
+    "instructions": 1080496,
+    "ms": 1.61,
+    "bytes": 12314,
+    "memory": 3211264
+   }
+  }
  }
 ]

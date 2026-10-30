@@ -173,6 +173,14 @@ export const MUTANTS = [
     replace: "  return fixpoint(walker(() => false, (tail) => !tail));",
   },
   {
+    // The first version of the analysis: a tail call to a collecting
+    // function was also trusted by callers that are still waiting.
+    name: '-O: frame elision lets "never collects" ignore tail calls',
+    file: 'codegen.js',
+    find: '  const never = fixpoint(walker((fn, tail, set) => !set.has(fn), () => true));',
+    replace: '  const never = fixpoint(walker((fn, tail, set) => !tail && !set.has(fn), (tail) => !tail));',
+  },
+  {
     name: '-O: a self tail call assigns the new arguments to the wrong parameters',
     file: 'codegen.js',
     find: 'for (const v of [...f.params].reverse()) emit(ls(storage.get(v.id).local ?? varName(v)));',

@@ -179,9 +179,9 @@ footer a { color: var(--muted); }
     <div class="stat" role="listitem"><div class="v">~4,000</div><div class="k">lines of compiler, no dependencies</div></div>
     <div class="stat" role="listitem"><div class="v">3,300</div><div class="k">lines of the compiler rewritten in Lumen</div></div>
     <div class="stat" role="listitem"><div class="v">40</div><div class="k">optimizations, each with a checked proof</div></div>
-    <div class="stat" role="listitem"><div class="v">33 / 33</div><div class="k">deliberately planted bugs caught</div></div>
+    <div class="stat" role="listitem"><div class="v">34 / 34</div><div class="k">deliberately planted bugs caught</div></div>
     <div class="stat" role="listitem"><div class="v">S(4) = 44</div><div class="k">proved in Lumen, 255,663 proof steps checked</div></div>
-    <div class="stat" role="listitem"><div class="v">−27%</div><div class="k">instructions executed with <code>-O</code></div></div>
+    <div class="stat" role="listitem"><div class="v">−31%</div><div class="k">instructions executed with <code>-O</code></div></div>
   </div>
   <ol class="toc">
     <li><a href="#brief"><span class="n">01</span>The brief, and why a compiler</a></li>
@@ -411,7 +411,7 @@ fn main() {
     <li>every proof, re-checked;</li>
     <li>the self-hosting bootstrap.</li>
   </ul>
-  <p>Eight steps survived:</p>
+  <p>Nine steps survived:</p>
   <ol class="plain">
     <li>Forward temporaries, so the proved rules can see adjacent code.</li>
     <li>Re-mine the rules on the result.</li>
@@ -421,8 +421,10 @@ fn main() {
     <li>Mine rules to a fixed point.</li>
     <li>Keep stack-frame values in local variables between calls that might collect.</li>
     <li>Turn self-recursive tail calls into loops.</li>
+    <li>Access arrays inline, and give no stack frame to functions in which nothing can trigger a collection.
+    This one came later, from the proof in act five.</li>
   </ol>
-  <object class="chart" type="image/svg+xml" data="bench/campaign-instructions.svg" style="aspect-ratio: 760 / 340" aria-label="Executed instructions with -O at each campaign step, falling from −3.4% to −27.3%"></object>
+  <object class="chart" type="image/svg+xml" data="bench/campaign-instructions.svg" style="aspect-ratio: 760 / 340" aria-label="Executed instructions with -O at each campaign step, falling from −3.4% to −31.2%"></object>
 
   <div class="demo">
     <div class="demo-head"><span class="live">Live</span><span class="title">Count every instruction, here</span></div>
@@ -525,9 +527,11 @@ fn main() {
   <p>The proof also set the next two optimizations. Profiling the solver showed 24% of its work in calls that
   read and write array elements, so <code>-O</code> now does that inline. It also showed many tiny accessor
   functions each building a stack frame for the collector, although nothing in them can trigger a collection.
-  <code>-O</code> now proves which functions cannot reach the allocator and gives them no frame. Together the two
-  changes cut the solver's executed instructions by a third and its time by a fifth, and it prints exactly the
-  same 255,663-step proof as before. Both passed the gate, with three new planted bugs, and all 33 are caught.</p>
+  <code>-O</code> now works out in which functions no collection can happen while they run, and gives them no
+  frame. On the search for a split of 1…44, the two changes cut the solver's executed instructions by 30% and its
+  time by 27%, and it prints exactly the same 255,663-step proof as before. Every other benchmark but
+  <code>fib</code> executes fewer instructions too. Both changes passed the gate, which gained four planted bugs
+  for them, and all 34 are caught.</p>
 </section>
 
 <section class="chapter" id="caught">
