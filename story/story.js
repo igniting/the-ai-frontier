@@ -209,7 +209,7 @@ function proveSchur(k, n) {
       verdict.hidden = false;
       verdict.className = `verdict ${m.proved ? 'ok' : 'bad'}`;
       verdict.textContent = m.step === 'failed' ? `Failed: ${m.message}`
-        : m.proved ? `✓ Proved: S(${k}) = ${n}. 1…${n} can be split into ${k} sum-free groups, and 1…${n + 1} cannot.` : 'Not proved.';
+        : m.proved ? `✓ Proved: S(${k}) = ${n}. 1 to ${n} can be split into ${k} sum-free groups, and 1 to ${n + 1} cannot.` : 'Not proved.';
     }
   };
   schur.postMessage({ k, n });
