@@ -137,6 +137,18 @@ export const MUTANTS = [
     replace: '"rhs":[["i32.const",1],["i32.lt_u"]]',
   },
   {
+    name: '-O: load forwarding keeps cached slot values across calls that may collect',
+    file: 'optimize.js',
+    find: "if (state && !safeCallees.has(arg)) state = new Map();",
+    replace: "",
+  },
+  {
+    name: '-O: load forwarding merges paths by union (trusts a value cached on one path only)',
+    file: 'optimize.js',
+    find: "for (const [k, sites] of a) if (b.has(k)) out.set(k, new Set([...sites, ...b.get(k)]));",
+    replace: "for (const [k, sites] of a) out.set(k, new Set([...sites, ...(b.get(k) ?? [])]));",
+  },
+  {
     name: '-O: frame zeroing elision ignores direct calls as GC points (stale roots)',
     file: 'optimize.js',
     find: "else if (op === 'call_indirect' || (op === 'call' && !safeCallees.has(arg))) {",

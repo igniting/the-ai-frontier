@@ -72,6 +72,109 @@ export function slotsNeedingZero(body, start, candidates, safeCallees) {
   return need;
 }
 
+// ---------------------------------------------- frame-slot load forwarding --
+// Traced variables live in shadow-stack slots and are reloaded on every use
+// (`local.get $fp; i32.load offset=4k`). Between GC points a slot cannot
+// change except by our own stores, so a loaded or stored value can be kept
+// in a local ($slotk) and reused. This is a forward dataflow analysis over
+// the structured control flow: the state maps each slot whose cache local
+// is known to hold its value to the set of instructions that may have put
+// it there; at a block's end the states of all incoming edges are
+// intersected. A first pass finds which loads can reuse a cached value and
+// which loads and stores must therefore tee into the cache; the second
+// rewrites. Calls that may collect, loops (back edges) and anything not
+// understood clear the state.
+export function forwardSlotLoads(f, safeCallees) {
+  const body = f.body;
+  const isSlotLoad = (i) => body[i][0] === 'local.get' && body[i][1] === '$fp' && body[i + 1]?.[0] === 'i32.load';
+  const reuse = new Set(); // index of a `local.get $fp` whose load is served from the cache
+  const needed = new Set(); // instruction indices that must tee into the cache
+
+  const meet = (a, b) => {
+    if (a === null) return b && new Map(b);
+    if (b === null) return a;
+    const out = new Map();
+    for (const [k, sites] of a) if (b.has(k)) out.set(k, new Set([...sites, ...b.get(k)]));
+    return out;
+  };
+  let state = new Map(); // null: unreachable
+  const frames = []; // open constructs: { kind, label, entry, merged }
+  const branchTo = (label) => {
+    for (let j = frames.length - 1; j >= 0; j--) {
+      if (frames[j].label !== label) continue;
+      if (frames[j].kind !== 'loop') frames[j].merged = meet(frames[j].merged, state);
+      return true;
+    }
+    return false;
+  };
+  for (let i = 0; i < body.length; i++) {
+    const ins = body[i], [op, arg] = ins;
+    if (state && isSlotLoad(i)) {
+      const k = body[i + 1][1] / 4;
+      if (state.has(k)) { reuse.add(i); for (const site of state.get(k)) needed.add(site); } else state.set(k, new Set([i]));
+      i++;
+      continue;
+    }
+    switch (op) {
+      case 'block': case 'if':
+        frames.push({ kind: op, label: arg, entry: state && new Map(state), merged: null });
+        break;
+      case 'loop':
+        frames.push({ kind: op, label: arg, entry: null, merged: null });
+        state = state && new Map();
+        break;
+      case 'else': {
+        const fr = frames[frames.length - 1];
+        fr.merged = meet(fr.merged, state);
+        fr.sawElse = true;
+        state = fr.entry && new Map(fr.entry);
+        break;
+      }
+      case 'end': {
+        const fr = frames.pop();
+        if (!fr) break;
+        if (fr.kind === 'if' && !fr.sawElse) fr.merged = meet(fr.merged, fr.entry);
+        state = meet(fr.merged, state);
+        break;
+      }
+      case 'br': case 'br_if':
+        if (state && !branchTo(arg)) state = new Map(); // unknown target: be safe
+        if (op === 'br') state = null;
+        break;
+      case 'br_table': case 'return': case 'unreachable': case 'return_call': case 'return_call_indirect':
+        if (op === 'br_table') for (const l of [...(arg ?? [])]) branchTo(l);
+        state = null;
+        break;
+      case 'call':
+        if (state && !safeCallees.has(arg)) state = new Map();
+        break;
+      case 'call_indirect': case 'memory.fill': case 'memory.copy':
+        if (state) state = new Map();
+        break;
+      case 'i32.store':
+        if (state && ins.frameSlot !== undefined) state.set(ins.frameSlot, new Set([i]));
+        break;
+      case 'local.set': case 'local.tee':
+        if (arg === '$fp' && state) state = new Map();
+        break;
+    }
+  }
+
+  const out = [];
+  let added = false;
+  for (let i = 0; i < body.length; i++) {
+    if (reuse.has(i)) { out.push(['local.get', `$slot${body[i + 1][1] / 4}`]); i++; added = true; continue; }
+    if (needed.has(i) && isSlotLoad(i)) { out.push(body[i], body[i + 1], ['local.tee', `$slot${body[i + 1][1] / 4}`]); i++; continue; }
+    if (needed.has(i)) out.push(['local.tee', `$slot${body[i].frameSlot}`]); // a store: keep the stored value
+    out.push(body[i]);
+  }
+  if (added) {
+    const slots = new Set(out.filter(([op, a]) => op.startsWith('local.') && a.startsWith('$slot')).map(([, a]) => a));
+    for (const name of slots) f.locals.push({ name, type: 'i32' });
+  }
+  f.body = out;
+}
+
 // Locals that no instruction mentions any more.
 function dropUnusedLocals(f) {
   const used = new Set(f.body.filter(([op]) => op.startsWith('local.')).map(([, arg]) => arg));
@@ -80,6 +183,8 @@ function dropUnusedLocals(f) {
 
 export function optimize(mod) {
   const funcs = mod.funcs.filter((f) => f.oddLocals);
+  const safeCallees = nonCollecting(mod);
+  for (const f of funcs) forwardSlotLoads(f, safeCallees);
   for (const f of funcs) forwardTemps(f);
   const peephole = applyRules(mod, RULES);
   for (const f of funcs) dropUnusedLocals(f);

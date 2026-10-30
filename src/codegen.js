@@ -129,6 +129,8 @@ export function codegen(ir, options = {}) {
     if (frameBytes) locals.push({ name: '$fp', type: 'i32' });
     let needsTmp = false;
     let zeroAt = -1, zeroLen = 0; // where the prologue zeroes the frame
+    // Stores to frame slots are tagged for the -O passes that reason about them.
+    const slotStore = (slot) => Object.assign(st(slot * 4), { frameSlot: slot });
     let labelCounter = 0;
     const label = (base) => `$${base}${labelCounter++}`;
 
@@ -146,9 +148,9 @@ export function codegen(ir, options = {}) {
         emit(lg('$fp'), paramSlots ? [c(paramSlots * 4), o('i32.add')] : [], c(0), c((slots - paramSlots) * 4), ['memory.fill']);
         zeroLen = body.length - zeroAt;
       }
-      if (f.env) emit(lg('$fp'), lg('$env'), st(storage.get(f.env.id).slot * 4));
+      if (f.env) emit(lg('$fp'), lg('$env'), slotStore(storage.get(f.env.id).slot));
       for (const v of f.params) {
-        if (v.traced) emit(lg('$fp'), lg(varName(v)), st(storage.get(v.id).slot * 4));
+        if (v.traced) emit(lg('$fp'), lg(varName(v)), slotStore(storage.get(v.id).slot));
       }
     }
 
@@ -177,9 +179,7 @@ export function codegen(ir, options = {}) {
       } else {
         emit(lg('$fp'));
         value();
-        const store = st(s.slot * 4);
-        store.frameSlot = s.slot; // for frame zeroing elision under -O
-        emit(store);
+        emit(slotStore(s.slot));
       }
     }
 
@@ -357,7 +357,7 @@ export function codegen(ir, options = {}) {
       const candidates = Array.from({ length: slots - paramSlots }, (_, k) => paramSlots + k);
       const need = [...slotsNeedingZero(body, zeroAt + zeroLen, candidates, safeCallees)].sort((a, b) => a - b);
       let zero = [];
-      if (need.length > 0 && need.length <= 2) zero = need.flatMap((k) => [lg('$fp'), c(0), st(k * 4)]);
+      if (need.length > 0 && need.length <= 2) zero = need.flatMap((k) => [lg('$fp'), c(0), slotStore(k)]);
       else if (need.length > 2) {
         const lo = need[0], hi = need[need.length - 1];
         zero = seq(lg('$fp'), lo ? [c(lo * 4), o('i32.add')] : [], c(0), c((hi - lo + 1) * 4), ['memory.fill']);
