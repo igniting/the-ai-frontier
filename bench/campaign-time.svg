@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 364" width="760" height="364" role="img" aria-labelledby="t2 d2">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 394" width="760" height="394" role="img" aria-labelledby="t2 d2">
   <title id="t2">Wall time saved by -O, per benchmark</title>
-  <desc id="d2">tail_calls: 42.7% less time; nqueens: 41.7% less time; sort: 39.5% less time; gc_torture: 38.2% less time; life: 35.2% less time; strings: 20.2% less time; red_black_tree: 13.7% less time; lumenc: 13.1% less time; fib: 0.7% less time</desc>
+  <desc id="d2">tail_calls: 60.7% less time; nqueens: 47.7% less time; sat: 42.6% less time; sort: 39.7% less time; gc_torture: 39.7% less time; life: 31.1% less time; strings: 20.6% less time; lumenc: 18.3% less time; red_black_tree: 14.9% less time; fib: 0.8% less time</desc>
   <style>
     svg { --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781; --grid: #e1e0d9; --axis: #c3c2b7; --series: #2a78d6; }
     @media (prefers-color-scheme: dark) {
@@ -20,64 +20,73 @@
     .hit { fill: transparent; }
     .hit:hover + .dot, g:hover > .bar { opacity: 0.8; }
   </style>
-  <rect width="760" height="364" fill="var(--surface)"/>
+  <rect width="760" height="394" fill="var(--surface)"/>
   <text class="title" x="16" y="26">Wall time saved by -O</text>
   <text class="sub" x="16" y="46">Default build vs -O compiled by the same compiler, runs alternated in one process; median of 15 runs (Node 22.22.0).</text>
-  <line class="axis" x1="130" x2="130" y1="60" y2="338"/>
-  <text class="tick" x="130" y="352" text-anchor="middle">0%</text>
-  <line class="grid" x1="242" x2="242" y1="60" y2="338"/>
-  <text class="tick" x="242" y="352" text-anchor="middle">10%</text>
-  <line class="grid" x1="354" x2="354" y1="60" y2="338"/>
-  <text class="tick" x="354" y="352" text-anchor="middle">20%</text>
-  <line class="grid" x1="466" x2="466" y1="60" y2="338"/>
-  <text class="tick" x="466" y="352" text-anchor="middle">30%</text>
-  <line class="grid" x1="578" x2="578" y1="60" y2="338"/>
-  <text class="tick" x="578" y="352" text-anchor="middle">40%</text>
-  <line class="grid" x1="690" x2="690" y1="60" y2="338"/>
-  <text class="tick" x="690" y="352" text-anchor="middle">50%</text>
-  <g><title>tail_calls: 90.4 ms → 51.8 ms (42.7% less time)</title>
+  <line class="axis" x1="130" x2="130" y1="60" y2="368"/>
+  <text class="tick" x="130" y="382" text-anchor="middle">0%</text>
+  <line class="grid" x1="210" x2="210" y1="60" y2="368"/>
+  <text class="tick" x="210" y="382" text-anchor="middle">10%</text>
+  <line class="grid" x1="290" x2="290" y1="60" y2="368"/>
+  <text class="tick" x="290" y="382" text-anchor="middle">20%</text>
+  <line class="grid" x1="370" x2="370" y1="60" y2="368"/>
+  <text class="tick" x="370" y="382" text-anchor="middle">30%</text>
+  <line class="grid" x1="450" x2="450" y1="60" y2="368"/>
+  <text class="tick" x="450" y="382" text-anchor="middle">40%</text>
+  <line class="grid" x1="530" x2="530" y1="60" y2="368"/>
+  <text class="tick" x="530" y="382" text-anchor="middle">50%</text>
+  <line class="grid" x1="610" x2="610" y1="60" y2="368"/>
+  <text class="tick" x="610" y="382" text-anchor="middle">60%</text>
+  <line class="grid" x1="690" x2="690" y1="60" y2="368"/>
+  <text class="tick" x="690" y="382" text-anchor="middle">70%</text>
+  <g><title>tail_calls: 133.0 ms → 52.3 ms (60.7% less time)</title>
     <rect class="hit" x="0" y="64" width="760" height="30"/>
-    <path class="bar" d="M130,70 H604.6197743861978 Q608.6197743861978,70 608.6197743861978,74 V84 Q608.6197743861978,88 604.6197743861978,88 H130 Z"/>
+    <path class="bar" d="M130,70 H611.6885147324111 Q615.6885147324111,70 615.6885147324111,74 V84 Q615.6885147324111,88 611.6885147324111,88 H130 Z"/>
     <text class="name" x="120" y="83" text-anchor="end">tail_calls</text>
-    <text class="value" x="616.6197743861978" y="83">42.7%</text></g>
-  <g><title>nqueens: 49.8 ms → 29.1 ms (41.7% less time)</title>
+    <text class="value" x="623.6885147324111" y="83">60.7%</text></g>
+  <g><title>nqueens: 52.0 ms → 27.2 ms (47.7% less time)</title>
     <rect class="hit" x="0" y="94" width="760" height="30"/>
-    <path class="bar" d="M130,100 H592.6666666666666 Q596.6666666666666,100 596.6666666666666,104 V114 Q596.6666666666666,118 592.6666666666666,118 H130 Z"/>
+    <path class="bar" d="M130,100 H507.21632024634334 Q511.21632024634334,100 511.21632024634334,104 V114 Q511.21632024634334,118 507.21632024634334,118 H130 Z"/>
     <text class="name" x="120" y="113" text-anchor="end">nqueens</text>
-    <text class="value" x="604.6666666666666" y="113">41.7%</text></g>
-  <g><title>sort: 123.3 ms → 74.7 ms (39.5% less time)</title>
+    <text class="value" x="519.2163202463433" y="113">47.7%</text></g>
+  <g><title>sat: 92.6 ms → 53.2 ms (42.6% less time)</title>
     <rect class="hit" x="0" y="124" width="760" height="30"/>
-    <path class="bar" d="M130,130 H567.9331819656179 Q571.9331819656179,130 571.9331819656179,134 V144 Q571.9331819656179,148 567.9331819656179,148 H130 Z"/>
-    <text class="name" x="120" y="143" text-anchor="end">sort</text>
-    <text class="value" x="579.9331819656179" y="143">39.5%</text></g>
-  <g><title>gc_torture: 264.6 ms → 163.5 ms (38.2% less time)</title>
+    <path class="bar" d="M130,130 H466.4383975812547 Q470.4383975812547,130 470.4383975812547,134 V144 Q470.4383975812547,148 466.4383975812547,148 H130 Z"/>
+    <text class="name" x="120" y="143" text-anchor="end">sat</text>
+    <text class="value" x="478.4383975812547" y="143">42.6%</text></g>
+  <g><title>sort: 158.6 ms → 95.6 ms (39.7% less time)</title>
     <rect class="hit" x="0" y="154" width="760" height="30"/>
-    <path class="bar" d="M130,160 H553.6363636363637 Q557.6363636363637,160 557.6363636363637,164 V174 Q557.6363636363637,178 553.6363636363637,178 H130 Z"/>
-    <text class="name" x="120" y="173" text-anchor="end">gc_torture</text>
-    <text class="value" x="565.6363636363637" y="173">38.2%</text></g>
-  <g><title>life: 11.8 ms → 7.6 ms (35.2% less time)</title>
+    <path class="bar" d="M130,160 H443.6596683689554 Q447.6596683689554,160 447.6596683689554,164 V174 Q447.6596683689554,178 443.6596683689554,178 H130 Z"/>
+    <text class="name" x="120" y="173" text-anchor="end">sort</text>
+    <text class="value" x="455.6596683689554" y="173">39.7%</text></g>
+  <g><title>gc_torture: 281.6 ms → 169.9 ms (39.7% less time)</title>
     <rect class="hit" x="0" y="184" width="760" height="30"/>
-    <path class="bar" d="M130,190 H520.2857142857143 Q524.2857142857143,190 524.2857142857143,194 V204 Q524.2857142857143,208 520.2857142857143,208 H130 Z"/>
-    <text class="name" x="120" y="203" text-anchor="end">life</text>
-    <text class="value" x="532.2857142857143" y="203">35.2%</text></g>
-  <g><title>strings: 39.5 ms → 31.5 ms (20.2% less time)</title>
+    <path class="bar" d="M130,190 H443.2212948822673 Q447.2212948822673,190 447.2212948822673,194 V204 Q447.2212948822673,208 443.2212948822673,208 H130 Z"/>
+    <text class="name" x="120" y="203" text-anchor="end">gc_torture</text>
+    <text class="value" x="455.2212948822673" y="203">39.7%</text></g>
+  <g><title>life: 13.4 ms → 9.3 ms (31.1% less time)</title>
     <rect class="hit" x="0" y="214" width="760" height="30"/>
-    <path class="bar" d="M130,220 H352.4403344312136 Q356.4403344312136,220 356.4403344312136,224 V234 Q356.4403344312136,238 352.4403344312136,238 H130 Z"/>
-    <text class="name" x="120" y="233" text-anchor="end">strings</text>
-    <text class="value" x="364.4403344312136" y="233">20.2%</text></g>
-  <g><title>red_black_tree: 87.6 ms → 75.6 ms (13.7% less time)</title>
+    <path class="bar" d="M130,220 H374.99478778853313 Q378.99478778853313,220 378.99478778853313,224 V234 Q378.99478778853313,238 374.99478778853313,238 H130 Z"/>
+    <text class="name" x="120" y="233" text-anchor="end">life</text>
+    <text class="value" x="386.99478778853313" y="233">31.1%</text></g>
+  <g><title>strings: 39.0 ms → 31.0 ms (20.6% less time)</title>
     <rect class="hit" x="0" y="244" width="760" height="30"/>
-    <path class="bar" d="M130,250 H279.482428115016 Q283.482428115016,250 283.482428115016,254 V264 Q283.482428115016,268 279.482428115016,268 H130 Z"/>
-    <text class="name" x="120" y="263" text-anchor="end">red_black_tree</text>
-    <text class="value" x="291.482428115016" y="263">13.7%</text></g>
-  <g><title>lumenc: 638.8 ms → 555.0 ms (13.1% less time)</title>
+    <path class="bar" d="M130,250 H290.5491803278688 Q294.5491803278688,250 294.5491803278688,254 V264 Q294.5491803278688,268 290.5491803278688,268 H130 Z"/>
+    <text class="name" x="120" y="263" text-anchor="end">strings</text>
+    <text class="value" x="302.5491803278688" y="263">20.6%</text></g>
+  <g><title>lumenc: 805.0 ms → 657.6 ms (18.3% less time)</title>
     <rect class="hit" x="0" y="274" width="760" height="30"/>
-    <path class="bar" d="M130,280 H272.8820840378233 Q276.8820840378233,280 276.8820840378233,284 V294 Q276.8820840378233,298 272.8820840378233,298 H130 Z"/>
+    <path class="bar" d="M130,280 H272.5079877760939 Q276.5079877760939,280 276.5079877760939,284 V294 Q276.5079877760939,298 272.5079877760939,298 H130 Z"/>
     <text class="name" x="120" y="293" text-anchor="end">lumenc</text>
-    <text class="value" x="284.8820840378233" y="293">13.1%</text></g>
-  <g><title>fib: 7.7 ms → 7.6 ms (0.7% less time)</title>
+    <text class="value" x="284.5079877760939" y="293">18.3%</text></g>
+  <g><title>red_black_tree: 127.8 ms → 108.8 ms (14.9% less time)</title>
     <rect class="hit" x="0" y="304" width="760" height="30"/>
-    <path class="bar" d="M130,310 H133.29166666666663 Q137.29166666666663,310 137.29166666666663,314 V324 Q137.29166666666663,328 133.29166666666663,328 H130 Z"/>
-    <text class="name" x="120" y="323" text-anchor="end">fib</text>
-    <text class="value" x="145.29166666666663" y="323">0.7%</text></g>
+    <path class="bar" d="M130,310 H244.82923775238694 Q248.82923775238694,310 248.82923775238694,314 V324 Q248.82923775238694,328 244.82923775238694,328 H130 Z"/>
+    <text class="name" x="120" y="323" text-anchor="end">red_black_tree</text>
+    <text class="value" x="256.8292377523869" y="323">14.9%</text></g>
+  <g><title>fib: 10.1 ms → 10.0 ms (0.8% less time)</title>
+    <rect class="hit" x="0" y="334" width="760" height="30"/>
+    <path class="bar" d="M130,340 H132.34920634920633 Q136.34920634920633,340 136.34920634920633,344 V354 Q136.34920634920633,358 132.34920634920633,358 H130 Z"/>
+    <text class="name" x="120" y="353" text-anchor="end">fib</text>
+    <text class="value" x="144.34920634920633" y="353">0.8%</text></g>
 </svg>

@@ -452,8 +452,8 @@ fn main() {
   <p>Wall-clock time was harder to pin down than instruction counts. Identical runs differed by up to 25%, which
   is enough to make a bad change look good. So I wrote an A/B harness that loads two versions of the compiler in
   one process and alternates their runs, so that noise affects both equally. Measured that way, <code>-O</code>
-  saves 13–43% of the time on 8 of 9 benchmarks:</p>
-  <object class="chart" type="image/svg+xml" data="bench/campaign-time.svg" style="aspect-ratio: 760 / 364" aria-label="Wall time saved by -O per benchmark, from 0.7% (fib) to 42.7% (tail_calls)"></object>
+  saves 15–61% of the time on 9 of 10 benchmarks:</p>
+  <object class="chart" type="image/svg+xml" data="bench/campaign-time.svg" style="aspect-ratio: 760 / 394" aria-label="Wall time saved by -O per benchmark, from 0.8% (fib) to 60.7% (tail_calls)"></object>
   <p>Some results did not fit the story I expected:</p>
   <ul class="plain">
     <li><b>Rejected:</b> testing for small integers inline in the collector, which made things 1.7% worse

@@ -5,14 +5,14 @@ hypothesis, implement it, pass the gate, measure, then keep or revert. Every kep
 step is its own commit. Experiments that did not pay off are listed too.
 
 **Result.** Measured against the default build of the same compiler:
-- **Instructions:** compiled programs execute **27.3% fewer wasm instructions**
-  (geometric mean over 11 benchmarks).
-- **Wall time:** they run **13–43% faster** on 8 of 9 timed benchmarks. The
-  ninth, `fib`, is flat.
-- **Self-hosting:** the self-hosted compiler compiles itself 13% faster, using
-  27% fewer instructions.
+- **Instructions:** compiled programs execute **31.2% fewer wasm instructions**
+  (geometric mean over the original 11 benchmarks).
+- **Wall time:** they run **15–61% faster** on 9 of 10 timed benchmarks. The
+  tenth, `fib`, is flat.
+- **Self-hosting:** the self-hosted compiler compiles itself 18% faster, using
+  35% fewer instructions.
 - **Costs:** final memory grows by 27% (geometric mean), up to 2.9× on the most
-  allocation-heavy benchmark. Code size grows by 1.3%.
+  allocation-heavy benchmark. Code is 1.8% smaller.
 - **Default build:** unchanged byte for byte. The self-hosted compiler still
   reproduces it exactly.
 
@@ -233,7 +233,9 @@ unaffected.
   no faster: V8's optimizing tier already removes the redundancy the rules remove.
   Wall time is reported from A/B runs for that reason.
 - **One machine, one engine.** All timings are Node 22 (V8) on one Linux
-  container. `mandelbrot` and `huffman` run in a few milliseconds, too short to
+  container. A repeat of the final A/B kept every benchmark's ranking but moved
+  individual figures by up to 10 points (`tail_calls` −61% and −51%, `lumenc`
+  −18% and −16%). `mandelbrot` and `huffman` run in a few milliseconds, too short to
   time, so they are absent from the wall-time chart. Their instruction counts are
   in `bench/history.json`.
 - **Corpus overlap.** The seven examples are both benchmarks and part of the

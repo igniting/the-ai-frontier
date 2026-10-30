@@ -27,7 +27,7 @@ Four things are built on top of it:
   profiled step at a time. Each step had to pass the tests, thousands of fresh
   fuzz programs run five ways, every planted bug, every proof, and the bootstrap
   before it was kept. The result:
-  - 27% fewer executed instructions, and 13–43% less wall time on 8 of 9 timed
+  - 31% fewer executed instructions, and 15–61% less wall time on 9 of 10 timed
     benchmarks;
   - up to 2.9× the memory;
   - the default build unchanged byte for byte.

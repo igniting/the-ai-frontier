@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 340" width="760" height="340" role="img" aria-labelledby="t1 d1">
   <title id="t1">Executed instructions with -O, per campaign step</title>
-  <desc id="d1">step 0 (start): −3.4%; step 1 (temps): −11.2%; step 2 (re-mine): −11.2%; step 3 (headroom): −20.0%; step 4 (inline alloc): −22.5%; step 5 (zeroing): −23.9%; step 6 (fixpoint): −24.0%; step 7 (slot loads): −25.2%; step 8 (self loops): −27.3%</desc>
+  <desc id="d1">step 0 (start): −3.4%; step 1 (temps): −11.2%; step 2 (re-mine): −11.2%; step 3 (headroom): −20.0%; step 4 (inline alloc): −22.5%; step 5 (zeroing): −23.9%; step 6 (fixpoint): −24.0%; step 7 (slot loads): −25.2%; step 8 (self loops): −27.3%; step 9 (frameless): −31.2%</desc>
   <style>
     svg { --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781; --grid: #e1e0d9; --axis: #c3c2b7; --series: #2a78d6; }
     @media (prefers-color-scheme: dark) {
@@ -22,48 +22,53 @@
   </style>
   <rect width="760" height="340" fill="var(--surface)"/>
   <text class="title" x="16" y="26">Executed wasm instructions with -O, relative to the default build</text>
-  <text class="sub" x="16" y="46">Geometric mean over 11 benchmarks; each step passed the gate before it was kept. Lower is better.</text>
+  <text class="sub" x="16" y="46">Geometric mean over the original 11 benchmarks; each step passed the gate before it was kept. Lower is better.</text>
   <line class="axis" x1="56" x2="690" y1="64" y2="64"/>
   <text class="tick" x="48" y="68" text-anchor="end">0%</text>
-  <line class="grid" x1="56" x2="690" y1="99.66666666666666" y2="99.66666666666666"/>
-  <text class="tick" x="48" y="103.66666666666666" text-anchor="end">−5%</text>
-  <line class="grid" x1="56" x2="690" y1="135.33333333333331" y2="135.33333333333331"/>
-  <text class="tick" x="48" y="139.33333333333331" text-anchor="end">−10%</text>
-  <line class="grid" x1="56" x2="690" y1="171" y2="171"/>
-  <text class="tick" x="48" y="175" text-anchor="end">−15%</text>
-  <line class="grid" x1="56" x2="690" y1="206.66666666666666" y2="206.66666666666666"/>
-  <text class="tick" x="48" y="210.66666666666666" text-anchor="end">−20%</text>
-  <line class="grid" x1="56" x2="690" y1="242.33333333333334" y2="242.33333333333334"/>
-  <text class="tick" x="48" y="246.33333333333334" text-anchor="end">−25%</text>
+  <line class="grid" x1="56" x2="690" y1="94.57142857142857" y2="94.57142857142857"/>
+  <text class="tick" x="48" y="98.57142857142857" text-anchor="end">−5%</text>
+  <line class="grid" x1="56" x2="690" y1="125.14285714285714" y2="125.14285714285714"/>
+  <text class="tick" x="48" y="129.14285714285714" text-anchor="end">−10%</text>
+  <line class="grid" x1="56" x2="690" y1="155.71428571428572" y2="155.71428571428572"/>
+  <text class="tick" x="48" y="159.71428571428572" text-anchor="end">−15%</text>
+  <line class="grid" x1="56" x2="690" y1="186.28571428571428" y2="186.28571428571428"/>
+  <text class="tick" x="48" y="190.28571428571428" text-anchor="end">−20%</text>
+  <line class="grid" x1="56" x2="690" y1="216.85714285714286" y2="216.85714285714286"/>
+  <text class="tick" x="48" y="220.85714285714286" text-anchor="end">−25%</text>
+  <line class="grid" x1="56" x2="690" y1="247.42857142857142" y2="247.42857142857142"/>
+  <text class="tick" x="48" y="251.42857142857142" text-anchor="end">−30%</text>
   <line class="grid" x1="56" x2="690" y1="278" y2="278"/>
-  <text class="tick" x="48" y="282" text-anchor="end">−30%</text>
+  <text class="tick" x="48" y="282" text-anchor="end">−35%</text>
   <text class="tick" x="56" y="298" text-anchor="middle">0</text>
   <text class="name" x="56" y="314" text-anchor="middle">start</text>
-  <text class="tick" x="135.25" y="298" text-anchor="middle">1</text>
-  <text class="name" x="135.25" y="314" text-anchor="middle">temps</text>
-  <text class="tick" x="214.5" y="298" text-anchor="middle">2</text>
-  <text class="name" x="214.5" y="314" text-anchor="middle">re-mine</text>
-  <text class="tick" x="293.75" y="298" text-anchor="middle">3</text>
-  <text class="name" x="293.75" y="314" text-anchor="middle">headroom</text>
-  <text class="tick" x="373" y="298" text-anchor="middle">4</text>
-  <text class="name" x="373" y="314" text-anchor="middle">inline alloc</text>
-  <text class="tick" x="452.25" y="298" text-anchor="middle">5</text>
-  <text class="name" x="452.25" y="314" text-anchor="middle">zeroing</text>
-  <text class="tick" x="531.5" y="298" text-anchor="middle">6</text>
-  <text class="name" x="531.5" y="314" text-anchor="middle">fixpoint</text>
-  <text class="tick" x="610.75" y="298" text-anchor="middle">7</text>
-  <text class="name" x="610.75" y="314" text-anchor="middle">slot loads</text>
-  <text class="tick" x="690" y="298" text-anchor="middle">8</text>
-  <text class="name" x="690" y="314" text-anchor="middle">self loops</text>
-  <polyline class="line" points="56.0,88.3 135.3,143.6 214.5,144.0 293.8,206.8 373.0,224.3 452.3,234.8 531.5,234.9 610.8,243.6 690.0,258.8"/>
-  <g><title>0. starting point: -O = superoptimizer rules + constant folding: −3.4%</title><circle class="hit" cx="56" cy="88.30022670791217" r="14"/><circle class="dot" cx="56" cy="88.30022670791217" r="5"/></g>
-  <g><title>1. forward single-use temporaries (local.set/local.get pairs): −11.2%</title><circle class="hit" cx="135.25" cy="143.60480772176066" r="14"/><circle class="dot" cx="135.25" cy="143.60480772176066" r="5"/></g>
-  <g><title>2. re-mine the superoptimizer on forwarded code (43 rules): −11.2%</title><circle class="hit" cx="214.5" cy="144.0463579880025" r="14"/><circle class="dot" cx="214.5" cy="144.0463579880025" r="5"/></g>
-  <g><title>3. heap headroom under -O: grow at 1/4 full instead of 1/2: −20.0%</title><circle class="hit" cx="293.75" cy="206.80351969346606" r="14"/><circle class="dot" cx="293.75" cy="206.80351969346606" r="5"/></g>
-  <g><title>4. inline the allocation fast path under -O: −22.5%</title><circle class="hit" cx="373" cy="224.29562259359986" r="14"/><circle class="dot" cx="373" cy="224.29562259359986" r="5"/></g>
-  <g><title>5. elide frame zeroing for slots written before any GC point: −23.9%</title><circle class="hit" cx="452.25" cy="234.8345281482802" r="14"/><circle class="dot" cx="452.25" cy="234.8345281482802" r="5"/></g>
-  <g><title>6. superoptimizer: re-mine rewritten code until a fixed point; constants generalized under K &gt;= 0 side conditions: −24.0%</title><circle class="hit" cx="531.5" cy="234.86152330571468" r="14"/><circle class="dot" cx="531.5" cy="234.86152330571468" r="5"/></g>
-  <g><title>7. forward frame-slot loads between GC points: −25.2%</title><circle class="hit" cx="610.75" cy="243.59128177905737" r="14"/><circle class="dot" cx="610.75" cy="243.59128177905737" r="5"/></g>
-  <g><title>8. self tail calls become loops (frame reused): −27.3%</title><circle class="hit" cx="690" cy="258.75646076338035" r="14"/><circle class="dot" cx="690" cy="258.75646076338035" r="5"/></g>
-  <text class="value" x="702" y="262.75646076338035">−27.3%</text>
+  <text class="tick" x="126.44444444444444" y="298" text-anchor="middle">1</text>
+  <text class="name" x="126.44444444444444" y="314" text-anchor="middle">temps</text>
+  <text class="tick" x="196.88888888888889" y="298" text-anchor="middle">2</text>
+  <text class="name" x="196.88888888888889" y="314" text-anchor="middle">re-mine</text>
+  <text class="tick" x="267.33333333333337" y="298" text-anchor="middle">3</text>
+  <text class="name" x="267.33333333333337" y="314" text-anchor="middle">headroom</text>
+  <text class="tick" x="337.77777777777777" y="298" text-anchor="middle">4</text>
+  <text class="name" x="337.77777777777777" y="314" text-anchor="middle">inline alloc</text>
+  <text class="tick" x="408.22222222222223" y="298" text-anchor="middle">5</text>
+  <text class="name" x="408.22222222222223" y="314" text-anchor="middle">zeroing</text>
+  <text class="tick" x="478.6666666666667" y="298" text-anchor="middle">6</text>
+  <text class="name" x="478.6666666666667" y="314" text-anchor="middle">fixpoint</text>
+  <text class="tick" x="549.1111111111111" y="298" text-anchor="middle">7</text>
+  <text class="name" x="549.1111111111111" y="314" text-anchor="middle">slot loads</text>
+  <text class="tick" x="619.5555555555555" y="298" text-anchor="middle">8</text>
+  <text class="name" x="619.5555555555555" y="314" text-anchor="middle">self loops</text>
+  <text class="tick" x="690" y="298" text-anchor="middle">9</text>
+  <text class="name" x="690" y="314" text-anchor="middle">frameless</text>
+  <polyline class="line" points="56.0,84.8 126.4,132.2 196.9,132.6 267.3,186.4 337.8,201.4 408.2,210.4 478.7,210.5 549.1,217.9 619.6,230.9 690.0,254.5"/>
+  <g><title>0. starting point: -O = superoptimizer rules + constant folding: −3.4%</title><circle class="hit" cx="56" cy="84.828765749639" r="14"/><circle class="dot" cx="56" cy="84.828765749639" r="5"/></g>
+  <g><title>1. forward single-use temporaries (local.set/local.get pairs): −11.2%</title><circle class="hit" cx="126.44444444444444" cy="132.2326923329377" r="14"/><circle class="dot" cx="126.44444444444444" cy="132.2326923329377" r="5"/></g>
+  <g><title>2. re-mine the superoptimizer on forwarded code (43 rules): −11.2%</title><circle class="hit" cx="196.88888888888889" cy="132.61116398971643" r="14"/><circle class="dot" cx="196.88888888888889" cy="132.61116398971643" r="5"/></g>
+  <g><title>3. heap headroom under -O: grow at 1/4 full instead of 1/2: −20.0%</title><circle class="hit" cx="267.33333333333337" cy="186.40301688011374" r="14"/><circle class="dot" cx="267.33333333333337" cy="186.40301688011374" r="5"/></g>
+  <g><title>4. inline the allocation fast path under -O: −22.5%</title><circle class="hit" cx="337.77777777777777" cy="201.3962479373713" r="14"/><circle class="dot" cx="337.77777777777777" cy="201.3962479373713" r="5"/></g>
+  <g><title>5. elide frame zeroing for slots written before any GC point: −23.9%</title><circle class="hit" cx="408.22222222222223" cy="210.42959555566875" r="14"/><circle class="dot" cx="408.22222222222223" cy="210.42959555566875" r="5"/></g>
+  <g><title>6. superoptimizer: re-mine rewritten code until a fixed point; constants generalized under K &gt;= 0 side conditions: −24.0%</title><circle class="hit" cx="478.6666666666667" cy="210.45273426204116" r="14"/><circle class="dot" cx="478.6666666666667" cy="210.45273426204116" r="5"/></g>
+  <g><title>7. forward frame-slot loads between GC points: −25.2%</title><circle class="hit" cx="549.1111111111111" cy="217.9353843820492" r="14"/><circle class="dot" cx="549.1111111111111" cy="217.9353843820492" r="5"/></g>
+  <g><title>8. self tail calls become loops (frame reused): −27.3%</title><circle class="hit" cx="619.5555555555555" cy="230.93410922575458" r="14"/><circle class="dot" cx="619.5555555555555" cy="230.93410922575458" r="5"/></g>
+  <g><title>9. inline array access; no shadow-stack frame where nothing can collect: −31.2%</title><circle class="hit" cx="690" cy="254.5305473561123" r="14"/><circle class="dot" cx="690" cy="254.5305473561123" r="5"/></g>
+  <text class="value" x="702" y="258.53054735611227">−31.2%</text>
 </svg>

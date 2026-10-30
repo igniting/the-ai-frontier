@@ -417,9 +417,9 @@ object.chart { display: block; width: 100%; max-width: 760px; height: auto; marg
           </div>
         </div>
         <div class="panel" role="tabpanel" id="panel-campaign" aria-labelledby="tab-campaign" hidden>
-          <p class="hint"><code>-O</code> was built as a measured campaign. Each step started from a profile of where executed instructions went. Each one was kept only after it passed a gate: the test suite, 4,500 fresh fuzz programs run five ways, 27 injected bugs that must all be caught, every rule re-proved, and the self-hosted bootstrap. The result is 27% fewer instructions executed and 13–43% less wall time on 8 of 9 timed benchmarks. The price is up to 2.9× the memory. The full log, including the experiments that were rejected, is <a href="https://github.com/igniting/the-ai-frontier/blob/main/CAMPAIGN.md" target="_blank" rel="noopener">CAMPAIGN.md</a>.</p>
+          <p class="hint"><code>-O</code> was built as a measured campaign. Each step started from a profile of where executed instructions went. Each one was kept only after it passed a gate: the test suite, 4,500 fresh fuzz programs run five ways, 34 injected bugs that must all be caught, every rule re-proved, and the self-hosted bootstrap. The result is 31% fewer instructions executed and 15–61% less wall time on 9 of 10 timed benchmarks. The price is up to 2.9× the memory. The full log, including the experiments that were rejected, is <a href="https://github.com/igniting/the-ai-frontier/blob/main/CAMPAIGN.md" target="_blank" rel="noopener">CAMPAIGN.md</a>.</p>
           <object class="chart" type="image/svg+xml" data="bench/campaign-instructions.svg" style="aspect-ratio: 760 / 340" aria-label="Executed instructions with -O per campaign step"></object>
-          <object class="chart" type="image/svg+xml" data="bench/campaign-time.svg" style="aspect-ratio: 760 / 364" aria-label="Wall time saved by -O per benchmark"></object>
+          <object class="chart" type="image/svg+xml" data="bench/campaign-time.svg" style="aspect-ratio: 760 / 394" aria-label="Wall time saved by -O per benchmark"></object>
         </div>
         <div class="panel" role="tabpanel" id="panel-about" aria-labelledby="tab-about" hidden>
           <div class="about">
