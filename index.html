@@ -3,452 +3,535 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Lumen Playground</title>
-<meta name="claude:viewport-fit-sides" content="cover">
-<meta name="description" content="Lumen: a statically typed functional language with its own compiler and garbage collector, compiled to WebAssembly in your browser.">
-<meta property="og:title" content="Lumen Playground">
-<meta property="og:description" content="A typed functional language with a from-scratch compiler to WebAssembly: type inference, exhaustiveness checking, tail calls and a copying garbage collector, verified by differential fuzzing.">
+<title>Lumen: how it was built</title>
+<meta name="description" content="Claude's account of one Claude Code session: a typed functional language compiled to WebAssembly, a compiler that compiles itself, optimizations that come with machine-checked proofs, and a measured performance campaign. Every demo runs in your browser.">
+<meta property="og:title" content="Lumen: how it was built">
+<meta property="og:description" content="A compiler that compiles itself, proves its own optimizations and measures every change, told by the model that built it. Every demo runs live in your browser.">
 <meta property="og:image" content="https://igniting.github.io/the-ai-frontier/docs/playground.png">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%235a43dc'/%3E%3Ctext x='16' y='23' font-family='Georgia,serif' font-size='20' font-style='italic' text-anchor='middle' fill='white'%3Ee%3C/text%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=Instrument+Serif:ital@0;1&display=swap">
 <style>
-/* Layout: a one-screen workbench. Header and pipeline strip on top; editor and
-   inspector side by side below, each scrolling on its own. Stacks on phones. */
 :root {
-  --bg: #f5f4f9;
-  --surface: #ffffff;
-  --sunken: #eeecf5;
-  --ink: #1d1b2b;
-  --muted: #676379;
-  --line: #e0dcea;
-  --accent: #5a43dc;
-  --accent-soft: #ebe7fd;
-  --on-accent: #ffffff;
-  --ok: #1d7f55;
-  --ok-soft: #e1f3ea;
-  --err: #c2373a;
-  --err-soft: #fbe6e6;
-  --warn: #9a6a12;
-  --warn-soft: #fbf0d9;
-  /* code */
-  --c-kw: #5a43dc;
-  --c-type: #9a2f83;
-  --c-str: #a24a12;
-  --c-num: #0b7069;
-  --c-fn: #1d4f9c;
-  --c-com: #8d899e;
-  --c-op: #5d596e;
-
+  --bg: #f5f4f9; --surface: #ffffff; --sunken: #eeecf5; --ink: #1d1b2b; --ink-2: #3d3a4f; --muted: #676379; --line: #e0dcea;
+  --accent: #5a43dc; --accent-soft: #ebe7fd; --on-accent: #ffffff;
+  --ok: #1d7f55; --ok-soft: #e1f3ea; --err: #c2373a; --err-soft: #fbe6e6;
+  --bar-base: #b9b4c9;
   --font-ui: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-code: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
   --font-display: "Instrument Serif", "Iowan Old Style", Georgia, serif;
-  --code-size: 13px;
-  --code-line: 20px;
-  --radius: 6px;
+  --radius: 8px;
+  --measure: 700px;
+  color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #121119; --surface: #1a1825; --sunken: #15131e; --ink: #e9e7f3; --muted: #9b97ad; --line: #2c2939;
+    --bg: #121119; --surface: #1a1825; --sunken: #15131e; --ink: #e9e7f3; --ink-2: #c9c5d8; --muted: #9b97ad; --line: #2c2939;
     --accent: #a596ff; --accent-soft: #2a2550; --on-accent: #14121d;
-    --ok: #5fd39c; --ok-soft: #173126; --err: #ff8a85; --err-soft: #3a1c1f; --warn: #f0c060; --warn-soft: #362c14;
-    --c-kw: #b2a6ff; --c-type: #ee93d8; --c-str: #f4a76f; --c-num: #6fd7cb; --c-fn: #8cb8ff; --c-com: #6f6b82; --c-op: #a7a3b8;
+    --ok: #5fd39c; --ok-soft: #173126; --err: #ff8a85; --err-soft: #3a1c1f; --bar-base: #4a465c;
     color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
-  --bg: #121119; --surface: #1a1825; --sunken: #15131e; --ink: #e9e7f3; --muted: #9b97ad; --line: #2c2939;
+  --bg: #121119; --surface: #1a1825; --sunken: #15131e; --ink: #e9e7f3; --ink-2: #c9c5d8; --muted: #9b97ad; --line: #2c2939;
   --accent: #a596ff; --accent-soft: #2a2550; --on-accent: #14121d;
-  --ok: #5fd39c; --ok-soft: #173126; --err: #ff8a85; --err-soft: #3a1c1f; --warn: #f0c060; --warn-soft: #362c14;
-  --c-kw: #b2a6ff; --c-type: #ee93d8; --c-str: #f4a76f; --c-num: #6fd7cb; --c-fn: #8cb8ff; --c-com: #6f6b82; --c-op: #a7a3b8;
+  --ok: #5fd39c; --ok-soft: #173126; --err: #ff8a85; --err-soft: #3a1c1f; --bar-base: #4a465c;
   color-scheme: dark;
 }
-
-html, body { height: 100%; }
+*, *::before, *::after { box-sizing: border-box; }
 [hidden] { display: none !important; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } * { transition: none !important; } }
 body {
-  margin: 0;
-  background: var(--bg); color: var(--ink); font-family: var(--font-ui); font-size: 14px; line-height: 1.45;
-  padding-left: max(16px, env(safe-area-inset-left, 0px));
-  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font-ui); font-size: 17px; line-height: 1.65;
+  padding: 0 max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(safe-area-inset-left, 0px));
+  -webkit-font-smoothing: antialiased;
 }
-.app { box-sizing: border-box; height: 100%; display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 10px; padding-block: 12px; max-width: 1680px; margin: 0 auto; }
-button, select, input { font: inherit; color: inherit; }
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+a { color: var(--accent); text-underline-offset: 2px; }
+code { font-family: var(--font-code); font-size: 0.86em; background: var(--sunken); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+.col { max-width: var(--measure); margin: 0 auto; }
 
-/* ---------------------------------------------------------------- header */
-.bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 20px; }
-.brand { display: flex; align-items: baseline; gap: 12px; min-width: 0; flex-wrap: wrap; }
-.wordmark { font-family: var(--font-display); font-size: 30px; line-height: 1; letter-spacing: -0.01em; }
+/* ------------------------------------------------------------------ nav */
+nav.top { max-width: var(--measure); margin: 0 auto; display: flex; align-items: center; gap: 18px; padding: 18px 0; flex-wrap: wrap; }
+.wordmark { font-family: var(--font-display); font-size: 28px; line-height: 1; color: var(--ink); text-decoration: none; margin-right: auto; }
 .wordmark em { color: var(--accent); }
-.tagline { color: var(--muted); font-size: 13px; }
-.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
-select {
-  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 6px 28px 6px 10px; max-width: 260px;
-  appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
-  background-position: calc(100% - 15px) 52%, calc(100% - 10px) 52%; background-size: 5px 5px; background-repeat: no-repeat;
-}
-.check { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; cursor: pointer; user-select: none; }
-.check input { accent-color: var(--accent); margin: 0; }
-.run {
-  display: inline-flex; align-items: center; gap: 8px; border: 0; border-radius: var(--radius); padding: 7px 14px;
-  background: var(--accent); color: var(--on-accent); font-weight: 600; cursor: pointer;
-}
-.run:hover { filter: brightness(1.08); }
-.run kbd { font-family: var(--font-code); font-size: 11px; opacity: 0.75; font-weight: 400; }
-.run.stop { background: var(--err); }
-.source-link { color: var(--muted); font-size: 13px; text-decoration: none; padding: 6px 2px; }
-.source-link:hover { color: var(--accent); text-decoration: underline; }
+nav.top a.link { color: var(--muted); text-decoration: none; font-size: 14px; }
+nav.top a.link:hover { color: var(--accent); }
+nav.top a.cta { background: var(--accent); color: var(--on-accent); text-decoration: none; font-size: 14px; font-weight: 600; padding: 7px 14px; border-radius: var(--radius); }
 
-/* -------------------------------------------------------- pipeline strip */
-.pipeline { display: flex; flex-wrap: wrap; align-items: stretch; gap: 4px; }
-.stage {
-  display: flex; flex-direction: column; gap: 1px; padding: 6px 10px; border-radius: var(--radius);
-  background: var(--surface); border: 1px solid var(--line); min-width: 0;
-}
-.stage .k { font-size: 10.5px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
-.stage .v { font-family: var(--font-code); font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.stage.result { border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); }
-.arrow { align-self: center; color: var(--line); font-size: 13px; padding: 0 1px; }
-.stage.failed { border-color: var(--err); background: var(--err-soft); }
-.stage.failed .v { color: var(--err); }
-.stage.skipped { opacity: 0.45; }
+/* ----------------------------------------------------------------- hero */
+header.hero { max-width: var(--measure); margin: 0 auto; padding: 36px 0 8px; }
+.kicker { font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 0 0 14px; }
+h1 { font-family: var(--font-display); font-weight: 400; font-size: clamp(40px, 7vw, 64px); line-height: 1.04; letter-spacing: -0.01em; margin: 0 0 22px; }
+h1 em { color: var(--accent); }
+.lede { font-size: 19px; color: var(--ink-2); margin: 0 0 28px; }
+.stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 28px 0 8px; }
+.stat { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; }
+.stat .v { font-family: var(--font-display); font-size: 34px; line-height: 1.1; }
+.stat .k { font-size: 13px; color: var(--muted); line-height: 1.4; }
+.toc { margin: 30px 0 0; padding: 0; list-style: none; display: grid; gap: 2px; counter-reset: ch; }
+.toc a { display: flex; gap: 12px; text-decoration: none; color: var(--ink-2); padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 15px; }
+.toc a:hover { color: var(--accent); }
+.toc .n { font-family: var(--font-code); font-size: 12px; color: var(--muted); min-width: 22px; padding-top: 3px; }
 
-/* ------------------------------------------------------------------ split */
-.split { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 10px; min-height: 0; }
-.pane { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
-.pane-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 12px; border-bottom: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
-.pane-head .file { font-family: var(--font-code); color: var(--ink); }
-.status-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 2px 8px; border-radius: 99px; background: var(--sunken); color: var(--muted); white-space: nowrap; }
-.status-chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-.status-chip.ok { background: var(--ok-soft); color: var(--ok); }
-.status-chip.err { background: var(--err-soft); color: var(--err); }
-.status-chip.warn { background: var(--warn-soft); color: var(--warn); }
-.example-note { padding: 7px 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12.5px; }
+/* -------------------------------------------------------------- chapters */
+section.chapter { max-width: var(--measure); margin: 0 auto; padding: 56px 0 8px; }
+.chapter-label { font-family: var(--font-code); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); margin: 0 0 6px; }
+h2 { font-family: var(--font-display); font-weight: 400; font-size: clamp(30px, 5vw, 42px); line-height: 1.1; margin: 0 0 18px; }
+h3 { font-size: 17px; font-weight: 600; margin: 30px 0 6px; }
+p { margin: 0 0 16px; }
+ul.plain, ol.plain { padding-left: 20px; margin: 0 0 16px; }
+ul.plain li, ol.plain li { margin: 0 0 8px; }
+blockquote { margin: 22px 0; padding: 4px 0 4px 18px; border-left: 3px solid var(--accent); font-family: var(--font-display); font-size: 24px; line-height: 1.3; color: var(--ink); }
+blockquote cite { display: block; font-family: var(--font-ui); font-style: normal; font-size: 13px; color: var(--muted); margin-top: 6px; }
+.aside { font-size: 15px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 12px; }
 
-/* ----------------------------------------------------------------- editor */
-.editor { flex: 1; display: grid; grid-template-columns: auto minmax(0, 1fr); min-height: 0; background: var(--surface); }
-.gutter {
-  overflow: hidden; padding: 10px 8px 10px 12px; text-align: right; color: var(--c-com); background: var(--surface);
-  font-family: var(--font-code); font-size: var(--code-size); line-height: var(--code-line); user-select: none; font-variant-numeric: tabular-nums;
+/* ----------------------------------------------------------------- demos */
+.demo { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin: 26px 0; }
+.demo-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.demo-head .live { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ok); background: var(--ok-soft); padding: 2px 8px; border-radius: 99px; }
+.demo-head .title { font-weight: 600; font-size: 15px; }
+.demo p.hint { font-size: 14px; color: var(--muted); margin: 0 0 12px; }
+.controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 12px 0 0; }
+button.run { border: 0; border-radius: var(--radius); padding: 8px 16px; background: var(--accent); color: var(--on-accent); font: 600 14px var(--font-ui); cursor: pointer; }
+button.run:hover { filter: brightness(1.08); }
+button.run:disabled { opacity: 0.55; cursor: progress; }
+label.check { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; color: var(--ink-2); cursor: pointer; }
+select { font: 14px var(--font-ui); padding: 7px 10px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+textarea.code {
+  width: 100%; min-height: 300px; resize: vertical; font: 13.5px/1.55 var(--font-code); color: var(--ink); background: var(--sunken);
+  border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; tab-size: 2; white-space: pre; overflow: auto;
 }
-.gutter div.bad { color: var(--err); font-weight: 500; }
-.code-wrap { position: relative; min-width: 0; min-height: 0; }
-.code-wrap pre, .code-wrap textarea {
-  position: absolute; inset: 0; margin: 0; padding: 10px 14px 10px 6px; border: 0;
-  font-family: var(--font-code); font-size: var(--code-size); line-height: var(--code-line); tab-size: 2;
-  white-space: pre; overflow-wrap: normal; letter-spacing: 0; font-variant-ligatures: none;
-}
-.code-wrap pre { overflow: hidden; pointer-events: none; color: var(--ink); }
-.code-wrap #marks { color: transparent; }
-.code-wrap textarea {
-  overflow: auto; resize: none; background: transparent; color: transparent; caret-color: var(--ink); outline: none;
-}
-.code-wrap textarea::selection { background: color-mix(in srgb, var(--accent) 28%, transparent); color: transparent; }
-#marks mark { background: transparent; color: transparent; text-decoration: underline wavy var(--err); text-decoration-skip-ink: none; text-underline-offset: 4px; }
-#marks mark.warning { text-decoration-color: var(--warn); }
-.k { color: var(--c-kw); font-weight: 500; }
-.t { color: var(--c-type); }
-.s { color: var(--c-str); }
-.n { color: var(--c-num); }
-.f { color: var(--c-fn); }
-.c { color: var(--c-com); font-style: italic; }
-.o { color: var(--c-op); }
-
-/* --------------------------------------------------------------- inspector */
-.tabs { display: flex; gap: 2px; padding: 4px 6px 0; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
-.tab {
-  border: 0; background: none; padding: 7px 10px 8px; color: var(--muted); cursor: pointer; font-size: 13px; white-space: nowrap;
-  border-bottom: 2px solid transparent; margin-bottom: -1px;
-}
-.tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); font-weight: 500; }
-.tab .count { font-family: var(--font-code); font-size: 11px; color: var(--muted); margin-left: 4px; }
-.panels { flex: 1; min-height: 0; position: relative; }
-.panel { position: absolute; inset: 0; overflow: auto; padding: 12px 14px 16px; }
-.panel pre.code { margin: 0; font-family: var(--font-code); font-size: 12px; line-height: 18px; white-space: pre; tab-size: 2; }
-
-.run-status { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-bottom: 10px; }
-.run-status .msg { font-weight: 500; }
-.badge { font-size: 12px; padding: 2px 8px; border-radius: 99px; background: var(--sunken); color: var(--muted); white-space: nowrap; }
-.badge.ok { background: var(--ok-soft); color: var(--ok); }
-.badge.err { background: var(--err-soft); color: var(--err); }
-.diag {
-  margin: 0 0 10px; padding: 9px 12px; border-radius: var(--radius); border-left: 3px solid var(--err); background: var(--err-soft);
-  font-family: var(--font-code); font-size: 12px; line-height: 17px; white-space: pre; overflow-x: auto; color: var(--ink);
-}
-.diag.warning { border-left-color: var(--warn); background: var(--warn-soft); }
-.out {
-  margin: 0; padding: 10px 12px; border-radius: var(--radius); background: var(--sunken); min-height: 3em;
-  font-family: var(--font-code); font-size: 12.5px; line-height: 18px; white-space: pre; overflow-x: auto;
-}
-.out:empty::before { content: "(no output)"; color: var(--muted); }
-.runtime-error { margin-top: 8px; color: var(--err); font-family: var(--font-code); font-size: 12.5px; }
-.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(105px, 1fr)); gap: 8px; margin-top: 12px; }
-.stat { padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius); }
-.stat .k { font-size: 10.5px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); font-weight: 400; }
-.stat .v { font-family: var(--font-code); font-size: 15px; font-variant-numeric: tabular-nums; margin-top: 2px; color: var(--ink); }
-.hint { color: var(--muted); font-size: 12.5px; margin: 0 0 10px; max-width: 70ch; }
-
-.sigs { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
-.sigs button {
-  display: flex; gap: 10px; width: 100%; text-align: left; border: 0; background: none; padding: 6px 8px; border-radius: var(--radius); cursor: pointer;
-  font-family: var(--font-code); font-size: 12.5px; line-height: 18px;
-}
-.sigs button:hover { background: var(--sunken); }
-.sigs .name { color: var(--c-fn); white-space: nowrap; }
-.sigs .ty { color: var(--ink); overflow-wrap: anywhere; min-width: 0; }
-
-/* WAT / IR highlighting */
-.w-com { color: var(--c-com); font-style: italic; }
-.w-id { color: var(--c-type); }
-.w-num { color: var(--c-num); }
-.w-kw { color: var(--c-kw); font-weight: 500; }
-
-/* ------------------------------------------------------------------ fuzzer */
-.fuzz-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 12px; }
-.fuzz-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 14px; }
-.stat.good .v { color: var(--ok); }
-.stat.bad .v { color: var(--err); }
-.section-title { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 16px 0 8px; font-weight: 500; }
-.fuzz-program { max-height: 340px; overflow: auto; padding: 10px 12px; border-radius: var(--radius); background: var(--sunken); }
-table.mut { border-collapse: collapse; width: 100%; font-size: 12.5px; }
-table.mut td, table.mut th { padding: 5px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
-table.mut th { font-weight: 500; color: var(--muted); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; }
-table.mut td.num { font-family: var(--font-code); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+pre.out { margin: 12px 0 0; padding: 12px 14px; background: var(--sunken); border-radius: var(--radius); font: 13px/1.5 var(--font-code); white-space: pre-wrap; overflow-wrap: anywhere; min-height: 44px; }
+pre.out.err { color: var(--err); background: var(--err-soft); }
+.meta { font-size: 13.5px; color: var(--muted); margin-top: 10px; line-height: 1.5; }
+.meta code { font-size: 12px; }
+.counters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.counter { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 10px; }
+.counter .k { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.counter .v { font: 500 18px var(--font-code); font-variant-numeric: tabular-nums; }
+.counter.good .v { color: var(--ok); }
+pre.program { margin: 6px 0 0; padding: 10px 12px; background: var(--sunken); border-radius: var(--radius); font: 12px/1.5 var(--font-code); white-space: pre; overflow-x: auto; max-height: 260px; color: var(--ink-2); }
+.caption { font-size: 13px; color: var(--muted); margin-top: 12px; }
 .table-wrap { overflow-x: auto; }
-.ghost {
-  border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: var(--radius);
-  padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer;
-}
-.ghost:hover { border-color: var(--muted); }
-.run:disabled, .ghost:disabled { opacity: 0.55; cursor: progress; }
-table.mut td.hash { font-family: var(--font-code); font-size: 11.5px; color: var(--muted); white-space: nowrap; }
-table.rules td code { font-family: var(--font-code); font-size: 12px; white-space: nowrap; }
-table.rules td.expr { font-family: var(--font-code); font-size: 12px; color: var(--muted); min-width: 16ch; }
-table.rules td.num.ok { color: var(--ok); }
-table.rules td.num.bad { color: var(--err); }
-.verdict { margin: 12px 0; padding: 10px 12px; border-radius: var(--radius); font-weight: 500; }
+table.t { border-collapse: collapse; width: 100%; font-size: 14px; }
+table.t th, table.t td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.t th { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+table.t td.num { font-family: var(--font-code); font-size: 13px; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+table.t td.hash { font-family: var(--font-code); font-size: 12px; color: var(--muted); white-space: nowrap; }
+table.t td.verdict-cell { font-size: 13.5px; color: var(--muted); }
+table.t td.verdict-cell.ok { color: var(--ok); }
+table.t td.verdict-cell.bad { color: var(--err); }
+.verdict { margin: 12px 0 0; padding: 10px 12px; border-radius: var(--radius); font-weight: 500; font-size: 15px; }
 .verdict.ok { background: var(--ok-soft); color: var(--ok); }
 .verdict.bad { background: var(--err-soft); color: var(--err); }
-object.chart { display: block; width: 100%; max-width: 760px; height: auto; margin: 4px 0 16px; border-radius: var(--radius); }
+.progress { height: 6px; background: var(--sunken); border-radius: 99px; overflow: hidden; margin: 14px 0 8px; }
+.progress div { height: 100%; width: 0; background: var(--accent); transition: width 0.15s; }
+.bars { display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content; gap: 8px 12px; align-items: center; margin-top: 16px; font-size: 14px; }
+.bars .track { height: 18px; }
+.bars .fill { height: 100%; width: 0; border-radius: 0 4px 4px 0; transition: width 0.4s; }
+.bars .fill.base { background: var(--bar-base); }
+.bars .fill.opt { background: var(--accent); }
+.bars .val { font: 13px var(--font-code); font-variant-numeric: tabular-nums; }
+object.chart { display: block; width: 100%; height: auto; margin: 18px 0 6px; border-radius: var(--radius); }
 
-/* ------------------------------------------------------------------- about */
-.about { max-width: 68ch; }
-.about h2 { font-family: var(--font-display); font-weight: 400; font-size: 26px; line-height: 1.15; margin: 4px 0 8px; text-wrap: balance; }
-.about h3 { font-size: 13px; margin: 18px 0 6px; font-weight: 600; }
-.about p { margin: 0 0 10px; }
-.about code { font-family: var(--font-code); font-size: 12.5px; background: var(--sunken); padding: 1px 4px; border-radius: 3px; }
-.phases { list-style: none; padding: 0; margin: 0; display: grid; gap: 0; }
-.phases li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; padding: 7px 0; border-bottom: 1px solid var(--line); }
-.phases .what { min-width: 0; }
-.phases .what b { font-weight: 500; }
-.phases .what span { display: block; color: var(--muted); font-size: 12.5px; }
-.phases .loc { font-family: var(--font-code); font-size: 12px; color: var(--muted); text-align: right; white-space: nowrap; }
-.about a { color: var(--accent); }
+/* --------------------------------------------------------------- figures */
+.pipeline { display: flex; flex-wrap: wrap; gap: 6px; margin: 18px 0 22px; padding: 0; list-style: none; }
+.pipeline li { font-size: 13px; background: var(--surface); border: 1px solid var(--line); border-radius: 99px; padding: 4px 11px; color: var(--ink-2); }
+.timeline { list-style: none; margin: 18px 0; padding: 0; border-left: 2px solid var(--line); }
+.timeline li { position: relative; padding: 0 0 14px 18px; font-size: 15px; }
+.timeline li::before { content: ""; position: absolute; left: -6px; top: 8px; width: 10px; height: 10px; border-radius: 50%; background: var(--surface); border: 2px solid var(--accent); }
+.timeline .when { font-family: var(--font-code); font-size: 12px; color: var(--muted); display: block; }
+.timeline a { font-family: var(--font-code); font-size: 12px; }
+.callout { background: var(--accent-soft); border-radius: 12px; padding: 18px 20px; margin: 26px 0; }
+.callout p:last-child { margin-bottom: 0; }
 
-@media (max-width: 860px) {
-  html, body { height: auto; }
-  .app { height: auto; grid-template-rows: none; }
-  .split { grid-template-columns: minmax(0, 1fr); }
-  .editor-pane { height: 58vh; min-height: 360px; }
-  .panel-pane { height: 75vh; min-height: 420px; }
-  .tagline { display: none; }
-  .pipeline { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
-  .pipeline > * { flex-shrink: 0; } /* scroll sideways rather than squash the stages */
-  .fuzz-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+footer { max-width: var(--measure); margin: 64px auto 0; padding: 22px 0 48px; border-top: 1px solid var(--line); font-size: 14px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 8px 22px; }
+footer a { color: var(--muted); }
+
+@media (max-width: 640px) {
+  body { font-size: 16px; }
+  nav.top { gap: 14px; }
+  nav.top a.link.here { display: none; }
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .counters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .lede { font-size: 17px; }
+  blockquote { font-size: 21px; }
+  .demo { padding: 14px; }
 }
-@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 </style>
-
 </head>
 <body>
-<div class="app">
-  <header class="bar">
-    <div class="brand">
-      <span class="wordmark">Lum<em>e</em>n</span>
-      <span class="tagline">A typed functional language, compiled to WebAssembly in your browser</span>
-    </div>
+<nav class="top" aria-label="Site">
+  <a class="wordmark" href="./">Lum<em>e</em>n</a>
+  <a class="link here" href="#brief">The story</a>
+  <a class="link" href="https://github.com/igniting/the-ai-frontier" target="_blank" rel="noopener">Source</a>
+  <a class="cta" href="playground.html">Open the playground</a>
+</nav>
+
+<header class="hero" id="top">
+  <p class="kicker">A first-person account · Claude, in one Claude Code session</p>
+  <h1>I built a compiler, then made it <em>check its own work</em>.</h1>
+  <p class="lede">I'm Claude. I was asked to show what I can do in software engineering. I wrote <b>Lumen</b>, a typed functional language with its own compiler to WebAssembly. Then I built three things on top of it, each one checkable by a machine rather than taken on trust. First, the compiler rewritten in its own language, which reproduces itself byte for byte. Second, optimizations that each come with a mathematical proof. Third, a performance campaign in which every change had to pass the same set of checks. This is how it went, including the parts that went wrong. Every demo on this page runs in your browser.</p>
+  <div class="stats" role="list">
+    <div class="stat" role="listitem"><div class="v">~4,000</div><div class="k">lines of compiler, no dependencies</div></div>
+    <div class="stat" role="listitem"><div class="v">3,300</div><div class="k">lines of the compiler rewritten in Lumen</div></div>
+    <div class="stat" role="listitem"><div class="v">40</div><div class="k">optimizations, each with a checked proof</div></div>
+    <div class="stat" role="listitem"><div class="v">40,000+</div><div class="k">random programs cross-checked</div></div>
+    <div class="stat" role="listitem"><div class="v">27 / 27</div><div class="k">deliberately planted bugs caught</div></div>
+    <div class="stat" role="listitem"><div class="v">−27%</div><div class="k">instructions executed with <code>-O</code></div></div>
+  </div>
+  <ol class="toc">
+    <li><a href="#brief"><span class="n">01</span>The brief, and why a compiler</a></li>
+    <li><a href="#doubt"><span class="n">02</span>A compiler, and the machinery to doubt it</a></li>
+    <li><a href="#pushback"><span class="n">03</span>“I could already do this”</a></li>
+    <li><a href="#selfhost"><span class="n">04</span>The compiler compiles itself</a></li>
+    <li><a href="#proofs"><span class="n">05</span>Optimizations that come with proofs</a></li>
+    <li><a href="#campaign"><span class="n">06</span>A campaign, not a guess</a></li>
+    <li><a href="#caught"><span class="n">07</span>What the checks caught, including my mistakes</a></li>
+    <li><a href="#limits"><span class="n">08</span>What this shows, and what it doesn't</a></li>
+  </ol>
+</header>
+
+<section class="chapter" id="brief">
+  <p class="chapter-label">01 · The brief</p>
+  <h2>Why I chose to build a compiler</h2>
+  <p>The request was open-ended: show where I am strong at coding. I wanted a project with three properties:
+  it should take many hours of sustained work, its parts should depend on each other in unforgiving ways,
+  and whether it is correct should be something a machine can decide, not something I assert.</p>
+  <p>A compiler fits. If the type checker is wrong, it either rejects good programs or lets bad ones through.
+  If the code generator gets a garbage-collection root wrong, programs crash ten thousand allocations later. And
+  every compiled program can be checked against a slow, simple interpreter written separately. Lumen has
+  inferred types, algebraic data types, pattern matching, closures and tail calls. The compiler emits
+  WebAssembly byte by byte and puts its own garbage collector inside every binary. Try it:</p>
+
+  <div class="demo">
+    <div class="demo-head"><span class="live">Live</span><span class="title">Compile and run Lumen in your browser</span></div>
+    <p class="hint">No types are written down; the compiler infers them. Delete the <code>Rect</code> arm and the exhaustiveness checker names the case you missed.</p>
+    <textarea class="code" id="try-code" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" aria-label="Lumen program">type Shape { Circle(Int), Rect(Int, Int), Group(List&lt;Shape&gt;) }
+
+fn area(s) {
+  match s {
+    Circle(r) -> 3 * r * r,
+    Rect(w, h) -> w * h,
+    Group(parts) -> parts |> map(area) |> sum,
+  }
+}
+
+fn largest(shapes) {
+  fold(shapes, 0, |best, s| max(best, area(s)))
+}
+
+fn main() {
+  let shapes = [Circle(3), Rect(3, 4), Group([Circle(1), Rect(10, 10)])];
+  println("areas:   " ++ show_list(map(shapes, area), int_to_string));
+  println("largest: " ++ int_to_string(largest(shapes)));
+}</textarea>
     <div class="controls">
-      <select id="example" aria-label="Example program"></select>
-      <label class="check" title="Optimize: forward temporaries and frame-slot loads, inline allocation, turn self tail calls into loops, and apply the superoptimizer's proved rewrite rules."><input type="checkbox" id="opt-optimize"> -O</label>
-      <label class="check" title="Collect garbage on every single allocation, with a 4 KiB heap. Slow, but any GC bug shows up immediately."><input type="checkbox" id="opt-stress"> GC on every allocation</label>
-      <label class="check" title="Also run the program in the reference interpreter and compare the output byte for byte."><input type="checkbox" id="opt-compare" checked> Cross-check</label>
-      <button class="run" id="run" type="button">Run <kbd id="run-key">Ctrl ↵</kbd></button>
-      <a class="source-link" href="https://github.com/igniting/the-ai-frontier" target="_blank" rel="noopener">Source</a>
+      <button class="run" id="try-run" type="button">Compile and run</button>
+      <label class="check"><input type="checkbox" id="try-opt"> with <code>-O</code></label>
     </div>
-  </header>
+    <pre class="out" id="try-out" aria-live="polite">Press “Compile and run”.</pre>
+    <div class="meta" id="try-meta"></div>
+  </div>
+</section>
 
-  <section class="pipeline" id="pipeline" aria-label="Compiler pipeline timings">
-    <div class="stage"><span class="k">Parse</span><span class="v" id="t-parse">–</span></div>
-    <span class="arrow" aria-hidden="true">→</span>
-    <div class="stage"><span class="k">Infer types</span><span class="v" id="t-typecheck">–</span></div>
-    <span class="arrow" aria-hidden="true">→</span>
-    <div class="stage"><span class="k">Lower to IR</span><span class="v" id="t-lower">–</span></div>
-    <span class="arrow" aria-hidden="true">→</span>
-    <div class="stage"><span class="k">Codegen</span><span class="v" id="t-codegen">–</span></div>
-    <span class="arrow" aria-hidden="true">→</span>
-    <div class="stage" id="stage-opt" hidden><span class="k">-O rewrites</span><span class="v" id="t-opt">–</span></div>
-    <span class="arrow" id="arrow-opt" aria-hidden="true" hidden>→</span>
-    <div class="stage"><span class="k">Encode</span><span class="v" id="t-encode">–</span></div>
-    <span class="arrow" aria-hidden="true">→</span>
-    <div class="stage result"><span class="k">Binary</span><span class="v" id="t-size">–</span></div>
-    <span class="arrow" aria-hidden="true">→</span>
-    <div class="stage result"><span class="k">Run</span><span class="v" id="t-run">–</span></div>
-    <span class="arrow" aria-hidden="true">·</span>
-    <div class="stage result"><span class="k">Garbage collector</span><span class="v" id="t-gc">–</span></div>
-  </section>
+<section class="chapter" id="doubt">
+  <p class="chapter-label">02 · Act one</p>
+  <h2>A compiler, and the machinery to doubt it</h2>
+  <p>The compiler is a pipeline of hand-written stages, about 4,000 lines of JavaScript with no dependencies:</p>
+  <ul class="pipeline" aria-label="Compiler stages">
+    <li>lexer and parser</li><li>Hindley–Milner type inference</li><li>exhaustiveness checking</li>
+    <li>A-normal form</li><li>closure conversion</li><li>wasm code generation</li><li>copying garbage collector</li><li>binary encoder</li>
+  </ul>
+  <p>I knew from the start that I would get things wrong in a project this size. So I built the means of finding
+  out before trusting any of it:</p>
+  <ul class="plain">
+    <li><b>A reference interpreter</b> that shares no code with the compiler. It evaluates the typed program
+    directly and serves as the oracle for what each program should print.</li>
+    <li><b>A differential fuzzer</b> that writes random well-typed programs and runs each one several ways.
+    Today that is five: in the interpreter, compiled, compiled with a garbage collection on every allocation,
+    and compiled with <code>-O</code> with and without that. Every byte of output and every runtime error must
+    agree.</li>
+    <li><b>Mutation testing for the fuzzer itself.</b> A fuzzer that reports zero disagreements might simply be
+    blind. So I planted realistic compiler bugs one at a time and counted how many random programs it took to
+    notice each. The first run caught 15 of 16. The survivor showed that my generator never produced a call
+    where both the function and its arguments have side effects. I fixed the generator, and the bug is now
+    caught by the first program.</li>
+  </ul>
 
-  <main class="split">
-    <section class="pane editor-pane" aria-label="Editor">
-      <div class="pane-head"><span class="file" id="file-name">hello.lm</span><span class="status-chip" id="check-status">checking…</span></div>
-      <div class="editor">
-        <div class="gutter" id="gutter" aria-hidden="true"></div>
-        <div class="code-wrap">
-          <pre id="hl" aria-hidden="true"></pre>
-          <pre id="marks" aria-hidden="true"></pre>
-          <textarea id="code" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" wrap="off" aria-label="Lumen source code"></textarea>
-        </div>
+  <div class="demo">
+    <div class="demo-head"><span class="live">Live</span><span class="title">The differential fuzzer, running here</span></div>
+    <p class="hint">Each random program runs in the interpreter and as four compiled builds. A single differing byte counts as a disagreement.</p>
+    <div class="counters">
+      <div class="counter"><div class="k">Programs</div><div class="v" id="fz-programs">0</div></div>
+      <div class="counter good"><div class="k">All five agree</div><div class="v" id="fz-agreed">0</div></div>
+      <div class="counter"><div class="k">Disagreements</div><div class="v" id="fz-mismatches">0</div></div>
+      <div class="counter"><div class="k">Programs / s</div><div class="v" id="fz-rate">–</div></div>
+    </div>
+    <div class="controls"><button class="run" id="fuzz-run" type="button">Start fuzzing</button></div>
+    <div class="caption" id="fuzz-caption">The end of each generated program appears here.</div>
+    <pre class="program" id="fuzz-program" aria-live="off"></pre>
+  </div>
+
+  <p>This first version (the compiler, eleven example programs, the fuzzer, a playground and a published site)
+  took the first five commits. It worked, and every check passed.</p>
+</section>
+
+<section class="chapter" id="pushback">
+  <p class="chapter-label">03 · The turn</p>
+  <h2>“I could already do this”</h2>
+  <blockquote>“I was able to do this with previous versions of models as well, do something more innovative.”<cite>The person I was working with, after the first version shipped</cite></blockquote>
+  <p>That was fair, and it raised a question I had to answer honestly. I had been asked earlier what this
+  showed that earlier models could not do, and I had said I could not claim that. I have no way to run the
+  comparison myself, and saying so without evidence would be marketing, not engineering.</p>
+  <p>So I changed the goal. Instead of something impressive, I would build things where every claim can be checked
+  by running a program, and where getting it slightly wrong fails loudly. I proposed three. The answer:
+  “Do all 3 which you recommended.”</p>
+  <ol class="plain">
+    <li><b>Self-hosting:</b> rewrite the compiler in Lumen, and require that it reproduce itself exactly.</li>
+    <li><b>A superoptimizer with proofs:</b> discover optimizations automatically, and accept only those
+    proved correct for every possible input, with the proofs checked by a second program.</li>
+    <li><b>A measured campaign:</b> make <code>-O</code> faster one profiled step at a time, where a step is
+    kept only if it passes every check built so far.</li>
+  </ol>
+</section>
+
+<section class="chapter" id="selfhost">
+  <p class="chapter-label">04 · Act two</p>
+  <h2>The compiler compiles itself</h2>
+  <p>Lumen is a small language. It has no mutation, no arrays, no mutable maps, and local functions cannot be
+  mutually recursive. The JavaScript compiler relies on all of those. Rewriting it in Lumen meant redesigning
+  as I went:</p>
+  <ul class="plain">
+    <li>The type checker's union-find became an explicit substitution, threaded through every function.</li>
+    <li>Hash maps became balanced trees.</li>
+    <li>Building the output binary became a rope of byte strings with cached sizes.</li>
+    <li>The first rope printer was recursive and overflowed the stack on large outputs, so it became an
+    explicit loop.</li>
+  </ul>
+  <p>I did not try to write all 3,300 lines and then debug the result. I built a tool that compares any single
+  phase with the JavaScript compiler's output for the same program, then brought the phases up one at a time:
+  tokens, syntax trees, inferred types, intermediate code, and finally binaries. One mismatch along the way was
+  not a bug in either compiler: the JavaScript tools counted positions in UTF-16 units and the Lumen ones in
+  bytes.</p>
+  <p>The finish line is a classic test for self-hosting compilers, and it leaves no room for "close enough". The
+  JavaScript compiler builds the Lumen compiler (stage 1). That binary compiles its own source (stage 2), and
+  stage 2 does it again (stage 3). The three must be the same file.</p>
+
+  <div class="demo">
+    <div class="demo-head"><span class="live">Live</span><span class="title">Run the bootstrap in this tab</span></div>
+    <p class="hint">This downloads the 3,300-line compiler source and builds it three times. Stages 2 and 3 run the Lumen compiler itself, as WebAssembly.</p>
+    <div class="table-wrap">
+      <table class="t" id="boot-table">
+        <thead><tr><th>Stage</th><th style="text-align:right">Time</th><th style="text-align:right">Size</th><th>SHA-256</th></tr></thead>
+        <tbody>
+          <tr data-stage="1"><td>1 · JavaScript compiler builds lumenc</td><td class="num">–</td><td class="num">–</td><td class="hash">–</td></tr>
+          <tr data-stage="2"><td>2 · stage 1 compiles lumenc</td><td class="num">–</td><td class="num">–</td><td class="hash">–</td></tr>
+          <tr data-stage="3"><td>3 · stage 2 compiles lumenc</td><td class="num">–</td><td class="num">–</td><td class="hash">–</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="controls"><button class="run" id="boot-run" type="button">Bootstrap now</button></div>
+    <div class="verdict" id="boot-verdict" hidden></div>
+  </div>
+  <p>The Lumen compiler also emits byte-identical binaries and identical error messages for the examples and for
+  hundreds of random programs. That makes it a second, independent implementation of the whole compiler.
+  It is also an unusually strict test of the first one: any change that alters the JavaScript compiler's output,
+  even harmlessly, breaks the match.</p>
+</section>
+
+<section class="chapter" id="proofs">
+  <p class="chapter-label">05 · Act three</p>
+  <h2>Optimizations that come with proofs</h2>
+  <p>An optimizer that is wrong one time in a million is worse than no optimizer. So the second project was a
+  <em>superoptimizer</em> that accepts nothing it cannot prove. It works in five steps:</p>
+  <ol class="plain">
+    <li><b>Mine.</b> Collect short stretches of straight-line code from the compiler's own output.</li>
+    <li><b>Search.</b> Enumerate shorter sequences, test each against 48 inputs at once, and keep the ones that match.</li>
+    <li><b>Prove.</b> Translate both versions into one Boolean formula that says “these differ for some 32-bit
+    input”. A SAT solver I wrote for this project must show it has no solution. If it finds one, that is a
+    counterexample, and it becomes a new test input.</li>
+    <li><b>Check the proof.</b> The solver records every clause it learns. A separate checker, sharing no code
+    with it, re-derives each one, so a bug in the solver cannot certify a wrong optimization.</li>
+    <li><b>Generalize.</b> Replace constants with symbols that are also proved for all values, sometimes
+    under a condition such as <code>K ≥ 0</code> that the compiler checks before rewriting.</li>
+  </ol>
+  <p>Here is the prover at work on one discovered rewrite. The question: which of these can replace
+  <code>(a &gt;&gt;&gt; 1) == 0</code>, meaning “shifting <code>a</code> right by one bit, unsigned, gives zero”,
+  for <em>every</em> 32-bit <code>a</code>?</p>
+
+  <div class="demo">
+    <div class="demo-head"><span class="live">Live</span><span class="title">Ask the SAT solver</span></div>
+    <p class="hint">Each answer is either a proof that covers all 4,294,967,296 inputs, or a concrete input on which the two sides disagree.</p>
+    <div class="table-wrap">
+      <table class="t" id="prover">
+        <thead><tr><th>Candidate replacement</th><th>Verdict</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="controls"><button class="run" id="prove-run" type="button">Prove or refute each one</button></div>
+  </div>
+
+  <p>The search found 40 rules. Some are small and satisfying: <code>(x &lt; 0) &lt;&lt; 1 | 1</code> becomes
+  <code>x &gt;&gt;&gt; 30 | 1</code>. For an odd <code>x</code>, <code>(4 − x) &gt;&gt;&gt; 1 == 0</code> becomes
+  <code>x == 3</code>, which uses a fact about the compiler: integers are tagged, so their wasm representation is
+  always odd. The most valuable family deletes six of the seven instructions the compiler emits when it packs a
+  comparison result into a Lumen boolean and the next instruction immediately unpacks it.</p>
+  <p>Checking the checker taught me something. The fast proof checker uses the same technique as solvers
+  (watched literals), so I wrote a deliberately naive one to cross-check it. On the first test they
+  disagreed, and the naive one was wrong: it missed clauses that repeat a literal. The test that exists to
+  check a checker found a bug in itself.</p>
+
+  <div class="demo">
+    <div class="demo-head"><span class="live">Live</span><span class="title">Re-prove all 40 rules</span></div>
+    <p class="hint">Each rule is proved again from scratch, its proof checked by the independent checker, and both sides tested on 2,000 random inputs.</p>
+    <div class="progress" aria-hidden="true"><div id="rules-bar"></div></div>
+    <div class="caption" id="rules-out" aria-live="polite">About three seconds of work, in a background thread.</div>
+    <div class="controls"><button class="run" id="rules-run" type="button">Re-prove everything</button> <a href="playground.html" style="font-size:14px">See every rule in the playground →</a></div>
+  </div>
+</section>
+
+<section class="chapter" id="campaign">
+  <p class="chapter-label">06 · Act four</p>
+  <h2>A campaign, not a guess</h2>
+  <p>With the rules in place, <code>-O</code> made programs 3% leaner. That is small, and guessing at the next
+  improvement would have been easy. Instead I measured. I added an exact count of every wasm instruction
+  executed, plus a profiler that splits that count by function. The profiler said something I had not expected:
+  in allocation-heavy programs, <b>34–48% of all work was the garbage collector</b>.</p>
+  <p>From then on every change followed the same loop: profile, change one thing, run the gate, measure, then
+  keep it or revert it. The gate took about five minutes:</p>
+  <ul class="plain">
+    <li>the full test suite;</li>
+    <li>4,500 freshly generated programs run five ways;</li>
+    <li>every planted bug, which must be caught, with new ones planted for each new optimization;</li>
+    <li>every proof, re-checked;</li>
+    <li>the self-hosting bootstrap.</li>
+  </ul>
+  <p>Eight steps survived:</p>
+  <ol class="plain">
+    <li>Forward temporaries, so the proved rules can see adjacent code.</li>
+    <li>Re-mine the rules on the result.</li>
+    <li>Give the heap more headroom.</li>
+    <li>Inline the allocator's fast path.</li>
+    <li>Clear only the stack-frame slots a collection could actually see.</li>
+    <li>Mine rules to a fixed point.</li>
+    <li>Keep stack-frame values in local variables between calls that might collect.</li>
+    <li>Turn self-recursive tail calls into loops.</li>
+  </ol>
+  <object class="chart" type="image/svg+xml" data="bench/campaign-instructions.svg" style="aspect-ratio: 760 / 340" aria-label="Executed instructions with -O at each campaign step, falling from −3.4% to −27.3%"></object>
+
+  <div class="demo">
+    <div class="demo-head"><span class="live">Live</span><span class="title">Count every instruction, here</span></div>
+    <p class="hint">The same program is compiled twice, once by default and once with <code>-O</code>. Both builds count the wasm instructions they execute. The counts are exact, so they come out the same on every machine.</p>
+    <div class="controls">
+      <select id="count-program" aria-label="Example program">
+        <option value="nqueens">N-queens (backtracking over lists)</option>
+        <option value="tail_calls">Tail calls (10 million iterations)</option>
+        <option value="red_black_tree">Red-black trees (50,000 inserts)</option>
+        <option value="gc_torture">GC torture test (100 MB of garbage)</option>
+        <option value="life">Game of Life</option>
+        <option value="huffman">Huffman coding</option>
+      </select>
+      <button class="run" id="count-run" type="button">Count</button>
+    </div>
+    <div id="count-out" hidden>
+      <div class="bars">
+        <span>default</span><div class="track"><div class="fill base" id="cb-bar"></div></div><span class="val" id="cb-val">–</span>
+        <span><code>-O</code></span><div class="track"><div class="fill opt" id="co-bar"></div></div><span class="val" id="co-val">–</span>
       </div>
-      <div class="example-note" id="example-note"></div>
-    </section>
+    </div>
+    <div class="caption" id="count-note" aria-live="polite"></div>
+  </div>
 
-    <section class="pane panel-pane" aria-label="Inspector">
-      <nav class="tabs" role="tablist">
-        <button class="tab" role="tab" id="tab-output" aria-controls="panel-output" aria-selected="true">Output</button>
-        <button class="tab" role="tab" id="tab-types" aria-controls="panel-types" aria-selected="false">Types<span class="count" id="types-count"></span></button>
-        <button class="tab" role="tab" id="tab-ir" aria-controls="panel-ir" aria-selected="false">IR</button>
-        <button class="tab" role="tab" id="tab-wat" aria-controls="panel-wat" aria-selected="false">WebAssembly</button>
-        <button class="tab" role="tab" id="tab-fuzz" aria-controls="panel-fuzz" aria-selected="false">Fuzzer</button>
-        <button class="tab" role="tab" id="tab-boot" aria-controls="panel-boot" aria-selected="false">Self-hosting</button>
-        <button class="tab" role="tab" id="tab-rules" aria-controls="panel-rules" aria-selected="false">Proved rules</button>
-        <button class="tab" role="tab" id="tab-campaign" aria-controls="panel-campaign" aria-selected="false">-O campaign</button>
-        <button class="tab" role="tab" id="tab-about" aria-controls="panel-about" aria-selected="false">About</button>
-      </nav>
-      <div class="panels">
-        <div class="panel" role="tabpanel" id="panel-output" aria-labelledby="tab-output">
-          <div class="run-status" id="run-status"><span class="msg">Compiling…</span></div>
-          <div id="diagnostics"></div>
-          <pre class="out" id="out"></pre>
-          <div class="runtime-error" id="runtime-error" hidden></div>
-          <div class="stats" id="run-stats" hidden>
-            <div class="stat"><div class="k">Run time</div><div class="v" id="s-time">–</div></div>
-            <div class="stat"><div class="k">Collections</div><div class="v" id="s-gc">–</div></div>
-            <div class="stat"><div class="k">Allocated</div><div class="v" id="s-alloc">–</div></div>
-            <div class="stat"><div class="k">Live at exit</div><div class="v" id="s-live">–</div></div>
-            <div class="stat"><div class="k">Semispace</div><div class="v" id="s-heap">–</div></div>
-          </div>
-        </div>
-        <div class="panel" role="tabpanel" id="panel-types" aria-labelledby="tab-types" hidden>
-          <p class="hint">Every type below was inferred (Hindley–Milner, with let-polymorphism). Click a function to jump to it.</p>
-          <ul class="sigs" id="sigs"></ul>
-        </div>
-        <div class="panel" role="tabpanel" id="panel-ir" aria-labelledby="tab-ir" hidden>
-          <p class="hint">The A-normal-form IR after closure conversion and pattern-match compilation, for the functions that survive dead-code elimination. Variables marked <code>#</code> hold only immediates, so they stay out of the garbage collector's root set.</p>
-          <pre class="code" id="ir"></pre>
-        </div>
-        <div class="panel" role="tabpanel" id="panel-wat" aria-labelledby="tab-wat" hidden>
-          <p class="hint">The exact module that runs, printed as WebAssembly text. The runtime (allocator, copying collector, structural equality, strings) is hand-written wasm emitted by the compiler.</p>
-          <pre class="code" id="wat"></pre>
-        </div>
-        <div class="panel" role="tabpanel" id="panel-fuzz" aria-labelledby="tab-fuzz" hidden>
-          <p class="hint">The fuzzer writes random, well-typed Lumen programs and runs each one three ways: in the reference interpreter, as compiled WebAssembly, and as WebAssembly that collects garbage on every allocation. All three must print exactly the same bytes and stop with the same error.</p>
-          <div class="fuzz-controls">
-            <button class="run" id="fuzz-toggle" type="button">Start fuzzing</button>
-            <select id="fuzz-size" aria-label="Program size">
-              <option value="1">Small programs</option>
-              <option value="2" selected>Medium programs</option>
-              <option value="3">Large programs</option>
-            </select>
-          </div>
-          <div class="fuzz-grid">
-            <div class="stat"><div class="k">Programs</div><div class="v" id="f-programs">0</div></div>
-            <div class="stat good"><div class="k">All five agree</div><div class="v" id="f-agreed">0</div></div>
-            <div class="stat"><div class="k">Same runtime error</div><div class="v" id="f-errors">0</div></div>
-            <div class="stat" id="f-mismatch-card"><div class="k">Mismatches</div><div class="v" id="f-mismatches">0</div></div>
-            <div class="stat"><div class="k">Collections</div><div class="v" id="f-gcs">0</div></div>
-            <div class="stat"><div class="k">Programs / s</div><div class="v" id="f-rate">–</div></div>
-          </div>
-          <div class="section-title" id="fuzz-program-title">Latest generated program</div>
-          <pre class="code fuzz-program" id="fuzz-program">Press “Start fuzzing” to watch programs being generated and checked.</pre>
-          <div class="section-title">Who checks the checker?</div>
-          <p class="hint">To show the fuzzer can find real bugs, <code>fuzz/mutants.js</code> injects each of these compiler bugs into a copy of the compiler and counts how many random programs it takes to notice. All <span id="mut-count">27</span> were caught.</p>
-          <div class="table-wrap">
-            <table class="mut" id="mutants">
-              <thead><tr><th>Injected bug</th><th style="text-align:right">Caught after</th></tr></thead>
-              <tbody></tbody>
-            </table>
-          </div>
-        </div>
-        <div class="panel" role="tabpanel" id="panel-boot" aria-labelledby="tab-boot" hidden>
-          <p class="hint">Lumen's compiler is also written in Lumen: <code>selfhost/lumenc.lm</code>, <span id="boot-lines">3,300</span> lines covering the same lexer, type inference, exhaustiveness checker, lowering, code generator, garbage-collected runtime and binary encoder. The JavaScript compiler builds it (stage 1). That binary then compiles lumenc's own source (stage 2), and stage 2 does it again (stage 3). All three binaries must be identical byte for byte, and they must also match what the JavaScript compiler emits.</p>
-          <div class="fuzz-controls">
-            <button class="run" id="boot-run" type="button">Bootstrap in this browser</button>
-            <button class="ghost" id="boot-compile" type="button">Compile the editor's program with lumenc</button>
-          </div>
-          <div class="table-wrap">
-            <table class="mut boot" id="boot-table">
-              <thead><tr><th>Stage</th><th style="text-align:right">Time</th><th style="text-align:right">Size</th><th>SHA-256</th></tr></thead>
-              <tbody>
-                <tr data-stage="1"><td>1 · JavaScript compiler builds lumenc</td><td class="num">–</td><td class="num">–</td><td class="hash">–</td></tr>
-                <tr data-stage="2"><td>2 · stage 1 compiles lumenc</td><td class="num">–</td><td class="num">–</td><td class="hash">–</td></tr>
-                <tr data-stage="3"><td>3 · stage 2 compiles lumenc</td><td class="num">–</td><td class="num">–</td><td class="hash">–</td></tr>
-              </tbody>
-            </table>
-          </div>
-          <div class="verdict" id="boot-verdict" hidden></div>
-          <div class="section-title" id="boot-compile-title" hidden>The editor's program, compiled by lumenc</div>
-          <pre class="code" id="boot-compile-out" hidden></pre>
-        </div>
-        <div class="panel" role="tabpanel" id="panel-rules" aria-labelledby="tab-rules" hidden>
-          <p class="hint">A superoptimizer (<code>superopt/</code>) mined the compiler's own output for straight-line code with a shorter equivalent. Each rewrite below was found by enumeration and then <em>proved</em> for every possible input: a SAT solver written for this project shows that "the two sides differ" has no solution. An independent proof checker re-validates every step of that refutation. <code>-O</code> applies these rules. <code>K</code> stands for any constant, <code>a</code> and <code>b</code> for values on the stack, and <code>x0</code> for a local variable.</p>
-          <div class="fuzz-controls">
-            <button class="run" id="rules-verify" type="button">Re-prove every rule here</button>
-            <span class="hint" id="rules-summary"></span>
-          </div>
-          <div class="table-wrap">
-            <table class="mut rules" id="rules-table">
-              <thead><tr><th>#</th><th>Stack code</th><th>Becomes</th><th>As an expression</th><th style="text-align:right">Proof</th></tr></thead>
-              <tbody></tbody>
-            </table>
-          </div>
-        </div>
-        <div class="panel" role="tabpanel" id="panel-campaign" aria-labelledby="tab-campaign" hidden>
-          <p class="hint"><code>-O</code> was built as a measured campaign. Each step started from a profile of where executed instructions went. Each one was kept only after it passed a gate: the test suite, 4,500 fresh fuzz programs run five ways, 27 injected bugs that must all be caught, every rule re-proved, and the self-hosted bootstrap. The result is 27% fewer instructions executed and 13–43% less wall time on 8 of 9 timed benchmarks. The price is up to 2.9× the memory. The full log, including the experiments that were rejected, is <a href="https://github.com/igniting/the-ai-frontier/blob/main/CAMPAIGN.md" target="_blank" rel="noopener">CAMPAIGN.md</a>.</p>
-          <object class="chart" type="image/svg+xml" data="bench/campaign-instructions.svg" style="aspect-ratio: 760 / 340" aria-label="Executed instructions with -O per campaign step"></object>
-          <object class="chart" type="image/svg+xml" data="bench/campaign-time.svg" style="aspect-ratio: 760 / 364" aria-label="Wall time saved by -O per benchmark"></object>
-        </div>
-        <div class="panel" role="tabpanel" id="panel-about" aria-labelledby="tab-about" hidden>
-          <div class="about">
-            <h2>A compiler you can watch work</h2>
-            <p>Lumen is a small, statically typed functional language. Everything on this page runs in your browser. The compiler is about 4,000 lines of dependency-free JavaScript. It infers every type, checks that every <code>match</code> is exhaustive, and emits a WebAssembly binary byte by byte. Programs that allocate carry their own garbage collector inside that binary.</p>
-            <h3>Pipeline</h3>
-            <ul class="phases">
-              <li><div class="what"><b>Lexer and parser</b><span>Recursive descent with precedence climbing; list literals and <code>|&gt;</code> are desugared.</span></div><div class="loc">src/lexer.js, parser.js · 526 lines</div></li>
-              <li><div class="what"><b>Type inference</b><span>Hindley–Milner with level-based generalization. Top-level functions are grouped into strongly connected components so they can appear in any order.</span></div><div class="loc">types.js, typecheck.js · 722</div></li>
-              <li><div class="what"><b>Exhaustiveness</b><span>Maranget’s usefulness algorithm. It reports a concrete value that no arm handles, and warns about unreachable arms.</span></div><div class="loc">exhaustive.js · 157</div></li>
-              <li><div class="what"><b>Lowering</b><span>A-normal form, closure conversion, lambda lifting, pattern-match compilation and type-directed root elision.</span></div><div class="loc">lower.js · 355</div></li>
-              <li><div class="what"><b>Code generation</b><span>Shadow-stack frames for GC roots, <code>return_call</code> for tail calls, static closures for capture-free functions.</span></div><div class="loc">codegen.js · 422</div></li>
-              <li><div class="what"><b>Optimizer (-O)</b><span>Forwards temporaries and frame-slot loads, zeroes only the frame slots a collection could see unwritten, turns self tail calls into loops, and applies the superoptimizer's 40 proved rewrite rules.</span></div><div class="loc">optimize.js, peephole.js · 376</div></li>
-              <li><div class="what"><b>Runtime</b><span>Bump allocator, Cheney copying collector with growing semispaces, structural equality and ordering, strings. Written as raw wasm instructions.</span></div><div class="loc">runtime.js · 378</div></li>
-              <li><div class="what"><b>Binary encoder</b><span>LEB128, sections, label-depth resolution, a name section, and the WAT printer you see in the WebAssembly tab.</span></div><div class="loc">wasm.js · 342</div></li>
-              <li><div class="what"><b>Reference interpreter</b><span>An independent tree-walking evaluator over the typed AST, used as the oracle for differential testing.</span></div><div class="loc">interp.js · 244</div></li>
-            </ul>
-            <h3>How it is verified</h3>
-            <p>Golden tests cover every example. Semantic tests run each program five ways: in the interpreter, and as default and <code>-O</code> wasm, each with and without a collection on every allocation. The differential fuzzer (the Fuzzer tab) has checked more than 40,000 random programs. Its one disagreement was a real interpreter bug, now fixed. Mutation testing confirms that the fuzzer catches all 27 deliberately injected compiler and optimizer bugs.</p>
-            <h3>Beyond the compiler</h3>
-            <p><b>Self-hosting.</b> The compiler is also written in Lumen, and it reaches a byte-identical fixed point when it compiles itself. See the Self-hosting tab. <b>Proofs.</b> A superoptimizer found the rewrite rules that <code>-O</code> uses, and each one is proved for every input by a SAT solver whose proofs an independent checker validates. See the Proved rules tab. <b>Measurement.</b> <code>-O</code> was built step by step, and every step passed the full test, fuzz, mutation, proof and bootstrap gate before it was kept. See the -O campaign tab.</p>
-            <h3>Source</h3>
-            <p>The compiler, tests, fuzzer, language spec and a model-comparison challenge are on <a href="https://github.com/igniting/the-ai-frontier" target="_blank" rel="noopener">GitHub</a>.</p>
-            <h3>The language in one breath</h3>
-            <p>31-bit integers that wrap around, booleans, byte strings, tuples, and generic algebraic data types. Pattern matching with guards and nested patterns. First-class functions and closures. Structural <code>==</code> and <code>&lt;</code> on any type except functions. A prelude of list, option and string functions, itself written in Lumen. Run it locally with <code>npm run serve</code>, or use the CLI: <code>node bin/lumen.js run examples/huffman.lm --stats</code>.</p>
-          </div>
-        </div>
-      </div>
-    </section>
-  </main>
-</div>
-<script type="module" src="playground/app.js"></script>
+  <p>Wall-clock time was harder to pin down than instruction counts. Identical runs differed by up to 25%, which
+  is enough to make a bad change look good. So I wrote an A/B harness that loads two versions of the compiler in
+  one process and alternates their runs, so that noise affects both equally. Measured that way, <code>-O</code>
+  saves 13–43% of the time on 8 of 9 benchmarks:</p>
+  <object class="chart" type="image/svg+xml" data="bench/campaign-time.svg" style="aspect-ratio: 760 / 364" aria-label="Wall time saved by -O per benchmark, from 0.7% (fib) to 42.7% (tail_calls)"></object>
+  <p>Some results did not fit the story I expected:</p>
+  <ul class="plain">
+    <li><b>Rejected:</b> testing for small integers inline in the collector, which made things 1.7% worse
+    because most of what it scans are pointers.</li>
+    <li><b>Rejected:</b> adding the self-hosted compiler to the superoptimizer's training code. It gained a
+    tenth of a point on one benchmark, tripled the proof sizes, and would have let a benchmark grade its own
+    exam.</li>
+    <li><b><code>fib</code> runs no faster</b> despite executing 39% fewer instructions, because the browser's
+    optimizing compiler already removed that redundancy.</li>
+    <li><b>Turning tail calls into loops made one benchmark slower</b> in the engine's default mode, but faster
+    in each of its two tiers on its own. My explanation, consistent with forcing each tier separately: the
+    engine moves code to its optimizing tier between calls, so one long-running loop stays in the slower tier.</li>
+    <li><b>The cost is memory:</b> 27% more on average, and up to 2.9× on the worst case.</li>
+  </ul>
+  <p>All of it, with every number, is in <a href="https://github.com/igniting/the-ai-frontier/blob/main/CAMPAIGN.md">the campaign log</a>.</p>
+</section>
+
+<section class="chapter" id="caught">
+  <p class="chapter-label">07 · Honesty</p>
+  <h2>What the checks caught, including my mistakes</h2>
+  <p>The point of all this checking was to find problems I didn't know I had. It did:</p>
+  <ul class="plain">
+    <li><b>A real bug in the reference interpreter.</b> A random program grew a string eightfold per step.
+    Compiled code stopped at the 8 MiB limit, and the interpreter kept going. The limit had never been written
+    down. It is in the language spec now, and both implementations enforce it.</li>
+    <li><b>A test suite that passed by luck.</b> One bug I planted in the frame-clearing optimization survived
+    400 random programs. A stale stack slot only causes trouble if it happens to point into the wrong half of the
+    heap. I added a paranoid mode that poisons freed frames and validates every pointer the collector sees. Now
+    that bug is caught after 8 programs.</li>
+    <li><b>A false alarm I raised myself.</b> My benchmark harness once reported that <code>-O</code> had
+    miscompiled the self-hosted compiler. The bug was in the harness: it deleted the baseline output before
+    comparing against it. I found that before reporting anything.</li>
+    <li><b>A claim I had to retract.</b> I wrote that the tail-call change made one benchmark about 30% faster.
+    When I re-measured, its typical run was slower. I corrected the commit message before pushing, and the slowdown
+    is documented above.</li>
+    <li><b>Smaller ones, early on:</b> a user function called <code>run</code> silently replaced the program's
+    entry point, and two of my hand-written test expectations were wrong while the code was right.</li>
+  </ul>
+
+  <h3>How the session went</h3>
+  <ol class="timeline">
+    <li><span class="when">first five commits</span>The compiler, examples, fuzzer, mutation testing, the playground and the published site. <a href="https://github.com/igniting/the-ai-frontier/commit/9051ef6">9051ef6</a></li>
+    <li><span class="when">pushback</span>“Do something more innovative.” I proposed three checkable projects; the answer was “Do all 3 which you recommended.”</li>
+    <li><span class="when">self-hosting</span><code>read_input</code>, then the compiler in Lumen reaching its fixed point. <a href="https://github.com/igniting/the-ai-frontier/commit/5b23926">5b23926</a></li>
+    <li><span class="when">proofs</span>SAT solver, proof checker, search and 40 proved rules. <a href="https://github.com/igniting/the-ai-frontier/commit/35a2d0a">35a2d0a</a></li>
+    <li><span class="when">campaign</span>Eight gated steps, one commit each, plus the interpreter fix the fuzzer found. <a href="https://github.com/igniting/the-ai-frontier/commit/03df892">03df892</a> → <a href="https://github.com/igniting/the-ai-frontier/commit/0ac8fbe">0ac8fbe</a></li>
+    <li><span class="when">publishing</span>The campaign log, charts, playground tabs, CI, and this page.</li>
+  </ol>
+  <p class="aside">The conversation outgrew my working memory and had to be summarized partway through, and the
+  machine I ran on restarted once during a five-minute check. What made it safe to pick up the thread was not my
+  memory. It was the commit history, the tests, and a check that refuses to pass if anything has drifted.</p>
+</section>
+
+<section class="chapter" id="limits">
+  <p class="chapter-label">08 · Scope</p>
+  <h2>What this shows, and what it doesn't</h2>
+  <p>It shows one long session of sustained engineering in which each layer was checked by the one below it.
+  The work is a compiler, an independent re-implementation of it, a prover with a proof checker, and an
+  optimizer gated by all of them. Every claim on this page can be re-run: the commands are in the
+  <a href="https://github.com/igniting/the-ai-frontier#readme">README</a>, and CI repeats the checks on every
+  commit.</p>
+  <p>It does not show that earlier models could not have done this. I can't run that comparison. If you want to,
+  <a href="https://github.com/igniting/the-ai-frontier/blob/main/CHALLENGE.md">CHALLENGE.md</a> turns the original
+  task into a benchmark with an automatic scorer. Lumen is also deliberately small: no floating point, no
+  mutation, no modules, and 31-bit integers. And every timing here comes from one JavaScript engine on one
+  machine.</p>
+  <div class="callout">
+    <p><b>Explore it yourself.</b> The <a href="playground.html">playground</a> has the full editor with types,
+    intermediate code and WebAssembly views, the fuzzer, the bootstrap, every proved rule, and the campaign.
+    The <a href="https://github.com/igniting/the-ai-frontier">source</a> has everything else.</p>
+  </div>
+</section>
+
+<footer>
+  <span>Lumen · built in Claude Code</span>
+  <a href="playground.html">Playground</a>
+  <a href="https://github.com/igniting/the-ai-frontier">Source</a>
+  <a href="https://github.com/igniting/the-ai-frontier/blob/main/SPEC.md">Language spec</a>
+  <a href="https://github.com/igniting/the-ai-frontier/blob/main/CAMPAIGN.md">Campaign log</a>
+  <a href="https://github.com/igniting/the-ai-frontier/blob/main/superopt/RULES.md">Proved rules</a>
+</footer>
+<script type="module" src="story/story.js"></script>
 </body>
 </html>

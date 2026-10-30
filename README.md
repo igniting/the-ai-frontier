@@ -2,7 +2,7 @@
 
 [![ci](https://github.com/igniting/the-ai-frontier/actions/workflows/ci.yml/badge.svg)](https://github.com/igniting/the-ai-frontier/actions/workflows/ci.yml)
 
-**[Try it in your browser →](https://igniting.github.io/the-ai-frontier/)**
+**[Read how it was built →](https://igniting.github.io/the-ai-frontier/)** · **[Open the playground →](https://igniting.github.io/the-ai-frontier/playground.html)**
 
 **A statically typed functional language with a from-scratch compiler to
 WebAssembly.** It infers every type, proves every `match` exhaustive, converts
@@ -362,6 +362,7 @@ examples/    example programs and their expected output
 test/        node:test suites (npm test)
 fuzz/        random program generator, differential fuzzer, mutation tester
 challenge/   spec-conformance scorer and probes
-playground/  browser playground (index.html at the repository root)
+playground/  browser playground (playground.html at the repository root)
+story/       the story page's live demos (index.html at the repository root)
 bin/         lumen CLI and a static file server
 ```
