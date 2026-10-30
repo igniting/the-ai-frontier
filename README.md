@@ -41,10 +41,13 @@ Four things are built on top of it:
   them sound.
 
 **[Lumen 2](lumen2/)** is a separate, newer language in this repository. Its
-types track effects (`io`, `fail`), memory is managed by Perceus reference
-counting with in-place reuse instead of a garbage collector, and its 64-bit
-integers stop on overflow. It is a fresh design with its own compiler,
-interpreter, spec and fuzzer, and shares no code with Lumen.
+types track effects, including capabilities that `main` must be granted. It
+proves array accesses and refinement types with checked SAT certificates,
+and has traits and property-based tests in the language. Its compiler
+certifies its own passes, and memory is managed by Perceus reference
+counting with in-place reuse instead of a garbage collector. It is a fresh
+design with its own compiler, interpreter, spec and fuzzer, and shares no
+code with Lumen.
 
 Claude built this end to end in Claude Code, as a demonstration of
 long-horizon, self-verifying software engineering. The repository also

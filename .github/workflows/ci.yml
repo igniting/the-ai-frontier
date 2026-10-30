@@ -48,6 +48,8 @@ jobs:
         run: npm test
       - name: Lumen 2 differential fuzzing, four ways (fresh seeds every run)
         run: node test/fuzz.js 1000 $(( 100000 + GITHUB_RUN_NUMBER * 1000 ))
+      - name: Lumen 2 certificates (IR types, ownership, DRUP proofs checked again)
+        run: node bin/lumen2.js certify examples/refine.lm --out lumen2-certificates
 
   schur:
     runs-on: ubuntu-latest
