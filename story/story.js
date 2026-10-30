@@ -7,7 +7,9 @@ const kib = (n) => (n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KiB`);
 
 // Old playground links (…/#nqueens) now live on their own page.
 const SECTIONS = new Set([...document.querySelectorAll('section[id], article[id], header[id]')].map((s) => s.id));
-if (location.hash && !SECTIONS.has(location.hash.slice(1))) location.replace(`playground.html${location.hash}`);
+const toPlayground = () => { if (location.hash && !SECTIONS.has(location.hash.slice(1))) location.replace(`playground.html${location.hash}`); };
+toPlayground();
+addEventListener('hashchange', toPlayground);
 
 function worker(path) {
   try { return new Worker(new URL(path, import.meta.url), { type: 'module' }); } catch { return null; }
