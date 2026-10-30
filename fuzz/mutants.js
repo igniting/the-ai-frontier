@@ -137,6 +137,22 @@ export const MUTANTS = [
     replace: '"rhs":[["i32.const",1],["i32.lt_u"]]',
   },
   {
+    name: '-O: a self tail call assigns the new arguments to the wrong parameters',
+    file: 'codegen.js',
+    find: 'for (const v of [...f.params].reverse()) emit(ls(storage.get(v.id).local ?? varName(v)));',
+    replace: 'for (const v of [...f.params]) emit(ls(storage.get(v.id).local ?? varName(v)));',
+  },
+  {
+    name: '-O: a self tail call loops back past the prologue (stale traced parameters)',
+    file: 'codegen.js',
+    find: 'const loopAt = body.length;',
+    replace: 'let loopAt = body.length;',
+    extra: [{
+      find: "        if (v.traced) emit(lg('$fp'), lg(varName(v)), slotStore(storage.get(v.id).slot));\n      }\n    }",
+      replace: "        if (v.traced) emit(lg('$fp'), lg(varName(v)), slotStore(storage.get(v.id).slot));\n      }\n    }\n    if (opts.optimize) loopAt = body.length;",
+    }],
+  },
+  {
     name: '-O: load forwarding keeps cached slot values across calls that may collect',
     file: 'optimize.js',
     find: "if (state && !safeCallees.has(arg)) state = new Map();",

@@ -1074,5 +1074,145 @@
     "memory": 3211264
    }
   }
+ },
+ {
+  "label": "8. self tail calls become loops (frame reused)",
+  "commit": "8bfb08a",
+  "results": {
+   "lumenc": {
+    "instructions": 2268233401,
+    "ms": 638.5,
+    "bytes": 305226,
+    "memory": 267452416
+   },
+   "fib": {
+    "instructions": 46541045,
+    "ms": 7.62,
+    "bytes": 3660,
+    "memory": 3211264
+   },
+   "sort": {
+    "instructions": 634422709,
+    "ms": 74.95,
+    "bytes": 8496,
+    "memory": 28770304
+   },
+   "strings": {
+    "instructions": 251479973,
+    "ms": 28.88,
+    "bytes": 7225,
+    "memory": 3211264
+   },
+   "gc_torture": {
+    "instructions": 1322911112,
+    "ms": 152.87,
+    "bytes": 6382,
+    "memory": 99811328
+   },
+   "red_black_tree": {
+    "instructions": 430281707,
+    "ms": 99.78,
+    "bytes": 10808,
+    "memory": 61931520
+   },
+   "tail_calls": {
+    "instructions": 456695413,
+    "ms": 32.33,
+    "bytes": 5248,
+    "memory": 45285376
+   },
+   "nqueens": {
+    "instructions": 231465296,
+    "ms": 27.7,
+    "bytes": 8312,
+    "memory": 3211264
+   },
+   "life": {
+    "instructions": 62234143,
+    "ms": 7.06,
+    "bytes": 11184,
+    "memory": 3211264
+   },
+   "mandelbrot": {
+    "instructions": 9579349,
+    "ms": 1.16,
+    "bytes": 6738,
+    "memory": 3211264
+   },
+   "huffman": {
+    "instructions": 859403,
+    "ms": 0.2,
+    "bytes": 12227,
+    "memory": 3211264
+   }
+  },
+  "base": {
+   "lumenc": {
+    "instructions": 3104348933,
+    "ms": 747.9,
+    "bytes": 280769,
+    "memory": 133234688
+   },
+   "fib": {
+    "instructions": 75743500,
+    "ms": 7.21,
+    "bytes": 3669,
+    "memory": 3211264
+   },
+   "sort": {
+    "instructions": 975728419,
+    "ms": 115.03,
+    "bytes": 8545,
+    "memory": 16187392
+   },
+   "strings": {
+    "instructions": 279633925,
+    "ms": 37.59,
+    "bytes": 7184,
+    "memory": 3211264
+   },
+   "gc_torture": {
+    "instructions": 1886016845,
+    "ms": 246.1,
+    "bytes": 6352,
+    "memory": 34013184
+   },
+   "red_black_tree": {
+    "instructions": 578604750,
+    "ms": 81.74,
+    "bytes": 10818,
+    "memory": 32571392
+   },
+   "tail_calls": {
+    "instructions": 851699575,
+    "ms": 87.93,
+    "bytes": 5345,
+    "memory": 67567616
+   },
+   "nqueens": {
+    "instructions": 318967128,
+    "ms": 47.37,
+    "bytes": 8236,
+    "memory": 3211264
+   },
+   "life": {
+    "instructions": 73452932,
+    "ms": 10.73,
+    "bytes": 10359,
+    "memory": 3211264
+   },
+   "mandelbrot": {
+    "instructions": 11476510,
+    "ms": 1.25,
+    "bytes": 6750,
+    "memory": 3211264
+   },
+   "huffman": {
+    "instructions": 1080496,
+    "ms": 0.25,
+    "bytes": 12268,
+    "memory": 3211264
+   }
+  }
  }
 ]

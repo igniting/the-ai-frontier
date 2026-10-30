@@ -18,7 +18,7 @@ import { reachableFunctions } from './lower.js';
 import {
   addRuntime, seq, c, lg, ls, lt, gg, gs, ld, st, call, header, TAG_CLOSURE, TAG_STRING, ERR, BUILTIN_RUNTIME,
 } from './runtime.js';
-import { optimize, nonCollecting, slotsNeedingZero } from './optimize.js';
+import { optimize, prePasses, nonCollecting, slotsNeedingZero } from './optimize.js';
 import { instrumentModule } from './instrument.js';
 
 const o = (name) => [name];
@@ -31,6 +31,7 @@ export const DEFAULTS = {
   gcStress: false,
   fuel: 0, // 0 = unlimited; otherwise max number of function calls
   optimize: false, // -O: the optimization pipeline of src/optimize.js
+  rulesOff: false, // with optimize: everything but the superoptimizer's rules (used to mine them)
   countInstructions: false, // export `icount`, the number of wasm instructions executed
 };
 
@@ -135,14 +136,21 @@ export function codegen(ir, options = {}) {
     const label = (base) => `$${base}${labelCounter++}`;
 
     // -------------------------------------------------------- prologue --
-    if (opts.fuel) {
-      emit(gg('$fuel'), c(1), o('i32.sub'), lt('$fuel_tmp'), gs('$fuel'), lg('$fuel_tmp'), c(0), o('i32.lt_s'),
-        ['if', null, null], c(ERR.FUEL), call('$rt:trap'), ['end']);
-      locals.push({ name: '$fuel_tmp', type: 'i32' });
-    }
+    // Under -O a self tail call becomes a branch back to `loopAt`, just after
+    // the frame is pushed: what follows it (fuel, zeroing, storing the
+    // parameters) runs again on every iteration, exactly as on entry.
+    const fuelCheck = () => emit(gg('$fuel'), c(1), o('i32.sub'), lt('$fuel_tmp'), gs('$fuel'), lg('$fuel_tmp'), c(0), o('i32.lt_s'),
+      ['if', null, null], c(ERR.FUEL), call('$rt:trap'), ['end']);
+    if (opts.fuel) locals.push({ name: '$fuel_tmp', type: 'i32' });
+    if (opts.fuel && !opts.optimize) fuelCheck();
     if (frameBytes) {
       emit(gg('$sp'), lt('$fp'), c(frameBytes), o('i32.add'), gs('$sp'),
         gg('$sp'), c(layout.STACK_LIMIT), o('i32.gt_u'), ['if', null, null], c(ERR.STACK), call('$rt:trap'), ['end']);
+    }
+    const loopAt = body.length;
+    let selfTail = false;
+    if (opts.fuel && opts.optimize) fuelCheck();
+    if (frameBytes) {
       if (slots > paramSlots) {
         zeroAt = body.length;
         emit(lg('$fp'), paramSlots ? [c(paramSlots * 4), o('i32.add')] : [], c(0), c((slots - paramSlots) * 4), ['memory.fill']);
@@ -315,6 +323,12 @@ export function codegen(ir, options = {}) {
           if (e.env) genAtom(e.env);
           else emit(c(0));
           e.args.forEach(genAtom);
+          if (tail && opts.optimize && e.fn === f.name) {
+            // -O: a self tail call reuses the frame: assign the parameters, loop.
+            selfTail = true;
+            for (const v of [...f.params].reverse()) emit(ls(storage.get(v.id).local ?? varName(v)));
+            return emit(ls('$env'), ['br', '$tail']);
+          }
           if (tail) {
             popFrame();
             return emit(['return_call', wasmName(e.fn)]);
@@ -350,6 +364,11 @@ export function codegen(ir, options = {}) {
     }
 
     genExpr(f.body, true);
+    if (selfTail) {
+      body.splice(loopAt, 0, ['loop', '$tail', 'i32']);
+      body.push(['end']);
+      if (zeroAt >= loopAt) zeroAt++;
+    }
     popFrame();
     if (needsTmp) locals.push({ name: '$tmp', type: 'i32' });
     if (opts.optimize && zeroAt >= 0) {
@@ -396,7 +415,7 @@ export function codegen(ir, options = {}) {
   if (opts.optimize && opts.gcStress) mod.addGlobal('$heap_base', 'i32', false, layout.HEAP_BASE);
   if (opts.fuel) mod.addGlobal('$fuel', 'i32', true, opts.fuel);
 
-  const peephole = opts.optimize ? optimize(mod) : null;
+  const peephole = opts.optimize ? (opts.rulesOff ? (prePasses(mod), null) : optimize(mod)) : null;
   mod.prune();
   if (opts.countInstructions) instrumentModule(mod);
   return { mod, layout, functionCount: funcs.length, peephole };

@@ -2,13 +2,13 @@
  "generated": "node superopt/search.js",
  "corpus": {
   "modules": 69,
-  "windows": 522,
+  "windows": 527,
   "minCount": 2,
   "fuzz": 60
  },
  "rounds": 2,
- "searches": 706,
- "seconds": 60.8,
+ "searches": 713,
+ "seconds": 48.9,
  "rules": [
   {
    "id": 0,

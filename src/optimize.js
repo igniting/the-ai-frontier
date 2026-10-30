@@ -181,11 +181,18 @@ function dropUnusedLocals(f) {
   f.locals = f.locals.filter((l) => used.has(l.name));
 }
 
-export function optimize(mod) {
+// The passes that run before the superoptimizer's rules (the rules are
+// mined from code in exactly this shape: see superopt/corpus.js).
+export function prePasses(mod) {
   const funcs = mod.funcs.filter((f) => f.oddLocals);
   const safeCallees = nonCollecting(mod);
   for (const f of funcs) forwardSlotLoads(f, safeCallees);
   for (const f of funcs) forwardTemps(f);
+  return funcs;
+}
+
+export function optimize(mod) {
+  const funcs = prePasses(mod);
   const peephole = applyRules(mod, RULES);
   for (const f of funcs) dropUnusedLocals(f);
   return peephole;
