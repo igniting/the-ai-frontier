@@ -127,6 +127,59 @@ test('properties: typed inputs, a Bool result, no effects but fail', () => {
   assert.equal(checkSource('property p(n: Int) { 10 / n > 0 }').ok, true, 'a property may fail');
 });
 
+test('refinements: proved partial operations do not fail', () => {
+  const s = sigs(`
+    fn safe_get(a, i) { if 0 <= i && i < array_length(a) { Some(array_get(a, i)) } else { None } }
+    fn average(xs) { let n = length(xs); if n == 0 { 0 } else { sum(xs) / n } }
+    fn first(a) { array_get(a, 0) }
+    fn last_char(s) { if string_length(s) > 0 { char_code_at(s, string_length(s) - 1) } else { -1 } }
+    fn sum_array(a: Array<Int>) -> Int {
+      fn go(i: {i: Int | 0 <= i}, acc) { if i < array_length(a) { go(i + 1, acc + array_get(a, i)) } else { acc } }
+      go(0, 0)
+    }
+    fn ratio(x, d) { match d { 0 -> 0, _ -> x / d } }
+    fn grid(n) { if n >= 0 { array_length(array_make(n, 0)) } else { 0 } }
+    fn main() { () }
+  `);
+  assert.equal(s.safe_get, 'fn(Array<a>, Int) -> Option<a>');
+  assert.equal(s.average, 'fn(List<Int>) -> Int');
+  assert.equal(s.first, 'fn(Array<a>) -> a ! fail');
+  assert.equal(s.last_char, 'fn(String) -> Int');
+  assert.equal(s.sum_array, 'fn(Array<Int>) -> Int');
+  assert.equal(s.ratio, 'fn(Int, Int) -> Int');
+  assert.equal(s.grid, 'fn(Int) -> Int');
+  // The prelude's own array functions are pure for the same reason.
+  assert.equal(sigs('fn f(a) { array_to_list(a) }\nfn main() { () }').f, 'fn(Array<a>) -> List<a>');
+});
+
+test('refinements: contracts are proved at every call, with counterexamples', () => {
+  const get = 'fn get(a: Array<Int>, i: {i: Int | 0 <= i && i < array_length(a)}) -> Int { array_get(a, i) }\n';
+  sigs(get + 'fn main() { let a = array_make(3, 7); println(int_to_string(get(a, 2))) }');
+  rejects(get + 'fn main() { let a = array_make(3, 7); println(int_to_string(get(a, 3))) }', /cannot prove that argument `i` of `get` satisfies `0 <= i && i < array_length\(a\)`/);
+  const c = checkSource(get + 'fn f(a: Array<Int>, j: Int) -> Int { if j <= array_length(a) { get(a, j) } else { 0 } }\nfn main() { () }');
+  assert.match(c.errors[0].note, /for example when array_length\(a\) = \d+, j = \d+/);
+  const [len, j] = c.errors[0].note.match(/\d+/g).map(Number);
+  assert.ok(j >= len && len <= 16, 'the counterexample is a real one, and small');
+  rejects('fn clamp(x: Int, n: Int) -> {r: Int | 0 <= r && r <= n} { if x < 0 { 0 } else if x > n { n } else { x } }\nfn main() { () }', /cannot prove that the result of `clamp` satisfies/);
+  sigs('fn clamp(x: Int, n: {n: Int | n >= 0}) -> {r: Int | 0 <= r && r <= n} { if x < 0 { 0 } else if x > n { n } else { x } }\nfn main() { () }');
+  sigs('fn main() { let n: {n: Int | n > 0} = 4; println(int_to_string(10 / n)) }');
+  rejects('fn main() { let n: {n: Int | n > 0} = 0; () }', /cannot prove that this value satisfies `n > 0`/);
+  // An effect annotation that a failed proof breaks says why.
+  const f = checkSource('fn f(a: Array<Int>, i: Int) -> Int ! {} { if i <= array_length(a) && i >= 0 { array_get(a, i) } else { 0 } }\nfn main() { () }');
+  assert.match(f.errors[0].message, /calling `array_get` can fail/);
+  assert.match(f.errors[0].note, /could not prove that the index is in bounds: for example when array_length\(a\) = (\d+), i = \1/);
+});
+
+test('refinements: a small decidable predicate language', () => {
+  rejects('fn f(x: {x: Int | length([x]) > 0}) { x }\nfn main() { () }', /the only calls allowed in a refinement are array_length/);
+  rejects('fn f(x: {x: Int | x / 2 > 0}) { x }\nfn main() { () }', /`\/` cannot be used in a refinement/);
+  rejects('fn f(x: Int, y: {y: Int | x * y > 0}) { x }\nfn main() { () }', /`\*` needs a constant on one side/);
+  rejects('fn f(xs: {xs: List<Int> | true}) { xs }\nfn main() { () }', /only Int, Array and String values can be refined/);
+  rejects('fn main() { let f = |x: {x: Int | x > 0}| x; () }', /the parameters of a lambda cannot be refined/);
+  rejects('fn pos(x: {x: Int | x > 0}) -> Int { x }\nfn main() { println(show(map([1, 2], pos))) }', /`pos` has refined parameters, so it can only be called directly/);
+  rejects('type T { T({x: Int | x > 0}) }\nfn main() { () }', /refinement types can annotate the parameters and results of named functions/);
+});
+
 test('comparison needs a type without functions', () => {
   rejects('fn main() { let f = |x: Int| x; let b = f == f; () }', /cannot be compared/);
   rejects('fn main() { let b = contains([|x: Int| x], |x: Int| x); () }', /cannot be compared/);

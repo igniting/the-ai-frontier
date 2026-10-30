@@ -80,6 +80,25 @@ export function interpret(program, { input = '', maxSteps = Infinity, maxDepth =
   };
   const cmp = (a, b) => compare(a, b, userOrd);
 
+  // Every operation the checker proved safe, and every refinement it proved,
+  // is checked again here: a failure is a bug in the proofs, not the program.
+  const unsound = () => { throw new LumenRuntimeError('internal error: something the checker proved was false'); };
+  const checkSafe = (e, fn, args) => {
+    if (!e.safe || fn.t !== 'bi') return;
+    const [x, i] = args;
+    switch (fn.name) {
+      case 'array_get': case 'array_set': if (i < 0n || i >= BigInt(x.v.length)) unsound(); break;
+      case 'char_code_at': if (i < 0n || i >= BigInt(x.length)) unsound(); break;
+      case 'array_make': if (x < 0n) unsound(); break;
+      default: break;
+    }
+  };
+  const holds = (refine, env, value) => {
+    const s = scope(env);
+    s.vars.set(refine.vId, value);
+    return ev(refine.pred, s);
+  };
+
   const lookup = (env, id) => {
     for (let e = env; e; e = e.parent) if (e.vars.has(id)) return e.vars.get(id);
     throw new Error(`interp: unbound ${id}`);
@@ -129,6 +148,7 @@ export function interpret(program, { input = '', maxSteps = Infinity, maxDepth =
   // Calls a function value with argument values, looping on tail calls.
   function call(fn, args) {
     if (++depth > maxDepth) fail('stack overflow');
+    const results = []; // refined results to check, from every function in this chain of tail calls
     try {
       for (;;) {
         tick();
@@ -141,17 +161,16 @@ export function interpret(program, { input = '', maxSteps = Infinity, maxDepth =
           throw new Error(`interp: no impl of ${fn.trait} for this value`);
         }
         if (fn.t === 'ctorfn') return { t: 'ctor', key: fn.info.key, idx: fn.info.idx, name: fn.info.name, f: args };
-        if (fn.t === 'glob') {
-          const f = fns.get(fn.key);
-          const env = scope(null);
-          f.params.forEach((p, i) => env.vars.set(p.id, args[i]));
-          r = evalTail(f.body, env);
-        } else {
-          const env = scope(fn.env);
-          fn.params.forEach((p, i) => env.vars.set(p.id, args[i]));
-          r = evalTail(fn.body, env);
+        const decl = fn.t === 'glob' ? fns.get(fn.key) : fn.decl ?? fn;
+        const env = scope(fn.t === 'glob' ? null : fn.env);
+        decl.params.forEach((p, i) => env.vars.set(p.id, args[i]));
+        decl.params.forEach((p, i) => { if (p.refine && !holds(p.refine, env, args[i])) unsound(); });
+        if (decl.retRefine) results.push({ refine: decl.retRefine, env });
+        r = evalTail(decl.body, env);
+        if (!(r instanceof TailCall)) {
+          for (const c of results) if (!holds(c.refine, c.env, r)) unsound();
+          return r;
         }
-        if (!(r instanceof TailCall)) return r;
         fn = r.fn; args = r.args;
       }
     } finally { depth--; }
@@ -164,6 +183,7 @@ export function interpret(program, { input = '', maxSteps = Infinity, maxDepth =
         case 'call': {
           const fn = ev(e.fn, env);
           const args = e.args.map((a) => ev(a, env));
+          checkSafe(e, fn, args);
           return new TailCall(fn, args);
         }
         case 'block': {
@@ -215,7 +235,7 @@ export function interpret(program, { input = '', maxSteps = Infinity, maxDepth =
     if (st.k === 'let') { matchPat(st.pat, ev(st.value, env), env); return; }
     if (st.k === 'expr') { ev(st.e, env); return; }
     const f = st.fn; // a local function: a closure that can see itself
-    const clo = { t: 'clo', params: f.params, body: f.body, env };
+    const clo = { t: 'clo', params: f.params, body: f.body, env, decl: f };
     env.vars.set(f.id, clo);
   }
 
@@ -237,6 +257,7 @@ export function interpret(program, { input = '', maxSteps = Infinity, maxDepth =
       case 'call': {
         const fn = ev(e.fn, env);
         const args = e.args.map((a) => ev(a, env));
+        checkSafe(e, fn, args);
         return call(fn, args);
       }
       case 'binop': return binop(e, env);
@@ -262,8 +283,8 @@ export function interpret(program, { input = '', maxSteps = Infinity, maxDepth =
       case '+': return int(l + r);
       case '-': return int(l - r);
       case '*': return int(l * r);
-      case '/': return r === 0n ? fail('division by zero') : int(l / r);
-      case '%': return r === 0n ? fail('division by zero') : l % r;
+      case '/': if (r === 0n && e.safe) unsound(); return r === 0n ? fail('division by zero') : int(l / r);
+      case '%': if (r === 0n && e.safe) unsound(); return r === 0n ? fail('division by zero') : l % r;
       case '++': return l.length + r.length > MAX_STRING ? fail('string too long') : l + r;
       case '==': return cmp(l, r) === 0;
       case '!=': return cmp(l, r) !== 0;

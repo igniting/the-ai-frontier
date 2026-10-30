@@ -4,7 +4,8 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { interpretSource, compileSource, runSource, testSource, makeHost } from '../src/api.js';
+import { checkSource, interpretSource, compileSource, runSource, testSource, makeHost } from '../src/api.js';
+import { checkRefutation } from '../src/rup.js';
 import { runWasm } from '../src/codegen.js';
 import { generate, differential, MUTANTS } from './fuzz.js';
 
@@ -112,6 +113,29 @@ test('properties: generated inputs, shrunk counterexamples, compiled replay', ()
   assert.deepEqual(by.small.counterexample, [{ name: 'n', value: '100' }], 'shrinks to the boundary');
   assert.equal(by.search_tree.counterexample[0].value.split('Node').length - 1, 2, 'the smallest unsorted tree has two nodes');
   assert.deepEqual([by.divides.reason, by.divides.counterexample[0].value], ['stopped with division by zero', '[]']);
+});
+
+test('refinements: compiled programs agree, and every proof is a checked DRUP certificate', () => {
+  const src = `
+    fn sum_from(a: Array<Int>, i: {i: Int | 0 <= i}, acc: Int) -> Int {
+      if i < array_length(a) { sum_from(a, i + 1, acc + array_get(a, i)) } else { acc }
+    }
+    fn clamp_index(i: Int, n: {n: Int | n > 0}) -> {r: Int | 0 <= r && r < n} { if i < 0 { 0 } else if i >= n { n - 1 } else { i } }
+    fn main() {
+      let a = array_from_list(range(1, 11));
+      let n = array_length(a);
+      println(show(sum_from(a, 0, 0)) ++ " " ++ show(if n > 0 { array_get(a, clamp_index(99, n)) } else { 0 }));
+      println(show(map([-5, 3, 50], |i| array_get(a, clamp_index(i, 10)))))
+    }`;
+  assert.equal(agree(src).output, '55 10\n[1, 4, 10]\n');
+  const c = checkSource(src, { keepProofs: true });
+  const proved = c.program.verification.obligations.filter((o) => o.status === 'proved' && o.proof);
+  assert.ok(proved.length >= 5);
+  for (const o of proved) assert.equal(checkRefutation(o.cnf.nvars, o.cnf.clauses, o.proof).ok, true);
+  // A tampered certificate is rejected: drop the lemmas, keep only the empty clause.
+  const big = proved.reduce((x, y) => (y.proof.length > x.proof.length ? y : x));
+  assert.ok(big.proof.length > 1);
+  assert.equal(checkRefutation(big.cnf.nvars, big.cnf.clauses, [[]]).ok, false);
 });
 
 test('constant stack: tail calls, long lists are freed and compared without recursion', () => {

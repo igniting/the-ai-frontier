@@ -49,6 +49,16 @@ export function parse(src) {
 
   function type() {
     const t = peek();
+    // A refinement type: {v: Int | 0 <= v}. The checker decides where it may appear.
+    if (accept('{')) {
+      const v = expect('lower', 'a name for the refined value');
+      expect(':');
+      const base = type();
+      expect('|');
+      const pred = expr();
+      const end = expect('}');
+      return { k: 'trefine', v: v.v, vSpan: sp(v.s, v.e), base, pred, span: sp(t.s, end.e) };
+    }
     if (accept('fn')) {
       expect('(');
       const params = [];

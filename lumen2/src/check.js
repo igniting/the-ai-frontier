@@ -16,6 +16,13 @@
 // against the signature after all ordinary functions. Every type without
 // functions in it gets a derived `impl Show` unless the program writes one.
 //
+// Refinements: a partial operation (`/`, `%`, array indexing) adds `fail`
+// unless refine.js proves it cannot fail, and refinement types (`{i: Int |
+// 0 <= i}`) on parameters, results and lets are proved at every use. So
+// checking runs three times over: types first, treating every partial
+// operation as safe; then the proofs; then types and effects again with only
+// the proved operations safe.
+//
 // Capabilities: the effects other than `fail` are granted to `main` by
 // whoever runs the program. With a grant, `main` is checked as if it were
 // annotated with the granted effects, so a program that would use an
@@ -31,6 +38,7 @@ import { parse } from './parser.js';
 import { PRELUDE } from './prelude.js';
 import { LumenError } from './diagnostics.js';
 import { makeExhaustiveness } from './exhaust.js';
+import { verify, PARTIAL_BUILTINS, siteKey } from './refine.js';
 import {
   GENERIC, newVar, newRowVar, tcon, tfun, ttuple, row, prune, pruneRow, makeUnifier, UnifyError, EffectError, TraitError,
   generalize, instantiate, openEffect, substParams, TypePrinter, INT, BOOL, STRING, UNIT, LABELS,
@@ -71,6 +79,7 @@ function builtinTable() {
   return t;
 }
 export const BUILTIN_NAMES = Object.keys(builtinTable());
+const REFINE_WHERE = 'refinement types can annotate the parameters and results of named functions, and let bindings';
 
 const EFFECT_WORDS = { input: 'read input', output: 'write output', clock: 'read the clock', random: 'use randomness', fail: 'fail' };
 
@@ -78,7 +87,19 @@ const EFFECT_WORDS = { input: 'read input', output: 'write output', clock: 'read
 // options.grants: the capabilities granted to `main` (null: no restriction).
 // options.entry: the function a run starts from (`main` unless a test harness
 // says otherwise). A program made only of properties needs no entry.
-export function check(source, { grants = null, entry = 'main' } = {}) {
+// options.keepProofs: keep each obligation's formula and DRUP proof.
+export function check(source, options = {}) {
+  const first = checkOnce(source, { ...options, assumeSafe: true });
+  const v = verify(first, { user: source, prelude: PRELUDE }, options);
+  const program = checkOnce(source, { ...options, safeSites: v.safe, unproved: v.unproved });
+  program.verification = v;
+  return program;
+}
+
+function checkOnce(source, { grants = null, entry = 'main', assumeSafe = false, safeSites = null, unproved = null } = {}) {
+  // Whether the partial operation at this span was proved safe.
+  const isSafe = (ctx, span) => assumeSafe || !!safeSites?.has(siteKey(ctx.scopeName, span));
+  const whyUnsafe = (ctx, span) => unproved?.get(siteKey(ctx.scopeName, span));
   const preludeAst = parse(PRELUDE);
   let userAst;
   userAst = parse(source);
@@ -120,6 +141,7 @@ export function check(source, { grants = null, entry = 'main' } = {}) {
         return { k: 'param', name: te.name };
       case 'tcon': return tcon(checkTypeName(te), te.args.map((a) => declType(a, params)));
       case 'ttuple': return ttuple(te.elems.map((a) => declType(a, params)));
+      case 'trefine': throw new LumenError(REFINE_WHERE, te.span);
       case 'tfun':
         if (te.eff?.tail) throw new LumenError('effect variables are not allowed in type declarations', te.eff.span);
         return tfun(te.params.map((a) => declType(a, params)), declType(te.ret, params), row(te.eff?.labels ?? []));
@@ -153,6 +175,7 @@ export function check(source, { grants = null, entry = 'main' } = {}) {
         return tcon(checkTypeName(te), te.args.map((a) => sigType(a, ctx)));
       case 'ttuple': return ttuple(te.elems.map((a) => sigType(a, ctx)));
       case 'tfun': return tfun(te.params.map((a) => sigType(a, ctx)), sigType(te.ret, ctx), sigEffect(te.eff, ctx));
+      case 'trefine': throw new LumenError(REFINE_WHERE, te.span);
       default: throw new Error(te.k);
     }
   }
@@ -341,20 +364,20 @@ export function check(source, { grants = null, entry = 'main' } = {}) {
   }
 
   // The current function may perform the effects in `labels` (because of the expression at `span`).
-  function perform(labels, ctx, span, cause) {
+  function perform(labels, ctx, span, cause, note) {
     try { unifyRows(row(labels, newRowVar(ctx.level)), ctx.eff); } catch (e) {
       if (!(e instanceof UnifyError)) throw e;
-      throw effectViolation(e.labels ?? labels, ctx, span, cause);
+      throw effectViolation(e.labels ?? labels, ctx, span, cause, note);
     }
   }
-  function effectViolation(labels, ctx, span, cause) {
+  function effectViolation(labels, ctx, span, cause, why) {
     const words = labels.map((l) => EFFECT_WORDS[l] ?? l).join(' and ');
     if (ctx.granted) {
       return new LumenError(`${cause} can ${words}, but \`main\` was not granted \`${labels.join(', ')}\``, span,
         `grant it when running the program, for example \`lumen2 run --allow ${labels.join(',')}\``);
     }
     return new LumenError(`${cause} can ${words}, but ${ctx.owner} is declared without \`${labels.join(', ')}\``, span,
-      `add the effect to the signature (for example \`! {${[...new Set([...pruneRow(ctx.eff).labels, ...labels])].sort().join(', ')}}\`), or remove the cause`);
+      why ?? `add the effect to the signature (for example \`! {${[...new Set([...pruneRow(ctx.eff).labels, ...labels])].sort().join(', ')}}\`), or remove the cause`);
   }
 
   // Names: locals, then the program's functions and methods, then the prelude's, then builtins.
@@ -437,7 +460,15 @@ export function check(source, { grants = null, entry = 'main' } = {}) {
         if (f.k === 'fun') {
           if (f.params.length !== argTys.length) throw new LumenError(`${what} takes ${f.params.length} argument${f.params.length === 1 ? '' : 's'}, found ${argTys.length}`, e.span);
           argTys.forEach((a, i) => unifyAt(f.params[i], a, e.args[i].span, `argument ${i + 1} of ${what}`));
-          callEffects(f.eff, ctx, e.span, `calling ${what}`);
+          let eff = f.eff, note;
+          if (e.fn.k === 'var' && e.fn.ref?.k === 'builtin' && PARTIAL_BUILTINS.has(e.fn.ref.name)) {
+            if (isSafe(ctx, e.span)) {
+              const r = pruneRow(f.eff);
+              eff = row(r.labels.filter((l) => l !== 'fail'), r.tail);
+              if (!assumeSafe) e.safe = true;
+            } else note = whyUnsafe(ctx, e.span);
+          }
+          callEffects(eff, ctx, e.span, `calling ${what}`, note);
           return f.ret;
         }
         if (f.k !== 'var') throw new LumenError(`${what} is not a function (its type is ${show(f)})`, e.fn.span);
@@ -455,6 +486,7 @@ export function check(source, { grants = null, entry = 'main' } = {}) {
       case 'lambda': {
         const inner = { ...ctx, scope: { vars: new Map(), parent: ctx.scope }, eff: row([], newRowVar(ctx.level)), owner: 'this function' };
         const params = e.params.map((p) => {
+          if (p.ann?.k === 'trefine') throw new LumenError('the parameters of a lambda cannot be refined; use a named function', p.ann.span);
           const ty = p.ann ? sigType(p.ann, ctx) : newVar(ctx.level);
           const b = bindLocal(inner, p.name, ty, p.span);
           p.id = b.id; p.ty = ty;
@@ -468,7 +500,12 @@ export function check(source, { grants = null, entry = 'main' } = {}) {
         for (const st of e.stmts) {
           if (st.k === 'let') {
             const vt = infer(st.value, inner);
-            if (st.ann) unifyAt(sigType(st.ann, ctx), vt, st.value.span, 'let binding');
+            const refined = st.ann?.k === 'trefine';
+            if (st.ann) unifyAt(sigType(refined ? st.ann.base : st.ann, ctx), vt, st.value.span, 'let binding');
+            if (refined) {
+              if (st.pat.k !== 'pvar') throw new LumenError('a refined let binds one variable', st.pat.span);
+              st.refine = checkRefinement(st.ann, vt, inner);
+            }
             checkPattern(st.pat, vt, inner);
             deferred.push(() => {
               const r = exhaust.checkMatch(vt, [{ pat: st.pat }]);
@@ -507,10 +544,10 @@ export function check(source, { grants = null, entry = 'main' } = {}) {
     }
   }
 
-  function callEffects(eff, ctx, span, cause) {
+  function callEffects(eff, ctx, span, cause, note) {
     try { unifyRows(eff, ctx.eff); } catch (err) {
       if (!(err instanceof UnifyError)) throw err;
-      throw effectViolation(err.labels ?? [], ctx, span, cause);
+      throw effectViolation(err.labels ?? [], ctx, span, cause, note);
     }
   }
 
@@ -523,7 +560,7 @@ export function check(source, { grants = null, entry = 'main' } = {}) {
         return INT;
       case '/': case '%':
         unifyAt(INT, l, e.l.span, `left operand of \`${e.op}\``); unifyAt(INT, r, e.r.span, `right operand of \`${e.op}\``);
-        perform(['fail'], ctx, e.span, `\`${e.op}\` (division by zero)`);
+        if (isSafe(ctx, e.span)) { if (!assumeSafe) e.safe = true; } else perform(['fail'], ctx, e.span, `\`${e.op}\` (division by zero)`, whyUnsafe(ctx, e.span));
         return INT;
       case '&&': case '||':
         unifyAt(BOOL, l, e.l.span, `left operand of \`${e.op}\``); unifyAt(BOOL, r, e.r.span, `right operand of \`${e.op}\``);
@@ -581,6 +618,44 @@ export function check(source, { grants = null, entry = 'main' } = {}) {
     }
   }
 
+  // A refinement {v: T | p}: v is bound to the refined value; p must be in
+  // the decidable fragment refine.js understands.
+  function checkRefinement(te, ty, ctx) {
+    const base = prune(ty);
+    if (base.k !== 'con' || !['Int', 'Array', 'String'].includes(base.name)) throw new LumenError(`only Int, Array and String values can be refined; this one has type ${show(ty)}`, te.span);
+    const pctx = { ...ctx, scope: { vars: new Map(), parent: ctx.scope }, eff: row([], newRowVar(ctx.level)) };
+    const b = bindLocal(pctx, te.v, ty, te.vSpan);
+    unifyAt(BOOL, infer(te.pred, pctx), te.pred.span, 'a refinement must be true or false');
+    validatePredicate(te.pred);
+    return { vId: b.id, v: te.v, pred: te.pred, span: te.span, predSpan: te.pred.span };
+  }
+  function validatePredicate(e) {
+    const bad = (msg) => { throw new LumenError(msg, e.span, 'refinements use integer constants, variables, +, -, multiplication by a constant, comparisons, &&, ||, !, array_length and string_length'); };
+    const isInt = (x) => { const t = prune(x.ty); return t.k === 'con' && t.name === 'Int'; };
+    const isLit = (x) => x.k === 'int' || (x.k === 'unop' && x.op === '-' && x.e.k === 'int');
+    switch (e.k) {
+      case 'int': case 'bool': return;
+      case 'var':
+        if (e.ref.k !== 'local') bad(`a refinement can only mention variables, not \`${e.name}\``);
+        if (!isInt(e) && prune(e.ty).name !== 'Bool') bad(`\`${e.name}\` is not an Int; use array_length or string_length for arrays and strings`);
+        return;
+      case 'unop': validatePredicate(e.e); return;
+      case 'binop':
+        if (['/', '%', '++'].includes(e.op)) bad(`\`${e.op}\` cannot be used in a refinement`);
+        if (e.op === '*' && !isLit(e.l) && !isLit(e.r)) bad('in a refinement, `*` needs a constant on one side');
+        if (['==', '!=', '<', '<=', '>', '>='].includes(e.op) && !isInt(e.l)) bad('a refinement compares integers only');
+        validatePredicate(e.l); validatePredicate(e.r);
+        return;
+      case 'call': {
+        const f = e.fn;
+        const ok = f.k === 'var' && f.ref?.k === 'builtin' && ['array_length', 'string_length'].includes(f.ref.name) && e.args.length === 1 && e.args[0].k === 'var' && e.args[0].ref.k === 'local';
+        if (!ok) bad('the only calls allowed in a refinement are array_length(x) and string_length(x) of a variable');
+        return;
+      }
+      default: bad('this expression cannot be used in a refinement');
+    }
+  }
+
   // A local function: monomorphic, may call itself.
   function inferLocalFn(f, ctx) {
     const self = bindLocal(ctx, f.name, newVar(ctx.level), f.nameSpan);
@@ -596,13 +671,19 @@ export function check(source, { grants = null, entry = 'main' } = {}) {
     inner.eff = f.eff ? sigEffect(f.eff, ctx) : f.presetEff ?? row([], newRowVar(ctx.level));
     if (f === main && main && grants && !f.eff) { inner.eff = row([...grants, 'fail']); inner.granted = true; }
     const params = f.params.map((p) => {
-      const ty = p.ann ? sigType(p.ann, ctx) : newVar(ctx.level);
+      const ann = p.ann?.k === 'trefine' ? p.ann.base : p.ann;
+      const ty = ann ? sigType(ann, ctx) : newVar(ctx.level);
       p.id = bindLocal(inner, p.name, ty, p.span).id;
       p.ty = ty;
       return ty;
     });
+    // Refinements may mention any parameter (and, in a local function, enclosing variables).
+    for (const p of f.params) if (p.ann?.k === 'trefine') p.refine = checkRefinement(p.ann, p.ty, inner);
     const body = infer(f.body, inner);
-    if (f.ret) unifyAt(sigType(f.ret, ctx), body, f.body.result?.span ?? f.body.span, `\`${f.name}\` returns`);
+    if (f.ret?.k === 'trefine') {
+      unifyAt(sigType(f.ret.base, ctx), body, f.body.result?.span ?? f.body.span, `\`${f.name}\` returns`);
+      f.retRefine = checkRefinement(f.ret, body, inner);
+    } else if (f.ret) unifyAt(sigType(f.ret, ctx), body, f.body.result?.span ?? f.body.span, `\`${f.name}\` returns`);
     if (f.property) unifyAt(BOOL, body, f.body.result?.span ?? f.body.span, 'a property must be true or false');
     return tfun(params, body, inner.eff);
   }
@@ -668,7 +749,7 @@ export function check(source, { grants = null, entry = 'main' } = {}) {
   const signatures = userAst.fns.map((f) => ({ name: f.name, type: printer(f), span: f.nameSpan }));
   return {
     adts, fns: allFns, main, builtins, signatures, warnings, impls, traits,
-    properties: userAst.properties.map((f) => ({ name: f.name, key: f.key, params: f.params.map((p) => ({ name: p.name, ty: p.ty })), span: f.nameSpan })),
+    properties: userAst.properties.map((f) => ({ name: f.name, key: f.key, params: f.params.map((p) => ({ name: p.name, id: p.id, ty: p.ty, refine: p.refine })), span: f.nameSpan })),
     preludeFns: preludeAst.fns, userFns: userAst.fns,
   };
 }

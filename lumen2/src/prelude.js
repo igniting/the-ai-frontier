@@ -20,6 +20,7 @@ impl Show for String { fn show(s) { "\\"" ++ s ++ "\\"" } }
 impl Show for Bool { fn show(b) { if b { "true" } else { "false" } } }
 impl Show for () { fn show(u) { "()" } }
 impl Show for List<a> where a: Show { fn show(xs) { "[" ++ join(map(xs, show), ", ") ++ "]" } }
+impl Show for Array<a> where a: Show { fn show(xs) { "#" ++ show(array_to_list(xs)) } }
 impl Show for (a, b) where a: Show, b: Show {
   fn show(p) { match p { (x, y) -> "(" ++ show(x) ++ ", " ++ show(y) ++ ")" } }
 }
@@ -99,14 +100,10 @@ fn intersperse(xs, sep) {
 fn join(xs, sep) { concat_strings(intersperse(xs, sep)) }
 fn show_list(xs, show) { "[" ++ join(map(xs, show), ", ") ++ "]" }
 fn repeat_string(s, n) { if n <= 0 { "" } else { s ++ repeat_string(s, n - 1) } }
-fn array_from_list(xs) {
-  match xs {
-    [] -> array_empty(),
-    [x, .._] -> { fn fill(a, xs, i) { match xs { [] -> a, [y, ..rest] -> fill(array_set(a, i, y), rest, i + 1) } } fill(array_make(length(xs), x), xs, 0) },
-  }
-}
+fn array_from_list(xs) { fold(xs, array_empty(), |a, x| array_push(a, x)) }
+// Pure: the refinement on i lets the checker prove every array_get in bounds.
 fn array_to_list(a) {
-  fn go(i, acc) { if i < 0 { acc } else { go(i - 1, [array_get(a, i), ..acc]) } }
+  fn go(i: {i: Int | i < array_length(a)}, acc) { if i < 0 { acc } else { go(i - 1, [array_get(a, i), ..acc]) } }
   go(array_length(a) - 1, [])
 }
 `;

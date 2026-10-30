@@ -172,6 +172,33 @@ export function literal(v) {
   }
 }
 
+// Evaluates a refinement predicate (the small language refinements allow).
+function holds(e, env) {
+  switch (e.k) {
+    case 'int': case 'bool': return e.v;
+    case 'var': return env.get(e.ref.id);
+    case 'unop': return e.op === '-' ? -holds(e.e, env) : !holds(e.e, env);
+    case 'call': { const x = holds(e.args[0], env); return BigInt(x.t === 'arr' ? x.v.length : x.length); }
+    case 'binop': {
+      const l = holds(e.l, env);
+      if (e.op === '&&') return l && holds(e.r, env);
+      if (e.op === '||') return l || holds(e.r, env);
+      const r = holds(e.r, env);
+      switch (e.op) {
+        case '+': return l + r; case '-': return l - r; case '*': return l * r;
+        case '<': return l < r; case '<=': return l <= r; case '>': return l > r; case '>=': return l >= r;
+        case '==': return l === r; default: return l !== r;
+      }
+    }
+    default: throw new Error(`props: ${e.k}`);
+  }
+}
+// Do generated arguments satisfy the parameters' refinements?
+const admissible = (params, args) => {
+  const env = new Map(params.map((p, i) => [p.id, args[i]]));
+  return params.every((p, i) => !p.refine || holds(p.refine.pred, new Map(env).set(p.refine.vId, args[i])));
+};
+
 // Runs every property of a checked program. compile(source) turns a harness
 // program into { output, error } from the compiled code (or null to skip).
 // Returns [{ name, ok, cases, counterexample?, reason?, shrinks?, compiled? }].
@@ -189,13 +216,19 @@ export function testProperties(program, source, { runs = 100, seed = 1, maxSize 
     let failure = null;
     for (let i = 0; i < runs && !failure; i++) {
       const size = Math.floor((i * maxSize) / runs);
-      const args = prop.params.map((p) => gen(p.ty, size));
+      // Inputs to a refined parameter are drawn until one satisfies the refinement.
+      let args = null;
+      for (let tries = 0; tries < 200 && !args; tries++) {
+        const a = prop.params.map((p) => gen(p.ty, size));
+        if (admissible(prop.params, a)) args = a;
+      }
+      if (!args) continue;
       cases.push(args);
       const o = outcome(args);
       if (!o.ok) failure = { args, reason: o.reason, at: i + 1 };
     }
     if (!failure) {
-      const result = { name: prop.name, ok: true, cases: cases.length };
+      const result = { name: prop.name, ok: true, cases: cases.length, discarded: runs - cases.length };
       if (compile) {
         const r = compile(harness(source, cases.map((args) => `println(if ${call(args)} { "1" } else { "0" });`)));
         result.compiled = r && !r.error && r.output === '1\n'.repeat(cases.length) ? 'agrees' : `disagrees (${r?.error ?? 'a case returned false'})`;
@@ -211,6 +244,7 @@ export function testProperties(program, source, { runs = 100, seed = 1, maxSize 
       for (let i = 0; i < args.length && !improved; i++) {
         for (const s of shrink(prop.params[i].ty, args[i])) {
           const next = args.map((x, j) => (j === i ? s : x));
+          if (!admissible(prop.params, next)) continue;
           const o = outcome(next);
           if (!o.ok) { args = next; reason = o.reason; shrinks++; improved = true; break; }
         }

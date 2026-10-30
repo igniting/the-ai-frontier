@@ -43,6 +43,11 @@ impl Size for Shape { fn size(s) { match s { Circle(r) -> r, Rect(w, h) -> w + h
 impl Size for Tree { fn size(t) { length(tree_list(t)) } }
 impl Size for Int { fn size(n) { n } }
 impl Size for List<a> where a: Size { fn size(xs) { fold(xs, 0, |acc, x| acc + size(x)) } }
+fn sum_from(a: Array<Int>, i: {i: Int | 0 <= i}, acc: Int) -> Int {
+  if i < array_length(a) { sum_from(a, i + 1, acc + array_get(a, i)) } else { acc }
+}
+fn safe_div(x: Int, d: {d: Int | d != 0}) -> Int { x / d }
+fn clamp_index(i: Int, n: {n: Int | n > 0}) -> {r: Int | 0 <= r && r < n} { if i < 0 { 0 } else if i >= n { n - 1 } else { i } }
 `;
 
 // A small, fast, seedable random number generator (mulberry32).
@@ -171,12 +176,14 @@ export function generate(seed) {
         () => `length(tree_list(${g(T.tree)}))`,
         () => `random_int(${g(T.int)}, ${g(T.int)})`, () => `(clock_ms() - clock_ms())`,
         () => `size(${g(pick([T.shape, T.tree, T.ints, T.int]))})`,
+        () => refined(d, env), () => refined(d, env),
         () => { const u = cmpTy(); return `compare(${g(u)}, ${g(u)})`; },
       ])();
       case T.bool: return pick([
         () => { const u = cmpTy(); return `(${g(u)} ${pick(['==', '!=', '<', '<=', '>', '>='])} ${g(u)})`; },
         () => `(${g(T.bool)} ${pick(['&&', '||'])} ${g(T.bool)})`, () => `!${g(T.bool)}`,
         () => `is_empty(${g(T.ints)})`, () => `contains(${g(T.strs)}, ${g(T.str)})`,
+        () => `(${g(T.color)} ${pick(['<', '<=', '>'])} ${g(T.color)})`,
         () => `any(${g(T.ints)}, ${lambda1(T.int, T.bool, d, env)})`, () => `all(${g(T.ints)}, ${lambda1(T.int, T.bool, d, env)})`,
       ])();
       case T.str: return pick([
@@ -193,6 +200,7 @@ export function generate(seed) {
         () => `append(${g(T.ints)}, ${g(T.ints)})`, () => `sort(${g(T.ints)})`, () => `take(${g(T.ints)}, ${idx()})`,
         () => `drop(${g(T.ints)}, ${idx()})`, () => `concat(${g(T.nested)})`, () => `array_to_list(${g(T.arr)})`,
         () => `tree_list(${g(T.tree)})`, () => `map(${g(T.ints)}, ${g(T.fn)})`,
+        () => `map(sort([${g(T.color)}, ${g(T.color)}, Green]), rank)`,
       ])();
       case T.strs: return pick([
         () => `[${Array.from({ length: int(3) }, () => g(T.str)).join(', ')}]`, () => `map(${g(T.ints)}, ${lambda1(T.int, T.str, d, env)})`,
@@ -226,6 +234,27 @@ export function generate(seed) {
       ])();
       default: throw new Error(t);
     }
+  }
+
+  // Partial operations whose safety the checker can prove, or (the else
+  // branches below) cannot, since they always fail when reached.
+  function refined(d, env) {
+    const g = (u) => gen(u, d - 1, env);
+    const a = fresh('ra'), i = fresh('ri'), x = fresh('rx');
+    return pick([
+      () => `{ let ${a} = ${g(T.arr)}; let ${i} = ${g(T.int)}; if ${i} >= 0 && ${i} < array_length(${a}) { array_get(${a}, ${i}) } else { -1 } }`,
+      () => `{ let ${a} = ${g(T.arr)}; let ${i} = ${g(T.int)}; if ${i} < 0 || array_length(${a}) <= ${i} { 0 } else { array_get(${a}, ${i}) } }`,
+      () => `{ let ${a} = ${g(T.arr)}; let ${i} = ${g(T.int)}; if ${i} < array_length(${a}) { 0 } else { array_get(${a}, ${i}) } }`,
+      () => `{ let ${a} = ${g(T.sarr)}; if array_length(${a}) > 2 { string_length(array_set(${a}, 2, "z") |> array_to_list |> join(",")) } else { array_length(${a}) } }`,
+      () => `{ let ${x} = ${g(T.int)}; if ${x} != 0 { ${g(T.int)} / ${x} } else { 0 } }`,
+      () => `{ let ${x} = ${g(T.int)}; if ${x} == 0 { 1 } else { ${g(T.int)} % ${x} } }`,
+      () => `(match ${g(T.int)} { 0 -> 0, ${x} -> 1000 / ${x} })`,
+      () => `{ let ${x} = ${g(T.str)}; if string_length(${x}) > 0 { char_code_at(${x}, string_length(${x}) - 1) } else { -1 } }`,
+      () => `sum_from(${g(T.arr)}, ${pick(['0', '1', '2'])}, 0)`,
+      () => `safe_div(${g(T.int)}, ${pick(['2', '7', '-3', '1'])})`,
+      () => `{ let ${a} = ${g(T.arr)}; if array_length(${a}) > 0 { array_get(${a}, clamp_index(${g(T.int)}, array_length(${a}))) } else { 0 } }`,
+      () => `array_length(array_make(clamp_index(${g(T.int)}, 5), ${g(T.int)}))`,
+    ])();
   }
 
   // Values are persistent: updating one must leave the original unchanged.
@@ -322,7 +351,8 @@ export function generate(seed) {
 // Returns null when all runs agree, a description of the disagreement
 // otherwise, or 'skip' when the interpreter ran out of fuel or stack.
 export function differential(src, { mutant = null, maxSteps = 3000000 } = {}) {
-  const c = checkSource(src);
+  let c;
+  try { c = checkSource(src, { mutant }); } catch (e) { return `checker crashed: ${e.message}`; }
   if (!c.ok) return `does not check: ${c.errors[0].message}`;
   let ref;
   try { ref = interpret(c.program, { maxSteps }); } catch (e) { ref = { output: e.output ?? '', error: e.message }; }
@@ -353,6 +383,9 @@ export const MUTANTS = [
   'cmp-ignore-tag', // compare constructors by their fields only
   'substring-end', // off by one at the end of a substring
   'ord-ignore-impl', // compare a type structurally even though it has an `impl Ord`
+  'refine-else-same', // assume an if's condition in its else branch too
+  'blast-carry', // a bit-blasted adder that drops the carry
+  'sat-claims-unsat', // a SAT solver that claims every formula is unsatisfiable
 ];
 
 function main() {
