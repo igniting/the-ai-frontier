@@ -1,6 +1,7 @@
 // Collects straight-line windows of pure i32 code from the compiler's real
 // output (the examples plus random programs), canonicalized so identical
-// shapes are counted together.
+// shapes are counted together. (The examples are also benchmarks; the
+// self-hosted compiler, the largest benchmark, is left out: see CAMPAIGN.md.)
 
 import { readFileSync, readdirSync } from 'node:fs';
 import { parse } from '../src/parser.js';

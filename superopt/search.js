@@ -14,7 +14,7 @@
 import { writeFileSync } from 'node:fs';
 import { corpusModules, extractWindows } from './corpus.js';
 import { synthesize, generalize, prove, byteCost } from './synth.js';
-import { indexRules, rewriteRun } from '../src/peephole.js';
+import { indexRules, rewriteRun, rewriteBody } from '../src/peephole.js';
 import { show } from './show.js';
 import { writeOutputs } from './report.js';
 
@@ -27,8 +27,9 @@ const outDir = opt('out', '.');
 
 const t0 = Date.now();
 const mods = corpusModules({ fuzz });
-const windows = extractWindows(mods).filter((w) => w.count >= minCount);
-windows.sort((a, b) => a.code.length - b.code.length || b.count - a.count);
+const windowsOf = (ms) => extractWindows(ms).filter((w) => w.count >= minCount)
+  .sort((a, b) => a.code.length - b.code.length || b.count - a.count);
+const windows = windowsOf(mods);
 console.log(`${mods.length} modules, ${windows.length} windows seen at least ${minCount} times`);
 
 const rules = [];
@@ -53,7 +54,7 @@ function attempt(w, origin) {
   for (let i = 0; i < oddAssumed.length; i++) {
     if (!oddAssumed[i]) continue;
     const weaker = oddAssumed.map((o, j) => o && j !== i);
-    const p = prove({ odd: weaker, inputs: w.inputs }, lhs, rhs, { conflictLimit: 50000 });
+    const p = prove({ odd: weaker, inputs: w.inputs }, lhs, rhs, { conflictLimit: 50000, nonneg: general?.nonneg ?? [] });
     if (p.proved) { oddAssumed = weaker; proof = p; }
   }
   const rule = {
@@ -61,6 +62,7 @@ function attempt(w, origin) {
     lhs,
     rhs,
     odd: oddAssumed,
+    ...(general?.nonneg?.length ? { nonneg: general.nonneg } : {}),
     inputs: w.inputs,
     seen: w.count,
     origin,
@@ -84,16 +86,28 @@ function variants(w) {
   return CMP2.filter((op) => op !== w.code[0][0]).map((op) => ({ ...w, count: 0, code: [[op], ...w.code.slice(1)] }));
 }
 
-for (const w of windows) {
-  if (!attempt(w, 'corpus')) continue;
-  for (const v of variants(w)) attempt(v, `variant`);
+// Rewriting creates sequences the original code never contained (e.g. two
+// adjacent constant additions after two different rules fired), so mine
+// again on rewritten code until a round finds nothing new.
+let round = 1, seen = windows;
+for (;;) {
+  const before = rules.length;
+  for (const w of seen) {
+    if (!attempt(w, round === 1 ? 'corpus' : `round ${round}`)) continue;
+    for (const v of variants(w)) attempt(v, 'variant');
+  }
+  if (rules.length === before || round === 4) break;
+  round++;
+  for (const m of mods) for (const f of m.funcs) if (f.oddLocals) f.body = rewriteBody(f.body, index, f.oddLocals);
+  seen = windowsOf(mods);
+  console.log(`round ${round}: ${seen.length} windows in the rewritten corpus`);
 }
 
 function summarize(p) {
   return { vars: p.vars, clauses: p.clauses, lemmas: p.lemmas, conflicts: p.conflicts ?? 0, trivial: !!p.trivial, checked: p.checked };
 }
 
-const meta = { generated: 'node superopt/search.js', corpus: { modules: mods.length, windows: windows.length, minCount, fuzz }, searches: searched, seconds: +((Date.now() - t0) / 1000).toFixed(1) };
+const meta = { generated: 'node superopt/search.js', corpus: { modules: mods.length, windows: windows.length, minCount, fuzz }, rounds: round, searches: searched, seconds: +((Date.now() - t0) / 1000).toFixed(1) };
 writeFileSync(`${outDir}/superopt/rules.json`, JSON.stringify({ ...meta, rules }, null, 1) + '\n');
 writeOutputs(outDir);
 console.log(`${rules.length} rules from ${searched} searches in ${meta.seconds} s -> ${outDir}/superopt/rules.json, src/rules.js, superopt/RULES.md`);

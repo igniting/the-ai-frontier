@@ -4,7 +4,8 @@
 //
 // A rule's left side is a pattern: `local.get xN` binds a local (which must
 // be one of the function's odd locals if the rule assumed so), and a
-// symbolic constant `kconst K` binds any i32.const. Every rule strictly
+// symbolic constant `kconst K` binds any i32.const (any non-negative one if
+// the rule lists K in `nonneg`). Every rule strictly
 // shortens the code, and so does folding, so rewriting a run terminates.
 
 export const PURE_OPS = new Set([
@@ -110,6 +111,7 @@ export function matchAt(code, pos, rule, isOdd) {
       vars[parg] = arg;
     }
   }
+  if (rule.nonneg && rule.nonneg.some((k) => ks[k] < 0)) return null; // side condition: K >= 0
   return rule.rhs.map(([op, arg]) => {
     if (op === 'kconst') return ['i32.const', kValue(ks, arg)];
     if (op === 'local.get') return ['local.get', vars[arg]];

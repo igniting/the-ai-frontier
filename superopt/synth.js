@@ -48,7 +48,7 @@ function makeVectors(window, n, seed) {
 // Proves lhs == rhs for all inputs satisfying the preconditions. Constant
 // placeholders ['kconst', {k, f, d}] stand for functions of symbolic
 // constants K0, K1, ... that are themselves universally quantified.
-export function prove(window, lhs, rhs, { conflictLimit = 300000, check = true, keep = false } = {}) {
+export function prove(window, lhs, rhs, { conflictLimit = 300000, check = true, keep = false, nonneg = [] } = {}) {
   const c = new Circuit();
   const locals = {};
   window.odd.forEach((odd, i) => {
@@ -72,6 +72,7 @@ export function prove(window, lhs, rhs, { conflictLimit = 300000, check = true, 
   };
   const a = evalSym(lhs);
   const b = evalSym(rhs);
+  for (const k of nonneg) if (ks[k]) c.clauses.push([-ks[k][31]]); // side condition: K >= 0
   const diff = a.map((l, i) => c.xor(l, b[i])).reduce((acc, l) => c.or(acc, l), -1);
   if (diff === -1) return { proved: true, trivial: true, vars: c.numVars, clauses: c.clauses.length, lemmas: 0, checked: true };
   c.clauses.push([diff]);
@@ -251,7 +252,17 @@ export function generalize(window, rhs) {
     walk(0, []);
     for (const cand of combos) {
       const p = prove(window, lhs, cand, { conflictLimit: 50000 });
-      if (p.proved) return { lhs, rhs: cand, proof: p };
+      if (p.proved) return { lhs, rhs: cand, proof: p, nonneg: [] };
+    }
+    // Some rules hold only for non-negative constants (e.g. when doubling
+    // one must not overflow into the sign bit): retry with K >= 0 as a side
+    // condition when every symbol's example value satisfies it.
+    const symbols = Object.keys(kvals);
+    if (symbols.every((k) => kvals[k] >= 0)) {
+      for (const cand of combos) {
+        const p = prove(window, lhs, cand, { conflictLimit: 50000, nonneg: symbols });
+        if (p.proved) return { lhs, rhs: cand, proof: p, nonneg: symbols };
+      }
     }
   }
   return null;

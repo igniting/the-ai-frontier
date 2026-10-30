@@ -142,3 +142,12 @@ test('the peephole pass rewrites to a fixed point and respects the odd precondit
   assert.equal(used(() => true), true, 'applies when the local is known to be odd');
   assert.equal(used(() => false), false, 'not applied when the local is not known to be odd');
 });
+
+test('a rule with a K >= 0 side condition is not applied to a negative constant', () => {
+  const rule = RULES.find((r) => r.nonneg?.length);
+  assert.ok(rule, 'some rule has a side condition');
+  const index = indexRules([rule]);
+  const inst = (k) => rule.lhs.map(([op, arg]) => (op === 'kconst' ? ['i32.const', k] : op === 'local.get' ? [op, `$${arg}`] : [op, arg]));
+  assert.notDeepEqual(rewriteRun(inst(5), index, () => true), inst(5), 'applies to a non-negative constant');
+  assert.deepEqual(rewriteRun(inst(-5), index, () => true), inst(-5), 'not applied to a negative one');
+});

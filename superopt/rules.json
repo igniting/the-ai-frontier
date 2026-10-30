@@ -6,8 +6,9 @@
   "minCount": 2,
   "fuzz": 60
  },
- "searches": 459,
- "seconds": 53.2,
+ "rounds": 2,
+ "searches": 706,
+ "seconds": 60.8,
  "rules": [
   {
    "id": 0,
@@ -1328,8 +1329,11 @@
      "i32.and"
     ],
     [
-     "i32.const",
-     2
+     "kconst",
+     {
+      "k": "K1",
+      "f": "id"
+     }
     ],
     [
      "i32.eq"
@@ -1347,14 +1351,21 @@
      "i32.and"
     ],
     [
-     "i32.const",
-     4
+     "kconst",
+     {
+      "k": "K1",
+      "f": "shl1"
+     }
     ],
     [
      "i32.eq"
     ]
    ],
    "odd": [],
+   "nonneg": [
+    "K0",
+    "K1"
+   ],
    "inputs": 1,
    "seen": 107,
    "origin": "corpus",
@@ -1404,121 +1415,16 @@
     "bytes": 3
    },
    "proof": {
-    "vars": 126,
-    "clauses": 184,
-    "lemmas": 0,
-    "conflicts": 0,
-    "trivial": true,
+    "vars": 191,
+    "clauses": 318,
+    "lemmas": 2,
+    "conflicts": 2,
+    "trivial": false,
     "checked": true
    }
   },
   {
    "id": 23,
-   "lhs": [
-    [
-     "i32.const",
-     1
-    ],
-    [
-     "i32.shr_u"
-    ],
-    [
-     "kconst",
-     {
-      "k": "K0",
-      "f": "id"
-     }
-    ],
-    [
-     "i32.and"
-    ],
-    [
-     "i32.const",
-     1
-    ],
-    [
-     "i32.eq"
-    ]
-   ],
-   "rhs": [
-    [
-     "kconst",
-     {
-      "k": "K0",
-      "f": "shl1"
-     }
-    ],
-    [
-     "i32.and"
-    ],
-    [
-     "i32.const",
-     2
-    ],
-    [
-     "i32.eq"
-    ]
-   ],
-   "odd": [],
-   "inputs": 1,
-   "seen": 106,
-   "origin": "corpus",
-   "example": {
-    "lhs": [
-     [
-      "i32.const",
-      1
-     ],
-     [
-      "i32.shr_u"
-     ],
-     [
-      "i32.const",
-      255
-     ],
-     [
-      "i32.and"
-     ],
-     [
-      "i32.const",
-      1
-     ],
-     [
-      "i32.eq"
-     ]
-    ],
-    "rhs": [
-     [
-      "i32.const",
-      510
-     ],
-     [
-      "i32.and"
-     ],
-     [
-      "i32.const",
-      2
-     ],
-     [
-      "i32.eq"
-     ]
-    ]
-   },
-   "saves": {
-    "instructions": 2,
-    "bytes": 3
-   },
-   "proof": {
-    "vars": 126,
-    "clauses": 184,
-    "lemmas": 0,
-    "conflicts": 0,
-    "trivial": true,
-    "checked": true
-   }
-  },
-  {
-   "id": 24,
    "lhs": [
     [
      "i32.const",
@@ -1624,7 +1530,7 @@
    }
   },
   {
-   "id": 25,
+   "id": 24,
    "lhs": [
     [
      "i32.const",
@@ -1723,104 +1629,7 @@
    }
   },
   {
-   "id": 26,
-   "lhs": [
-    [
-     "i32.const",
-     1
-    ],
-    [
-     "i32.shr_u"
-    ],
-    [
-     "kconst",
-     {
-      "k": "K0",
-      "f": "id"
-     }
-    ],
-    [
-     "i32.and"
-    ],
-    [
-     "i32.const",
-     0
-    ],
-    [
-     "i32.eq"
-    ]
-   ],
-   "rhs": [
-    [
-     "kconst",
-     {
-      "k": "K0",
-      "f": "shl1"
-     }
-    ],
-    [
-     "i32.and"
-    ],
-    [
-     "i32.eqz"
-    ]
-   ],
-   "odd": [],
-   "inputs": 1,
-   "seen": 23,
-   "origin": "corpus",
-   "example": {
-    "lhs": [
-     [
-      "i32.const",
-      1
-     ],
-     [
-      "i32.shr_u"
-     ],
-     [
-      "i32.const",
-      255
-     ],
-     [
-      "i32.and"
-     ],
-     [
-      "i32.const",
-      0
-     ],
-     [
-      "i32.eq"
-     ]
-    ],
-    "rhs": [
-     [
-      "i32.const",
-      510
-     ],
-     [
-      "i32.and"
-     ],
-     [
-      "i32.eqz"
-     ]
-    ]
-   },
-   "saves": {
-    "instructions": 3,
-    "bytes": 5
-   },
-   "proof": {
-    "vars": 126,
-    "clauses": 184,
-    "lemmas": 0,
-    "conflicts": 0,
-    "trivial": true,
-    "checked": true
-   }
-  },
-  {
-   "id": 27,
+   "id": 25,
    "lhs": [
     [
      "i32.const",
@@ -1915,112 +1724,7 @@
    }
   },
   {
-   "id": 28,
-   "lhs": [
-    [
-     "i32.const",
-     1
-    ],
-    [
-     "i32.shr_u"
-    ],
-    [
-     "kconst",
-     {
-      "k": "K0",
-      "f": "id"
-     }
-    ],
-    [
-     "i32.and"
-    ],
-    [
-     "i32.const",
-     3
-    ],
-    [
-     "i32.eq"
-    ]
-   ],
-   "rhs": [
-    [
-     "kconst",
-     {
-      "k": "K0",
-      "f": "shl1"
-     }
-    ],
-    [
-     "i32.and"
-    ],
-    [
-     "i32.const",
-     6
-    ],
-    [
-     "i32.eq"
-    ]
-   ],
-   "odd": [],
-   "inputs": 1,
-   "seen": 2,
-   "origin": "corpus",
-   "example": {
-    "lhs": [
-     [
-      "i32.const",
-      1
-     ],
-     [
-      "i32.shr_u"
-     ],
-     [
-      "i32.const",
-      255
-     ],
-     [
-      "i32.and"
-     ],
-     [
-      "i32.const",
-      3
-     ],
-     [
-      "i32.eq"
-     ]
-    ],
-    "rhs": [
-     [
-      "i32.const",
-      510
-     ],
-     [
-      "i32.and"
-     ],
-     [
-      "i32.const",
-      6
-     ],
-     [
-      "i32.eq"
-     ]
-    ]
-   },
-   "saves": {
-    "instructions": 2,
-    "bytes": 3
-   },
-   "proof": {
-    "vars": 126,
-    "clauses": 184,
-    "lemmas": 0,
-    "conflicts": 0,
-    "trivial": true,
-    "checked": true
-   }
-  },
-  {
-   "id": 29,
+   "id": 26,
    "lhs": [
     [
      "i32.const",
@@ -2111,7 +1815,7 @@
    }
   },
   {
-   "id": 30,
+   "id": 27,
    "lhs": [
     [
      "i32.le_s"
@@ -2194,7 +1898,7 @@
    }
   },
   {
-   "id": 31,
+   "id": 28,
    "lhs": [
     [
      "i32.eq"
@@ -2277,7 +1981,7 @@
    }
   },
   {
-   "id": 32,
+   "id": 29,
    "lhs": [
     [
      "i32.ne"
@@ -2360,7 +2064,7 @@
    }
   },
   {
-   "id": 33,
+   "id": 30,
    "lhs": [
     [
      "i32.lt_s"
@@ -2443,7 +2147,7 @@
    }
   },
   {
-   "id": 34,
+   "id": 31,
    "lhs": [
     [
      "i32.lt_u"
@@ -2509,6 +2213,255 @@
     "rhs": [
      [
       "i32.lt_u"
+     ]
+    ]
+   },
+   "saves": {
+    "instructions": 6,
+    "bytes": 9
+   },
+   "proof": {
+    "vars": 223,
+    "clauses": 538,
+    "lemmas": 0,
+    "conflicts": 0,
+    "trivial": true,
+    "checked": true
+   }
+  },
+  {
+   "id": 32,
+   "lhs": [
+    [
+     "i32.gt_s"
+    ],
+    [
+     "i32.const",
+     1
+    ],
+    [
+     "i32.shl"
+    ],
+    [
+     "i32.const",
+     1
+    ],
+    [
+     "i32.or"
+    ],
+    [
+     "i32.const",
+     1
+    ],
+    [
+     "i32.shr_u"
+    ]
+   ],
+   "rhs": [
+    [
+     "i32.gt_s"
+    ]
+   ],
+   "odd": [],
+   "inputs": 2,
+   "seen": 0,
+   "origin": "variant",
+   "example": {
+    "lhs": [
+     [
+      "i32.gt_s"
+     ],
+     [
+      "i32.const",
+      1
+     ],
+     [
+      "i32.shl"
+     ],
+     [
+      "i32.const",
+      1
+     ],
+     [
+      "i32.or"
+     ],
+     [
+      "i32.const",
+      1
+     ],
+     [
+      "i32.shr_u"
+     ]
+    ],
+    "rhs": [
+     [
+      "i32.gt_s"
+     ]
+    ]
+   },
+   "saves": {
+    "instructions": 6,
+    "bytes": 9
+   },
+   "proof": {
+    "vars": 227,
+    "clauses": 551,
+    "lemmas": 0,
+    "conflicts": 0,
+    "trivial": true,
+    "checked": true
+   }
+  },
+  {
+   "id": 33,
+   "lhs": [
+    [
+     "i32.gt_u"
+    ],
+    [
+     "i32.const",
+     1
+    ],
+    [
+     "i32.shl"
+    ],
+    [
+     "i32.const",
+     1
+    ],
+    [
+     "i32.or"
+    ],
+    [
+     "i32.const",
+     1
+    ],
+    [
+     "i32.shr_u"
+    ]
+   ],
+   "rhs": [
+    [
+     "i32.gt_u"
+    ]
+   ],
+   "odd": [],
+   "inputs": 2,
+   "seen": 0,
+   "origin": "variant",
+   "example": {
+    "lhs": [
+     [
+      "i32.gt_u"
+     ],
+     [
+      "i32.const",
+      1
+     ],
+     [
+      "i32.shl"
+     ],
+     [
+      "i32.const",
+      1
+     ],
+     [
+      "i32.or"
+     ],
+     [
+      "i32.const",
+      1
+     ],
+     [
+      "i32.shr_u"
+     ]
+    ],
+    "rhs": [
+     [
+      "i32.gt_u"
+     ]
+    ]
+   },
+   "saves": {
+    "instructions": 6,
+    "bytes": 9
+   },
+   "proof": {
+    "vars": 223,
+    "clauses": 538,
+    "lemmas": 0,
+    "conflicts": 0,
+    "trivial": true,
+    "checked": true
+   }
+  },
+  {
+   "id": 34,
+   "lhs": [
+    [
+     "i32.le_u"
+    ],
+    [
+     "i32.const",
+     1
+    ],
+    [
+     "i32.shl"
+    ],
+    [
+     "i32.const",
+     1
+    ],
+    [
+     "i32.or"
+    ],
+    [
+     "i32.const",
+     1
+    ],
+    [
+     "i32.shr_u"
+    ]
+   ],
+   "rhs": [
+    [
+     "i32.le_u"
+    ]
+   ],
+   "odd": [],
+   "inputs": 2,
+   "seen": 0,
+   "origin": "variant",
+   "example": {
+    "lhs": [
+     [
+      "i32.le_u"
+     ],
+     [
+      "i32.const",
+      1
+     ],
+     [
+      "i32.shl"
+     ],
+     [
+      "i32.const",
+      1
+     ],
+     [
+      "i32.or"
+     ],
+     [
+      "i32.const",
+      1
+     ],
+     [
+      "i32.shr_u"
+     ]
+    ],
+    "rhs": [
+     [
+      "i32.le_u"
      ]
     ]
    },
@@ -2529,7 +2482,7 @@
    "id": 35,
    "lhs": [
     [
-     "i32.gt_s"
+     "i32.ge_s"
     ],
     [
      "i32.const",
@@ -2555,7 +2508,7 @@
    ],
    "rhs": [
     [
-     "i32.gt_s"
+     "i32.ge_s"
     ]
    ],
    "odd": [],
@@ -2565,7 +2518,7 @@
    "example": {
     "lhs": [
      [
-      "i32.gt_s"
+      "i32.ge_s"
      ],
      [
       "i32.const",
@@ -2591,7 +2544,7 @@
     ],
     "rhs": [
      [
-      "i32.gt_s"
+      "i32.ge_s"
      ]
     ]
    },
@@ -2612,7 +2565,7 @@
    "id": 36,
    "lhs": [
     [
-     "i32.gt_u"
+     "i32.ge_u"
     ],
     [
      "i32.const",
@@ -2638,7 +2591,7 @@
    ],
    "rhs": [
     [
-     "i32.gt_u"
+     "i32.ge_u"
     ]
    ],
    "odd": [],
@@ -2648,7 +2601,7 @@
    "example": {
     "lhs": [
      [
-      "i32.gt_u"
+      "i32.ge_u"
      ],
      [
       "i32.const",
@@ -2674,7 +2627,7 @@
     ],
     "rhs": [
      [
-      "i32.gt_u"
+      "i32.ge_u"
      ]
     ]
    },
@@ -2693,255 +2646,6 @@
   },
   {
    "id": 37,
-   "lhs": [
-    [
-     "i32.le_u"
-    ],
-    [
-     "i32.const",
-     1
-    ],
-    [
-     "i32.shl"
-    ],
-    [
-     "i32.const",
-     1
-    ],
-    [
-     "i32.or"
-    ],
-    [
-     "i32.const",
-     1
-    ],
-    [
-     "i32.shr_u"
-    ]
-   ],
-   "rhs": [
-    [
-     "i32.le_u"
-    ]
-   ],
-   "odd": [],
-   "inputs": 2,
-   "seen": 0,
-   "origin": "variant",
-   "example": {
-    "lhs": [
-     [
-      "i32.le_u"
-     ],
-     [
-      "i32.const",
-      1
-     ],
-     [
-      "i32.shl"
-     ],
-     [
-      "i32.const",
-      1
-     ],
-     [
-      "i32.or"
-     ],
-     [
-      "i32.const",
-      1
-     ],
-     [
-      "i32.shr_u"
-     ]
-    ],
-    "rhs": [
-     [
-      "i32.le_u"
-     ]
-    ]
-   },
-   "saves": {
-    "instructions": 6,
-    "bytes": 9
-   },
-   "proof": {
-    "vars": 223,
-    "clauses": 538,
-    "lemmas": 0,
-    "conflicts": 0,
-    "trivial": true,
-    "checked": true
-   }
-  },
-  {
-   "id": 38,
-   "lhs": [
-    [
-     "i32.ge_s"
-    ],
-    [
-     "i32.const",
-     1
-    ],
-    [
-     "i32.shl"
-    ],
-    [
-     "i32.const",
-     1
-    ],
-    [
-     "i32.or"
-    ],
-    [
-     "i32.const",
-     1
-    ],
-    [
-     "i32.shr_u"
-    ]
-   ],
-   "rhs": [
-    [
-     "i32.ge_s"
-    ]
-   ],
-   "odd": [],
-   "inputs": 2,
-   "seen": 0,
-   "origin": "variant",
-   "example": {
-    "lhs": [
-     [
-      "i32.ge_s"
-     ],
-     [
-      "i32.const",
-      1
-     ],
-     [
-      "i32.shl"
-     ],
-     [
-      "i32.const",
-      1
-     ],
-     [
-      "i32.or"
-     ],
-     [
-      "i32.const",
-      1
-     ],
-     [
-      "i32.shr_u"
-     ]
-    ],
-    "rhs": [
-     [
-      "i32.ge_s"
-     ]
-    ]
-   },
-   "saves": {
-    "instructions": 6,
-    "bytes": 9
-   },
-   "proof": {
-    "vars": 227,
-    "clauses": 551,
-    "lemmas": 0,
-    "conflicts": 0,
-    "trivial": true,
-    "checked": true
-   }
-  },
-  {
-   "id": 39,
-   "lhs": [
-    [
-     "i32.ge_u"
-    ],
-    [
-     "i32.const",
-     1
-    ],
-    [
-     "i32.shl"
-    ],
-    [
-     "i32.const",
-     1
-    ],
-    [
-     "i32.or"
-    ],
-    [
-     "i32.const",
-     1
-    ],
-    [
-     "i32.shr_u"
-    ]
-   ],
-   "rhs": [
-    [
-     "i32.ge_u"
-    ]
-   ],
-   "odd": [],
-   "inputs": 2,
-   "seen": 0,
-   "origin": "variant",
-   "example": {
-    "lhs": [
-     [
-      "i32.ge_u"
-     ],
-     [
-      "i32.const",
-      1
-     ],
-     [
-      "i32.shl"
-     ],
-     [
-      "i32.const",
-      1
-     ],
-     [
-      "i32.or"
-     ],
-     [
-      "i32.const",
-      1
-     ],
-     [
-      "i32.shr_u"
-     ]
-    ],
-    "rhs": [
-     [
-      "i32.ge_u"
-     ]
-    ]
-   },
-   "saves": {
-    "instructions": 6,
-    "bytes": 9
-   },
-   "proof": {
-    "vars": 223,
-    "clauses": 538,
-    "lemmas": 0,
-    "conflicts": 0,
-    "trivial": true,
-    "checked": true
-   }
-  },
-  {
-   "id": 40,
    "lhs": [
     [
      "i32.const",
@@ -3038,7 +2742,7 @@
    }
   },
   {
-   "id": 41,
+   "id": 38,
    "lhs": [
     [
      "i32.eqz"
@@ -3121,7 +2825,7 @@
    }
   },
   {
-   "id": 42,
+   "id": 39,
    "lhs": [
     [
      "kconst",

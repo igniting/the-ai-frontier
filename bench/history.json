@@ -794,5 +794,145 @@
     "memory": 3211264
    }
   }
+ },
+ {
+  "label": "6. superoptimizer: re-mine rewritten code until a fixed point; constants generalized under K >= 0 side conditions",
+  "commit": "c53d6ae",
+  "results": {
+   "lumenc": {
+    "instructions": 2402617945,
+    "ms": 557.6,
+    "bytes": 315615,
+    "memory": 267452416
+   },
+   "fib": {
+    "instructions": 46085632,
+    "ms": 7.47,
+    "bytes": 3649,
+    "memory": 3211264
+   },
+   "sort": {
+    "instructions": 679839231,
+    "ms": 76.63,
+    "bytes": 8635,
+    "memory": 28770304
+   },
+   "strings": {
+    "instructions": 256399042,
+    "ms": 26.45,
+    "bytes": 7279,
+    "memory": 3211264
+   },
+   "gc_torture": {
+    "instructions": 1387975458,
+    "ms": 153.39,
+    "bytes": 6443,
+    "memory": 99811328
+   },
+   "red_black_tree": {
+    "instructions": 446964325,
+    "ms": 63.17,
+    "bytes": 11195,
+    "memory": 61931520
+   },
+   "tail_calls": {
+    "instructions": 451532497,
+    "ms": 38.35,
+    "bytes": 5258,
+    "memory": 45285376
+   },
+   "nqueens": {
+    "instructions": 253180509,
+    "ms": 32.72,
+    "bytes": 8434,
+    "memory": 3211264
+   },
+   "life": {
+    "instructions": 67102544,
+    "ms": 7.47,
+    "bytes": 11317,
+    "memory": 3211264
+   },
+   "mandelbrot": {
+    "instructions": 10000867,
+    "ms": 1.08,
+    "bytes": 6801,
+    "memory": 3211264
+   },
+   "huffman": {
+    "instructions": 927779,
+    "ms": 0.2,
+    "bytes": 12497,
+    "memory": 3211264
+   }
+  },
+  "base": {
+   "lumenc": {
+    "instructions": 3104348933,
+    "ms": 565.99,
+    "bytes": 280769,
+    "memory": 133234688
+   },
+   "fib": {
+    "instructions": 75743500,
+    "ms": 6.78,
+    "bytes": 3669,
+    "memory": 3211264
+   },
+   "sort": {
+    "instructions": 975728419,
+    "ms": 103.98,
+    "bytes": 8545,
+    "memory": 16187392
+   },
+   "strings": {
+    "instructions": 279633925,
+    "ms": 35.16,
+    "bytes": 7184,
+    "memory": 3211264
+   },
+   "gc_torture": {
+    "instructions": 1886016845,
+    "ms": 217.93,
+    "bytes": 6352,
+    "memory": 34013184
+   },
+   "red_black_tree": {
+    "instructions": 578604750,
+    "ms": 72.63,
+    "bytes": 10818,
+    "memory": 32571392
+   },
+   "tail_calls": {
+    "instructions": 851699575,
+    "ms": 76.1,
+    "bytes": 5345,
+    "memory": 67567616
+   },
+   "nqueens": {
+    "instructions": 318967128,
+    "ms": 41.45,
+    "bytes": 8236,
+    "memory": 3211264
+   },
+   "life": {
+    "instructions": 73452932,
+    "ms": 9.37,
+    "bytes": 10359,
+    "memory": 3211264
+   },
+   "mandelbrot": {
+    "instructions": 11476510,
+    "ms": 1.16,
+    "bytes": 6750,
+    "memory": 3211264
+   },
+   "huffman": {
+    "instructions": 1080496,
+    "ms": 0.23,
+    "bytes": 12268,
+    "memory": 3211264
+   }
+  }
  }
 ]

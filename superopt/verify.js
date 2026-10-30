@@ -3,7 +3,8 @@
 //
 //   1. builds the equivalence miter again and asks the SAT solver for a
 //      counterexample (the rule holds for all inputs, all values of its
-//      symbolic constants, and every local it assumes odd);
+//      symbolic constants that meet its side conditions, and every local it
+//      assumes odd);
 //   2. checks the solver's refutation with the independent RUP checker;
 //   3. runs both sides on random inputs with the concrete evaluator, which
 //      shares no code with the bit-blaster.
@@ -24,7 +25,7 @@ export function randomCheck(rule, trials = 2000, seed = 7) {
   const pick = () => { const r = rnd(); return (r & 3) === 0 ? [0, 1, -1, 2, 3, 0x7fffffff, -0x80000000][(r >>> 2) % 7] : r; };
   const names = new Set(rule.lhs.filter(([op]) => op === 'kconst').map(([, arg]) => arg.k));
   for (let t = 0; t < trials; t++) {
-    const ks = Object.fromEntries([...names].map((k) => [k, pick()]));
+    const ks = Object.fromEntries([...names].map((k) => [k, rule.nonneg?.includes(k) ? pick() & 0x7fffffff : pick()]));
     const locals = Object.fromEntries(rule.odd.map((odd, i) => [`x${i}`, odd ? pick() | 1 : pick()]));
     const stack = Array.from({ length: rule.inputs }, pick);
     const inst = (code) => code.map(([op, arg]) => (op === 'kconst' ? ['i32.const', kValue(ks, arg)] : [op, arg]));
@@ -36,7 +37,7 @@ export function randomCheck(rule, trials = 2000, seed = 7) {
 }
 
 export function verifyRule(rule, { keep = false } = {}) {
-  const p = prove({ odd: rule.odd, inputs: rule.inputs }, rule.lhs, rule.rhs, { keep });
+  const p = prove({ odd: rule.odd, inputs: rule.inputs }, rule.lhs, rule.rhs, { keep, nonneg: rule.nonneg ?? [] });
   const rnd = randomCheck(rule);
   return { ok: p.proved && p.checked && rnd.ok, proof: p, random: rnd };
 }
