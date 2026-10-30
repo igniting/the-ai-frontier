@@ -3,3 +3,4 @@ node_modules/
 fuzz/failures/
 .DS_Store
 selfhost/failures/
+proofs/

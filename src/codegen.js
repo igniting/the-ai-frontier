@@ -18,6 +18,8 @@ import { reachableFunctions } from './lower.js';
 import {
   addRuntime, seq, c, lg, ls, lt, gg, gs, ld, st, call, header, TAG_CLOSURE, TAG_STRING, ERR, BUILTIN_RUNTIME,
 } from './runtime.js';
+import { optimizeModule } from './peephole.js';
+import { RULES } from './rules.js';
 
 const o = (name) => [name];
 const align = (n, a) => Math.ceil(n / a) * a;
@@ -28,6 +30,7 @@ export const DEFAULTS = {
   maxMemoryPages: 32768, // 2 GiB
   gcStress: false,
   fuel: 0, // 0 = unlimited; otherwise max number of function calls
+  optimize: false, // -O: apply the superoptimizer's proved rewrite rules
 };
 
 export function codegen(ir, options = {}) {
@@ -332,8 +335,11 @@ export function codegen(ir, options = {}) {
     if (needsTmp) locals.push({ name: '$tmp', type: 'i32' });
 
     const params = [{ name: '$env', type: 'i32' }, ...f.params.map((v) => ({ name: storage.get(v.id).local ?? varName(v), type: 'i32' }))];
+    // Locals holding untraced variables always contain tagged immediates (odd
+    // values); the superoptimizer may rely on that.
+    const oddLocals = [...storage.values()].filter((s) => s.local).map((s) => s.local);
     mod.addFunc({
-      name: wasmName(f.name), params, results: ['i32'], locals, body,
+      name: wasmName(f.name), params, results: ['i32'], locals, body, oddLocals,
       comment: `${f.name}(${f.params.map((v) => v.name).join(', ')})  frame: ${slots} slot${slots === 1 ? '' : 's'}`,
     });
   }
@@ -357,6 +363,7 @@ export function codegen(ir, options = {}) {
   mod.addGlobal('$alloc_bytes', 'i64', true, 0, 'alloc_bytes');
   if (opts.fuel) mod.addGlobal('$fuel', 'i32', true, opts.fuel);
 
+  const peephole = opts.optimize ? optimizeModule(mod, RULES) : null;
   mod.prune();
-  return { mod, layout, functionCount: funcs.length };
+  return { mod, layout, functionCount: funcs.length, peephole };
 }

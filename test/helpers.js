@@ -1,18 +1,19 @@
 import assert from 'node:assert/strict';
 import { compile, runWasm, interpretSource, checkSource, formatDiagnostic, decodeBytes } from '../src/compiler.js';
 
-// Runs a program three ways (interpreter, wasm, wasm with GC stress), asserts
-// they agree exactly, and returns { output, error } with output decoded.
-// GC stress collects on every allocation, which is quadratic for programs
-// with large live data, so those pass { stress: false }.
+// Runs a program four ways (interpreter, wasm, wasm with GC stress, wasm
+// with -O), asserts they agree exactly, and returns { output, error } with
+// output decoded. GC stress collects on every allocation, which is quadratic
+// for programs with large live data, so those pass { stress: false }.
 export function run(src, { stress = true, input = '' } = {}) {
   const ref = interpretSource(src, { input });
   if (!ref.ok) assert.fail(`program rejected:\n${formatDiagnostic(src, ref.errors[0])}`);
-  for (const gcStress of stress ? [false, true] : [false]) {
-    const c = compile(src, { gcStress });
+  const modes = [{}, { optimize: true }, ...(stress ? [{ gcStress: true }] : [])];
+  for (const options of modes) {
+    const c = compile(src, options);
     const r = runWasm(c.wasm, { input });
-    assert.equal(decodeBytes(r.output), decodeBytes(ref.output), `wasm output differs (gcStress=${gcStress})`);
-    assert.equal(r.error, ref.error, `wasm error differs (gcStress=${gcStress})`);
+    assert.equal(decodeBytes(r.output), decodeBytes(ref.output), `wasm output differs (${JSON.stringify(options)})`);
+    assert.equal(r.error, ref.error, `wasm error differs (${JSON.stringify(options)})`);
   }
   return { output: decodeBytes(ref.output), error: ref.error };
 }

@@ -46,13 +46,13 @@ export function compile(source, options = {}) {
     const ir = lower(checked);
     timings.lower = now() - t;
     t = now();
-    const { mod, layout, functionCount } = codegen(ir, options);
+    const { mod, layout, functionCount, peephole } = codegen(ir, options);
     timings.codegen = now() - t;
     t = now();
     const wasm = mod.encode();
     timings.encode = now() - t;
     return {
-      ok: true, wasm, layout, functionCount, timings,
+      ok: true, wasm, layout, functionCount, timings, peephole,
       signatures: checked.signatures, warnings: checked.warnings,
       get wat() { return mod.toWat(); },
       get ir() { return printIR(reachableFunctions(ir)); },

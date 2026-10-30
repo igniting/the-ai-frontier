@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { generateProgram, renderProgram } from '../fuzz/generate.js';
 import { checkProgram } from '../fuzz/check.js';
 
-test('300 random programs agree across interpreter, wasm and GC-stress wasm', () => {
+test('300 random programs agree across interpreter, wasm, GC-stress wasm and -O wasm', () => {
   for (let seed = 1; seed <= 300; seed++) {
     const src = renderProgram(generateProgram(seed, { size: 1 + (seed % 3) }));
     const r = checkProgram(src);

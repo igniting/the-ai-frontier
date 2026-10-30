@@ -130,6 +130,18 @@ export const MUTANTS = [
     find: "lg('$la'), lg('$lb'), o('i32.gt_u'), lg('$la'), lg('$lb'), o('i32.lt_u'), o('i32.sub'),",
     replace: "lg('$la'), lg('$lb'), o('i32.lt_u'), lg('$la'), lg('$lb'), o('i32.gt_u'), o('i32.sub'),",
   },
+  {
+    name: '-O: a superoptimizer rule is off by one (x >>> 1 == 0 rewritten to x <u 1)',
+    file: 'rules.js',
+    find: '"rhs":[["i32.const",1],["i32.le_u"]]',
+    replace: '"rhs":[["i32.const",1],["i32.lt_u"]]',
+  },
+  {
+    name: '-O: the constant folder swaps the operands of subtraction',
+    file: 'peephole.js',
+    find: "case 'i32.sub': return (a - b) | 0;",
+    replace: "case 'i32.sub': return (b - a) | 0;",
+  },
 ];
 
 async function loadMutant(m) {

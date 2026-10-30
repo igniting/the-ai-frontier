@@ -14,6 +14,8 @@
     "fuzz": "node fuzz/fuzz.js --count 2000",
     "mutants": "node fuzz/mutants.js --budget 400",
     "serve": "node bin/serve.js",
-    "score": "node challenge/score.js -- node bin/lumen.js run"
+    "score": "node challenge/score.js -- node bin/lumen.js run",
+    "superopt": "node superopt/search.js",
+    "verify-rules": "node superopt/verify.js"
   }
 }

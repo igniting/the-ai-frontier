@@ -1,4 +1,5 @@
-// Runs one program three ways and compares the results. The reference
+// Runs one program four ways (interpreter, wasm, wasm with a collection on
+// every allocation, optimized wasm) and compares the results. The reference
 // interpreter is always the real one; the compiler under test can be
 // swapped out (mutation testing loads deliberately broken copies).
 
@@ -15,6 +16,7 @@ export function makeChecker(compiler = realCompiler) {
     const runs = [
       ['wasm', {}],
       ['wasm+gc-stress', { gcStress: true }],
+      ['wasm -O', { optimize: true }],
     ];
     let gcCount = 0;
     for (const [label, options] of runs) {

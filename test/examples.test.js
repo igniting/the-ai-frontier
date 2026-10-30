@@ -1,5 +1,5 @@
-// Golden tests: every example program produces exactly its recorded output
-// (or its recorded compile-time diagnostic).
+// Golden tests: every example program produces exactly its recorded output,
+// with and without -O (or its recorded compile-time diagnostic).
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -27,6 +27,8 @@ for (const file of examples) {
     const r = runWasm(c.wasm);
     assert.equal(r.error, null);
     assert.equal(decodeBytes(r.output), expected);
+    const o = runWasm(compile(src, { optimize: true }).wasm);
+    assert.equal(decodeBytes(o.output), expected, '-O');
     if (INTERPRET.has(name)) {
       const i = interpretSource(src);
       assert.equal(decodeBytes(i.output), expected);
