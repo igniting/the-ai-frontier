@@ -48,6 +48,12 @@ fn sum_from(a: Array<Int>, i: {i: Int | 0 <= i}, acc: Int) -> Int {
 }
 fn safe_div(x: Int, d: {d: Int | d != 0}) -> Int { x / d }
 fn clamp_index(i: Int, n: {n: Int | n > 0}) -> {r: Int | 0 <= r && r < n} { if i < 0 { 0 } else if i >= n { n - 1 } else { i } }
+fn sum_at(a: Array<Int>, ix: Array<{k: Int | 0 <= k && k < array_length(a)}>, i: {i: Int | 0 <= i}, acc: Int) -> Int {
+  if i < array_length(ix) { sum_at(a, ix, i + 1, acc + array_get(a, array_get(ix, i))) } else { acc }
+}
+fn indices(n: {n: Int | n > 0}, xs: List<Int>, acc: Array<{k: Int | 0 <= k && k < n}>) -> Array<{k: Int | 0 <= k && k < n}> {
+  match xs { [] -> acc, [x, ..rest] -> indices(n, rest, array_push(acc, clamp_index(x, n))) }
+}
 `;
 
 // A small, fast, seedable random number generator (mulberry32).
@@ -268,8 +274,19 @@ export function generate(seed) {
       () => `{ let ${a} = ${g(T.arr)}; if array_length(${a}) > 0 { array_get(${a}, clamp_index(${g(T.int)}, array_length(${a}))) } else { 0 } }`,
       () => `array_length(array_make(clamp_index(${g(T.int)}, 5), ${g(T.int)}))`,
       // Remainders and quotients by constants: the checker knows their range.
-      () => { const c = pick([3, 4, 5]), dv = pick([c, c + 1]); return `{ let ${a} = array_make(${c}, ${g(T.int)}); let ${i} = ${pick([`${c}`, `${2 * c + 1}`, g(T.int)])}; if ${i} >= 0 { array_get(${a}, ${i} % ${dv}) } else { -2 } }`; },
+      // (A divisor one more than the length, and not a power of two, leaves an
+      // index the checker must not think in bounds: c % (c + 1) is c.)
+      () => { const c = pick([3, 4, 5, 6]), dv = c === 3 || chance(0.3) ? c : c + 1; return `{ let ${a} = array_make(${c}, ${g(T.int)}); let ${i} = ${chance(0.75) ? pick([`${c}`, `${2 * c + 1}`]) : g(T.int)}; if ${i} >= 0 { array_get(${a}, ${i} % ${dv}) } else { -2 } }`; },
       () => { const c = pick([3, 4, 5]); return `{ let ${a} = array_make(${c}, ${g(T.int)}); let ${i} = ${g(T.int)}; if ${i} >= 0 && ${i} < ${pick([2 * c, 2 * c + 1])} { array_get(${a}, ${i} / 2) } else { -3 } }`; },
+      // Arrays of indices: the checker knows what their elements are.
+      () => `{ let ${a} = ${g(T.arr)}; if array_length(${a}) > 0 { sum_at(${a}, array_push(array_make(${pick(['0', '1', '3'])}, clamp_index(${g(T.int)}, array_length(${a}))), clamp_index(${g(T.int)}, array_length(${a}))), 0, 0) } else { 0 } }`,
+      () => `{ let ${a} = ${g(T.arr)}; if array_length(${a}) > 0 { let ${i} = indices(array_length(${a}), ${g(T.ints)}, array_empty()); if array_length(${i}) > 0 { array_get(${a}, array_get(${i}, array_length(${i}) - 1)) } else { -5 } } else { 0 } }`,
+      // A branch that overflows has no value, and must not constrain one that does.
+      () => `{ let ${a} = ${g(T.arr)}; let ${i} = (match ${chance(0.6) ? '[]' : g(T.ints)} { [] -> array_length(${a}), _ -> (if true { 9223372036854775807 + ${pick(['1', '2'])} } else { 0 }) }); array_get(${a}, ${chance(0.75) ? i : `${i} - 1`}) }`,
+      // A Boolean match as a condition: its else branch can run.
+      () => `{ let ${a} = ${g(T.arr)}; let ${i} = ${pick([`array_length(${a})`, '-1', g(T.int)])}; if (match ${g(T.str)} { ${pick(STRS)} -> true, _ -> false }) { -7 } else { array_get(${a}, ${i}) } }`,
+      // ... and an element pushed unchecked: reading through it is checked at run time.
+      () => `{ let ${a} = ${g(T.arr)}; if array_length(${a}) > 0 { let ${i} = array_push(array_make(${pick(['1', '2'])}, clamp_index(${g(T.int)}, array_length(${a}))), ${pick([`array_length(${a})`, '-1', g(T.int)])}); array_get(${a}, array_get(${i}, ${chance(0.75) ? `array_length(${i}) - 1` : pick(['0', g(T.int)])})) } else { -4 } }`,
     ])();
   }
 
@@ -346,6 +363,10 @@ export function generate(seed) {
       env.push({ name: x, t });
       stmts.push(`println(${show(t, x)});`);
     } else stmts.push(`println(${show(t, gen(t, 4, env))});`);
+    // Now and then, a partial operation main is sure to reach.
+    if (chance(0.3)) stmts.push(`println(int_to_string(${refined(3, env)}));`);
+    // ... and an update that must leave the original value as it was.
+    if (chance(0.15)) stmts.push(`println(${persist(3, env)});`);
     // Now and then, something big enough to exercise long lists, deep trees and in-place updates.
     if (chance(0.25)) {
       const n = pick(['200', '1000', '5000']);
@@ -408,6 +429,9 @@ export const MUTANTS = [
   'mul-const-bound', // an off-by-one in the overflow bound for multiplying by a constant
   'superopt-ignore-when', // apply the superoptimizer's rewrite rules without checking their side conditions
   'refine-div-range', // a remainder range one too narrow in the checker's model of division by a constant
+  'refine-push-forgets', // forget the element array_push adds when tracking what an array's elements are
+  'refine-match-or', // take a Boolean match's value to be the disjunction of its arms' values
+  'refine-overflow-def', // define a branch's value as equal to a result that overflowed
 ];
 
 function main() {

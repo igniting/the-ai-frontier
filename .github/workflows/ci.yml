@@ -76,6 +76,25 @@ jobs:
           name: lumen2-schur-proof
           path: lumen2/lumen2-schur-proof/
 
+  lumen2-schur-recheck:
+    needs: lumen2-schur
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: lumen2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: lumen2-schur-proof
+          path: lumen2/lumen2-schur-proof
+      - name: Check the refutation again with proofs/rup.lm, a checker proved free of run-time errors, built by the self-hosted compiler
+        run: node proofs/check-drup.js lumen2-schur-proof/schur-4-45.cnf lumen2-schur-proof/schur-4-45.drup --selfhost
+
   schur:
     runs-on: ubuntu-latest
     timeout-minutes: 30

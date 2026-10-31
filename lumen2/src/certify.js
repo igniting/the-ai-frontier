@@ -118,7 +118,7 @@ export function checkTypes(ir, adts) {
       const [a0, a1] = r.argTys;
       const elem = () => (a0?.k === 'con' && a0.name === 'Array' ? a0.args[0] : bad(`${r.name} of a non-array`));
       const SIGS = {
-        print: () => [[STRING], UNIT], println: () => [[STRING], UNIT], read_input: () => [[], STRING], clock_ms: () => [[], INT], random_int: () => [[INT, INT], INT],
+        print: () => [[STRING], UNIT], println: () => [[STRING], UNIT], read_input: () => [[], STRING], read_line: () => [[], STRING], clock_ms: () => [[], INT], random_int: () => [[INT, INT], INT],
         int_to_string: () => [[INT], STRING], string_length: () => [[STRING], INT], substring: () => [[STRING, INT, INT], STRING],
         char_code_at: () => [[STRING, INT], INT], char_from_code: () => [[INT], STRING], concat: () => [[STRING, STRING], STRING],
         concat_strings: () => [[LIST(STRING)], STRING],

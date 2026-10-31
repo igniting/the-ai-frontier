@@ -117,8 +117,43 @@ export function prove(atoms, facts, goal, { mutant = null, maxConflicts = 100000
     return r;
   };
 
+  // Tighter ranges for the atoms, from the facts' top-level linear
+  // constraints (interval propagation). They follow from facts that are
+  // asserted anyway, so they change no answer, but a narrower range means
+  // fewer bits for every term, and a much easier formula.
+  const range = new Map();
+  const lo = (id) => range.get(id)?.[0] ?? atoms.get(id).lo;
+  const hi = (id) => range.get(id)?.[1] ?? atoms.get(id).hi;
+  {
+    const lins = [];
+    const conj = (f) => {
+      if (f.k === 'and') { conj(f.a); conj(f.b); } else if (f.k === 'le') lins.push(f.t);
+      else if (f.k === 'lt') lins.push(addTerms(f.t, konst(1)));
+      else if (f.k === 'eq') { lins.push(f.t); lins.push(scaleTerm(f.t, -1n)); }
+    };
+    for (const p of used) conj(p.f);
+    const floorDiv = (a, b) => { const q = a / b; return (a % b !== 0n && (a < 0n) !== (b < 0n)) ? q - 1n : q; };
+    const ceilDiv = (a, b) => -floorDiv(-a, b);
+    for (let round = 0; round < 4; round++) {
+      let changed = false;
+      for (const t of lins) {
+        // t <= 0: for each atom x with coefficient k, k*x <= -c - (the least the others can be).
+        const terms = [...t.coeffs].filter(([id]) => !atoms.get(id).bool);
+        if (terms.length !== t.coeffs.size) continue;
+        const least = terms.reduce((acc, [id, k]) => acc + (k > 0n ? k * lo(id) : k * hi(id)), 0n);
+        for (const [id, k] of terms) {
+          const others = least - (k > 0n ? k * lo(id) : k * hi(id));
+          const rhs = -t.c - others;
+          if (k > 0n) { const h = floorDiv(rhs, k); if (h < hi(id)) { range.set(id, [lo(id), h]); changed = true; } }
+          else { const l = ceilDiv(rhs, k); if (l > lo(id)) { range.set(id, [l, hi(id)]); changed = true; } }
+        }
+      }
+      if (!changed) break;
+    }
+  }
+
   // Width: enough bits that no term (or atom range check) can overflow.
-  const mag = (id) => { const a = atoms.get(id); return a.bool ? 1n : (a.lo < 0n ? -a.lo : a.lo) > (a.hi < 0n ? -a.hi : a.hi) ? (a.lo < 0n ? -a.lo : a.lo) : (a.hi < 0n ? -a.hi : a.hi); };
+  const mag = (id) => { const a = atoms.get(id); if (a.bool) return 1n; const l = lo(id), h = hi(id); const al = l < 0n ? -l : l, ah = h < 0n ? -h : h; return al > ah ? al : ah; };
   const abs = (x) => (x < 0n ? -x : x);
   let bound = 1n;
   const visitTerms = (f) => {
@@ -149,8 +184,8 @@ export function prove(atoms, facts, goal, { mutant = null, maxConflicts = 100000
         const bits = Array.from({ length: width }, () => enc.fresh());
         atomBits.set(id, bits);
         // lo <= x <= hi
-        enc.clauses.push([enc.not(enc.sign(enc.sub(bits, enc.constant(a.lo))))]);
-        enc.clauses.push([enc.not(enc.sign(enc.sub(enc.constant(a.hi), bits)))]);
+        enc.clauses.push([enc.not(enc.sign(enc.sub(bits, enc.constant(lo(id)))))]);
+        enc.clauses.push([enc.not(enc.sign(enc.sub(enc.constant(hi(id)), bits)))]);
       }
     }
     return atomBits.get(id);

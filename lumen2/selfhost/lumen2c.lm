@@ -784,7 +784,7 @@ fn builtin_scheme(n) {
   let mono = |t| Some(Scheme([], t));
   let poly = |t| Some(Scheme([0], t));
   if n == "print" || n == "println" { mono(TFun([s], t_unit())) }
-  else if n == "read_input" { mono(TFun([], s)) }
+  else if n == "read_input" || n == "read_line" { mono(TFun([], s)) }
   else if n == "clock_ms" { mono(TFun([], i)) }
   else if n == "random_int" { mono(TFun([i, i], i)) }
   else if n == "panic" { poly(TFun([s], a)) }
@@ -1954,7 +1954,7 @@ fn wfn(name, params, results, locals, body) { WFn(name, params, results, locals,
 
 // The runtime functions every module has.
 fn runtime() {
-  [rt_fn_rt_fail(), rt_fn_rt_class(), rt_fn_rt_alloc(), rt_fn_rt_free(), rt_fn_rt_dup(), rt_fn_rt_release(), rt_fn_rt_tag(), rt_fn_int_add(), rt_fn_int_sub(), rt_fn_int_mul(), rt_fn_int_div(), rt_fn_int_rem(), rt_fn_int_neg(), rt_fn_str_new(), rt_fn_str_concat(), rt_fn_str_concat_list(), rt_fn_str_cmp(), rt_fn_int_to_string(), rt_fn_str_length(), rt_fn_str_sub(), rt_fn_str_code_at(), rt_fn_str_from_code(), rt_fn_str_print(), rt_fn_str_read_input(), rt_fn_str_panic(), rt_fn_arr_new()]
+  [rt_fn_rt_fail(), rt_fn_rt_class(), rt_fn_rt_alloc(), rt_fn_rt_free(), rt_fn_rt_dup(), rt_fn_rt_release(), rt_fn_rt_tag(), rt_fn_int_add(), rt_fn_int_sub(), rt_fn_int_mul(), rt_fn_int_div(), rt_fn_int_rem(), rt_fn_int_neg(), rt_fn_str_new(), rt_fn_str_concat(), rt_fn_str_concat_list(), rt_fn_str_cmp(), rt_fn_int_to_string(), rt_fn_str_length(), rt_fn_str_sub(), rt_fn_str_code_at(), rt_fn_str_from_code(), rt_fn_str_print(), rt_fn_str_read_input(), rt_fn_str_read_line(), rt_fn_str_panic(), rt_fn_arr_new()]
 }
 fn rt_head(c) { [lget(c), i32c(2), op("i32.shl")] }
 fn rt_len(p) { [lget(p), load32(4)] }
@@ -2171,6 +2171,10 @@ fn rt_fn_str_print() {
 
 fn rt_fn_str_read_input() {
   wfn("str_read_input", [], ["i32"], [("p", "i32")], [[call("host_input_len"), call("str_new"), ltee("p"), i32c(8), op("i32.add"), call("host_input_read"), lget("p")]])
+}
+
+fn rt_fn_str_read_line() {
+  wfn("str_read_line", [], ["i32"], [("p", "i32")], [[call("host_line_len"), call("str_new"), ltee("p"), i32c(8), op("i32.add"), call("host_line_read"), lget("p")]])
 }
 
 fn rt_fn_str_panic() {
@@ -2525,6 +2529,7 @@ fn gen_rhs(g, ords, cg, r) {
       if n == "print" { (append(args, [call("str_print"), i32c(0)]), cg) }
       else if n == "println" { (append(args, [call("str_println"), i32c(0)]), cg) }
       else if n == "read_input" { ([call("str_read_input")], cg) }
+      else if n == "read_line" { ([call("str_read_line")], cg) }
       else if n == "clock_ms" { ([call("host_clock")], cg) }
       else if n == "random_int" { (append(args, [call("host_random")]), cg) }
       else if n == "int_to_string" { (append(args, [call("int_to_string")]), cg) }
@@ -2675,6 +2680,7 @@ fn enc_body(ix, f) {
 
 fn imports() {
   [("write", "host_write", ["i32", "i32"], []), ("input_len", "host_input_len", [], ["i32"]), ("input_read", "host_input_read", ["i32"], []),
+   ("line_len", "host_line_len", [], ["i32"]), ("line_read", "host_line_read", ["i32"], []),
    ("fail", "host_fail", ["i32"], []), ("panic", "host_panic", ["i32", "i32"], []), ("clock", "host_clock", [], ["i64"]),
    ("random", "host_random", ["i64", "i64"], ["i64"])]
 }

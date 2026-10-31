@@ -56,6 +56,7 @@ export function interpret(program, { input = '', maxSteps = Infinity, maxDepth =
   let out = '';
   let steps = 0;
   let depth = 0;
+  let cursor = 0; // where read_line reads next
   const tick = () => { if (++steps > maxSteps) fail('out of fuel'); };
 
   // Trait methods dispatch on the first argument's value, whose head (type
@@ -108,7 +109,16 @@ export function interpret(program, { input = '', maxSteps = Infinity, maxDepth =
   const BUILTINS = {
     print: ([s]) => { out += s; return null; },
     println: ([s]) => { out += `${s}\n`; return null; },
-    read_input: () => input,
+    read_input: () => (input.length > MAX_STRING ? fail('string too long') : input),
+    // The next line, with its newline; at the end of the input, "".
+    read_line: () => {
+      const nl = input.indexOf('\n', cursor);
+      const end = nl < 0 ? input.length : nl + 1;
+      if (end - cursor > MAX_STRING) fail('string too long');
+      const line = input.slice(cursor, end);
+      cursor = end;
+      return line;
+    },
     clock_ms: () => host.clock(),
     random_int: ([lo, hi]) => host.random(lo, hi),
     int_to_string: ([n]) => n.toString(),

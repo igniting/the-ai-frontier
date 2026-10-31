@@ -1,0 +1,335 @@
+// A DRUP proof checker, written in Lumen 2, with every array access proved.
+//
+// Input (standard input, read a line at a time, so a proof can be larger than
+// the longest string): a formula in DIMACS CNF, followed by a refutation of it
+// in DRUP form: one lemma per line, "lits... 0", ending with the empty clause
+// "0" (what sat.lm prints). Output: "s VERIFIED" when every lemma follows from
+// the formula and the lemmas before it by unit propagation, and the empty
+// clause is reached; otherwise "s NOT VERIFIED" and the reason.
+//
+// It is a second, independent checker for the proofs that src/rup.js checks:
+// a different language, compiled by a different compiler, sharing no code.
+// It is also written so that nothing in it can stop with a run-time error.
+// Every function receives the checker's whole state as parameters, and their
+// refinement types carry the invariants:
+//
+//   vals   one entry per literal code (1 true, -1 false, 0 unassigned);
+//          its length is 2n + 2
+//   db     the clauses: each an array of at least two literal codes, each
+//          code in [2, 2n + 2)
+//   w      watch lists, one per literal code: indices of clauses in db
+//   trail  the assigned literal codes, in order; top of them are in use
+//
+// The checker proves every access in bounds from these, so no function here
+// has `fail` in its type (see `lumen2 check`). Input that breaks an invariant
+// (a literal above n, a clause without its 0) is reported, not trusted.
+//
+// The algorithm is the usual one: two watched literals per clause; what unit
+// propagation derives from the clauses alone is kept between lemmas; each
+// lemma is checked by assuming it false and propagating to a conflict.
+//
+// Literal codes: DIMACS literal v is 2v, and -v is 2v + 1.
+
+fn code(n: {n: Int | 1 <= n && n <= 1000000}, l: {l: Int | l != 0 && 0 - n <= l && l <= n}) -> {c: Int | 2 <= c && c < 2 * n + 2} {
+  if l > 0 { 2 * l } else { 1 - 2 * l }
+}
+fn neg(n: {n: Int | 1 <= n && n <= 1000000}, c: {c: Int | 2 <= c && c < 2 * n + 2}) -> {d: Int | 2 <= d && d < 2 * n + 2} {
+  if c % 2 == 0 { c + 1 } else { c - 1 }
+}
+
+// ---------------------------------------------------------------- parsing --
+fn is_space(c) { c == 32 || c == 10 || c == 13 || c == 9 }
+
+fn line_end(src: String, i: {i: Int | 0 <= i}) -> {j: Int | 0 <= j} {
+  if i >= string_length(src) { i } else if char_code_at(src, i) == 10 { i + 1 } else { line_end(src, i + 1) }
+}
+// The next position that is not a space, skipping comment lines.
+fn skip(src: String, i: {i: Int | 0 <= i}) -> {j: Int | 0 <= j} {
+  if i >= string_length(src) { i }
+  else if is_space(char_code_at(src, i)) { skip(src, i + 1) }
+  else if char_code_at(src, i) == 99 { skip(src, line_end(src, i)) }
+  else { i }
+}
+// The next position that is not a space (comments not skipped: inside the header).
+fn spaces(src: String, i: {i: Int | 0 <= i}) -> {j: Int | 0 <= j} {
+  if i < string_length(src) && is_space(char_code_at(src, i)) { spaces(src, i + 1) } else { i }
+}
+fn token_end(src: String, i: {i: Int | 0 <= i}) -> {j: Int | i <= j} {
+  if i < string_length(src) && !is_space(char_code_at(src, i)) { token_end(src, i + 1) } else { i }
+}
+// The integer written in src[i..j), if it is one (at most 18 digits, so it cannot overflow).
+fn number(src: String, i: {i: Int | 0 <= i}, j: Int, acc: Int, sign: Int, digits: Int) -> Option<Int> {
+  if i >= j || i >= string_length(src) { if digits > 0 { Some(sign * acc) } else { None } }
+  else {
+    let c = char_code_at(src, i);
+    if c == 45 && digits == 0 && sign == 1 { number(src, i + 1, j, acc, 0 - 1, 0) }
+    else if c >= 48 && c <= 57 && digits < 18 { number(src, i + 1, j, acc * 10 + (c - 48), sign, digits + 1) }
+    else { None }
+  }
+}
+
+// All the numbers after the header, each a literal of n variables or 0: the
+// rest of the line src from i, then the lines after it.
+fn read_ints(src: String, i: {i: Int | 0 <= i}, n: {n: Int | 1 <= n && n <= 1000000}, m: Int, buf: Array<{x: Int | 0 - n <= x && x <= n}>) -> String ! input {
+  let a = skip(src, i);
+  if a >= string_length(src) {
+    let line = read_line();
+    if string_length(line) == 0 { start(n, m, buf) } else { read_ints(line, 0, n, m, buf) }
+  }
+  else {
+    let b = token_end(src, a);
+    match number(src, a, b, 0, 1, 0) {
+      Some(x) -> if 0 - n <= x && x <= n { read_ints(src, b, n, m, array_push(buf, x)) } else { "s NOT VERIFIED: " ++ int_to_string(x) ++ " is not a literal of " ++ int_to_string(n) ++ " variables" },
+      None -> "s NOT VERIFIED: `" ++ substring(src, a, b) ++ "` is not a number",
+    }
+  }
+}
+
+// The header: the first line that is not blank or a comment.
+fn check_input(src: String) -> String ! input {
+  let i = skip(src, 0);
+  if string_length(src) == 0 { "s NOT VERIFIED: no `p cnf` header" }
+  else if i >= string_length(src) { check_input(read_line()) }
+  else { header(src, i) }
+}
+
+fn header(src: String, i: {i: Int | 0 <= i}) -> String ! input {
+  let i1 = token_end(src, i);
+  let j = spaces(src, i1);
+  let j1 = token_end(src, j);
+  let a = spaces(src, j1);
+  let a1 = token_end(src, a);
+  let b = spaces(src, a1);
+  let b1 = token_end(src, b);
+  if substring(src, i, i1) != "p" || substring(src, j, j1) != "cnf" { "s NOT VERIFIED: no `p cnf` header" }
+  else {
+    match (number(src, a, a1, 0, 1, 0), number(src, b, b1, 0, 1, 0)) {
+      (Some(n), Some(m)) -> if n >= 1 && n <= 1000000 && m >= 0 { read_ints(src, b1, n, m, array_empty()) } else { "s NOT VERIFIED: a bad header" },
+      _ -> "s NOT VERIFIED: a bad header",
+    }
+  }
+}
+
+// ------------------------------------------------------------------ state --
+fn start(n: {n: Int | 1 <= n && n <= 1000000}, m: Int, buf: Array<{x: Int | 0 - n <= x && x <= n}>) -> String {
+  next(n, m, buf, array_make(2 * n + 2, 0), array_empty(), array_make(2 * n + 2, array_empty()), array_empty(), 0, 0, 0)
+}
+
+// The position of the next 0 in buf from i, or its length.
+fn find_zero(buf: Array<Int>, i: {i: Int | 0 <= i}) -> {e: Int | i <= e} {
+  if i >= array_length(buf) { i } else if array_get(buf, i) == 0 { i } else { find_zero(buf, i + 1) }
+}
+
+// The next clause: one of the formula's, added as it is, or a lemma, checked first.
+fn next(n: {n: Int | 1 <= n && n <= 1000000},
+         m: Int,
+         buf: Array<{x: Int | 0 - n <= x && x <= n}>,
+         vals: {v: Array<Int> | array_length(v) == 2 * n + 2},
+         db: Array<{c: Array<{x: Int | 2 <= x && x < 2 * n + 2}> | array_length(c) >= 2}>,
+         w: {ws: Array<Array<{k: Int | 0 <= k && k < array_length(db)}>> | array_length(ws) == 2 * n + 2},
+         trail: Array<{x: Int | 2 <= x && x < 2 * n + 2}>,
+         top: {t: Int | 0 <= t && t <= array_length(trail)}, pos: {p: Int | 0 <= p}, count: Int) -> String {
+  if pos >= array_length(buf) {
+    if count < m { "s NOT VERIFIED: the formula has fewer clauses than its header says" } else { "s NOT VERIFIED: the proof ends before the empty clause" }
+  } else {
+    let e = find_zero(buf, pos);
+    if e >= array_length(buf) { "s NOT VERIFIED: the last clause has no terminating 0" }
+    else if count < m { add(n, m, buf, vals, db, w, trail, top, pos, e, count, pos, array_empty(), array_empty()) }
+    else { assume(n, m, buf, vals, db, w, trail, top, top, pos, e, count, pos) }
+  }
+}
+
+// Assigns literal code c true: in vals (and its negation false) and on the trail.
+// (Written out where it is used, since a function returns one value.)
+
+// Checking a lemma: assume each of its literals false, then propagate.
+fn assume(n: {n: Int | 1 <= n && n <= 1000000},
+         m: Int,
+         buf: Array<{x: Int | 0 - n <= x && x <= n}>,
+         vals: {v: Array<Int> | array_length(v) == 2 * n + 2},
+         db: Array<{c: Array<{x: Int | 2 <= x && x < 2 * n + 2}> | array_length(c) >= 2}>,
+         w: {ws: Array<Array<{k: Int | 0 <= k && k < array_length(db)}>> | array_length(ws) == 2 * n + 2},
+         trail: Array<{x: Int | 2 <= x && x < 2 * n + 2}>,
+         top: {t: Int | 0 <= t && t <= array_length(trail)}, base: {b: Int | 0 <= b && b <= top}, pos: {p: Int | 0 <= p}, e: {e: Int | pos <= e && e < array_length(buf)}, count: Int, j: {j: Int | 0 <= j}) -> String {
+  if j >= e { prop(n, m, buf, vals, db, w, trail, top, base, pos, e, count, base, true) }
+  else {
+    let x = array_get(buf, j);
+    if x == 0 { "s NOT VERIFIED: an empty literal" }
+    else {
+      let c = code(n, x);
+      let v = array_get(vals, c);
+      if v == 1 { undo(n, m, buf, vals, db, w, trail, top, base, pos, e, count, top) }          // already true: assuming it false is a conflict
+      else if v == 0 - 1 { assume(n, m, buf, vals, db, w, trail, top, base, pos, e, count, j + 1) }
+      else {
+        let d = neg(n, c);
+        let vals2 = array_set(array_set(vals, d, 1), c, 0 - 1);
+        let trail2 = if top < array_length(trail) { array_set(trail, top, d) } else { array_push(trail, d) };
+        assume(n, m, buf, vals2, db, w, trail2, top + 1, base, pos, e, count, j + 1)
+      }
+    }
+  }
+}
+
+// Unit propagation from trail position q. checking: whether a lemma is being
+// checked (a conflict proves it) or a clause was just added (a conflict ends
+// the proof, since the empty clause then follows).
+fn prop(n: {n: Int | 1 <= n && n <= 1000000},
+         m: Int,
+         buf: Array<{x: Int | 0 - n <= x && x <= n}>,
+         vals: {v: Array<Int> | array_length(v) == 2 * n + 2},
+         db: Array<{c: Array<{x: Int | 2 <= x && x < 2 * n + 2}> | array_length(c) >= 2}>,
+         w: {ws: Array<Array<{k: Int | 0 <= k && k < array_length(db)}>> | array_length(ws) == 2 * n + 2},
+         trail: Array<{x: Int | 2 <= x && x < 2 * n + 2}>,
+         top: {t: Int | 0 <= t && t <= array_length(trail)}, base: {b: Int | 0 <= b && b <= top}, pos: {p: Int | 0 <= p}, e: {e: Int | pos <= e && e < array_length(buf)}, count: Int, q: {q: Int | 0 <= q && q <= top}, checking: Bool) -> String {
+  if q >= top {
+    if checking { "s NOT VERIFIED: lemma " ++ int_to_string(count - m + 1) ++ " does not follow by unit propagation" }
+    else { next(n, m, buf, vals, db, w, trail, top, e + 1, count + 1) }
+  } else {
+    let f = neg(n, array_get(trail, q));
+    let ws = array_get(w, f);
+    visit(n, m, buf, vals, db, array_set(w, f, array_empty()), trail, top, base, pos, e, count, q, checking, f, ws, 0, array_empty())
+  }
+}
+
+// Visits the clauses watching literal code f, which has just become false.
+fn visit(n: {n: Int | 1 <= n && n <= 1000000},
+         m: Int,
+         buf: Array<{x: Int | 0 - n <= x && x <= n}>,
+         vals: {v: Array<Int> | array_length(v) == 2 * n + 2},
+         db: Array<{c: Array<{x: Int | 2 <= x && x < 2 * n + 2}> | array_length(c) >= 2}>,
+         w: {ws: Array<Array<{k: Int | 0 <= k && k < array_length(db)}>> | array_length(ws) == 2 * n + 2},
+         trail: Array<{x: Int | 2 <= x && x < 2 * n + 2}>,
+         top: {t: Int | 0 <= t && t <= array_length(trail)}, base: {b: Int | 0 <= b && b <= top}, pos: {p: Int | 0 <= p}, e: {e: Int | pos <= e && e < array_length(buf)}, count: Int, q: {q: Int | 0 <= q && q < top}, checking: Bool,
+         f: {f: Int | 2 <= f && f < 2 * n + 2},
+         ws: Array<{k: Int | 0 <= k && k < array_length(db)}>, i: {i: Int | 0 <= i},
+         kept: Array<{k: Int | 0 <= k && k < array_length(db)}>) -> String {
+  if i >= array_length(ws) { prop(n, m, buf, vals, db, array_set(w, f, kept), trail, top, base, pos, e, count, q + 1, checking) }
+  else {
+    let k = array_get(ws, i);
+    // Take the clause out of db while it changes, so that it is not shared and
+    // is updated in place. (What stands in for it has two literals too.)
+    let c0 = array_get(db, k);
+    let db0 = array_set(db, k, array_make(2, 2));
+    // Make position 1 the false watch.
+    let c = if array_get(c0, 0) == f { array_set(array_set(c0, 0, array_get(c0, 1)), 1, f) } else { c0 };
+    let first = array_get(c, 0);
+    if array_get(vals, first) == 1 { visit(n, m, buf, vals, array_set(db0, k, c), w, trail, top, base, pos, e, count, q, checking, f, ws, i + 1, array_push(kept, k)) }
+    else {
+      let r = replacement(n, vals, c, 2);
+      if r < array_length(c) {
+        // Watch c[r] instead: move it to position 1 and the clause to its list.
+        let x = array_get(c, r);
+        let c2 = array_set(array_set(c, r, array_get(c, 1)), 1, x);
+        let wl = array_get(w, x);
+        let w2 = array_set(array_set(w, x, array_empty()), x, array_push(wl, k));
+        visit(n, m, buf, vals, array_set(db0, k, c2), w2, trail, top, base, pos, e, count, q, checking, f, ws, i + 1, kept)
+      } else if array_get(vals, first) == 0 - 1 {
+        // Every literal is false: a conflict. Keep the rest of the list as it was.
+        let db1 = array_set(db0, k, c);
+        conflict(n, m, buf, vals, db1, array_set(w, f, rest(n, db1, ws, i, kept)), trail, top, base, pos, e, count, checking)
+      } else {
+        // Unit: the first literal must be true.
+        let vals2 = array_set(array_set(vals, first, 1), neg(n, first), 0 - 1);
+        let trail2 = if top < array_length(trail) { array_set(trail, top, first) } else { array_push(trail, first) };
+        visit(n, m, buf, vals2, array_set(db0, k, c), w, trail2, top + 1, base, pos, e, count, q, checking, f, ws, i + 1, array_push(kept, k))
+      }
+    }
+  }
+}
+
+// The first position from j in clause c whose literal is not false, or its length.
+fn replacement(n: {n: Int | 1 <= n && n <= 1000000}, vals: {v: Array<Int> | array_length(v) == 2 * n + 2}, c: Array<{x: Int | 2 <= x && x < 2 * n + 2}>, j: {j: Int | 0 <= j}) -> {r: Int | 0 <= r} {
+  if j >= array_length(c) { j } else if array_get(vals, array_get(c, j)) != 0 - 1 { j } else { replacement(n, vals, c, j + 1) }
+}
+
+// kept, followed by ws from position i.
+fn rest(n: {n: Int | 1 <= n && n <= 1000000}, db: Array<{c: Array<{x: Int | 2 <= x && x < 2 * n + 2}> | array_length(c) >= 2}>, ws: Array<{k: Int | 0 <= k && k < array_length(db)}>, i: {i: Int | 0 <= i},
+        kept: Array<{k: Int | 0 <= k && k < array_length(db)}>) -> Array<{k: Int | 0 <= k && k < array_length(db)}> {
+  if i >= array_length(ws) { kept } else { rest(n, db, ws, i + 1, array_push(kept, array_get(ws, i))) }
+}
+
+fn conflict(n: {n: Int | 1 <= n && n <= 1000000},
+         m: Int,
+         buf: Array<{x: Int | 0 - n <= x && x <= n}>,
+         vals: {v: Array<Int> | array_length(v) == 2 * n + 2},
+         db: Array<{c: Array<{x: Int | 2 <= x && x < 2 * n + 2}> | array_length(c) >= 2}>,
+         w: {ws: Array<Array<{k: Int | 0 <= k && k < array_length(db)}>> | array_length(ws) == 2 * n + 2},
+         trail: Array<{x: Int | 2 <= x && x < 2 * n + 2}>,
+         top: {t: Int | 0 <= t && t <= array_length(trail)}, base: {b: Int | 0 <= b && b <= top}, pos: {p: Int | 0 <= p}, e: {e: Int | pos <= e && e < array_length(buf)}, count: Int, checking: Bool) -> String {
+  if checking { undo(n, m, buf, vals, db, w, trail, top, base, pos, e, count, top) } else { "s VERIFIED" }
+}
+
+// After a lemma is proved: unassign back to the top-level assignment, then add it.
+fn undo(n: {n: Int | 1 <= n && n <= 1000000},
+         m: Int,
+         buf: Array<{x: Int | 0 - n <= x && x <= n}>,
+         vals: {v: Array<Int> | array_length(v) == 2 * n + 2},
+         db: Array<{c: Array<{x: Int | 2 <= x && x < 2 * n + 2}> | array_length(c) >= 2}>,
+         w: {ws: Array<Array<{k: Int | 0 <= k && k < array_length(db)}>> | array_length(ws) == 2 * n + 2},
+         trail: Array<{x: Int | 2 <= x && x < 2 * n + 2}>,
+         top: {t: Int | 0 <= t && t <= array_length(trail)}, base: {b: Int | 0 <= b && b <= top}, pos: {p: Int | 0 <= p}, e: {e: Int | pos <= e && e < array_length(buf)}, count: Int, k: {k: Int | base <= k && k <= top}) -> String {
+  if k <= base { add(n, m, buf, vals, db, w, trail, base, pos, e, count, pos, array_empty(), array_empty()) }
+  else {
+    let c = array_get(trail, k - 1);
+    undo(n, m, buf, array_set(array_set(vals, c, 0), neg(n, c), 0), db, w, trail, top, base, pos, e, count, k - 1)
+  }
+}
+
+// Whether literal code c occurs in a from position i.
+fn has(n: {n: Int | 1 <= n && n <= 1000000}, a: Array<{x: Int | 2 <= x && x < 2 * n + 2}>, c: Int, i: {i: Int | 0 <= i}) -> Bool {
+  i < array_length(a) && (array_get(a, i) == c || has(n, a, c, i + 1))
+}
+
+// Adds clause buf[pos..e) at the top level. Its unassigned literals go first
+// (each once: two watches must be on different literals), then its false ones.
+// A clause with a true literal is satisfied for good, and a tautology always
+// is; both are left out. With no unassigned literal the empty clause follows;
+// with one, that literal is assigned and propagated; otherwise it is watched.
+fn add(n: {n: Int | 1 <= n && n <= 1000000},
+         m: Int,
+         buf: Array<{x: Int | 0 - n <= x && x <= n}>,
+         vals: {v: Array<Int> | array_length(v) == 2 * n + 2},
+         db: Array<{c: Array<{x: Int | 2 <= x && x < 2 * n + 2}> | array_length(c) >= 2}>,
+         w: {ws: Array<Array<{k: Int | 0 <= k && k < array_length(db)}>> | array_length(ws) == 2 * n + 2},
+         trail: Array<{x: Int | 2 <= x && x < 2 * n + 2}>,
+         top: {t: Int | 0 <= t && t <= array_length(trail)}, pos: {p: Int | 0 <= p}, e: {e: Int | pos <= e && e < array_length(buf)}, count: Int, j: {j: Int | 0 <= j},
+       open: Array<{x: Int | 2 <= x && x < 2 * n + 2}>, false_lits: Array<{x: Int | 2 <= x && x < 2 * n + 2}>) -> String {
+  if j < e {
+    let x = array_get(buf, j);
+    if x == 0 { "s NOT VERIFIED: an empty literal" }
+    else {
+      let c = code(n, x);
+      let v = array_get(vals, c);
+      if v == 1 || has(n, open, neg(n, c), 0) { next(n, m, buf, vals, db, w, trail, top, e + 1, count + 1) }   // satisfied, or a tautology
+      else if v == 0 { add(n, m, buf, vals, db, w, trail, top, pos, e, count, j + 1, if has(n, open, c, 0) { open } else { array_push(open, c) }, false_lits) }
+      else { add(n, m, buf, vals, db, w, trail, top, pos, e, count, j + 1, open, array_push(false_lits, c)) }
+    }
+  } else if array_length(open) == 0 { "s VERIFIED" }
+  else if array_length(open) == 1 {
+    let u = array_get(open, 0);
+    let vals2 = array_set(array_set(vals, u, 1), neg(n, u), 0 - 1);
+    let trail2 = if top < array_length(trail) { array_set(trail, top, u) } else { array_push(trail, u) };
+    prop(n, m, buf, vals2, db, w, trail2, top + 1, top, pos, e, count, top, false)
+  } else {
+    let clause = concat_lits(n, open, false_lits, 0);
+    if array_length(clause) < 2 { "s NOT VERIFIED: internal error" }
+    else {
+      let k = array_length(db);
+      let db2 = array_push(db, clause);
+      let a = array_get(clause, 0);
+      let b = array_get(clause, 1);
+      let wa = array_get(w, a);
+      let w1 = array_set(array_set(w, a, array_empty()), a, array_push(wa, k));
+      let wb = array_get(w1, b);
+      let w2 = array_set(array_set(w1, b, array_empty()), b, array_push(wb, k));
+      next(n, m, buf, vals, db2, w2, trail, top, e + 1, count + 1)
+    }
+  }
+}
+
+// a followed by b[i..].
+fn concat_lits(n: {n: Int | 1 <= n && n <= 1000000}, a: Array<{x: Int | 2 <= x && x < 2 * n + 2}>, b: Array<{x: Int | 2 <= x && x < 2 * n + 2}>, i: {i: Int | 0 <= i}) -> Array<{x: Int | 2 <= x && x < 2 * n + 2}> {
+  if i >= array_length(b) { a } else { concat_lits(n, array_push(a, array_get(b, i)), b, i + 1) }
+}
+
+fn main() { println(check_input(read_line())) }

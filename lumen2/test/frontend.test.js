@@ -170,6 +170,70 @@ test('refinements: contracts are proved at every call, with counterexamples', ()
   assert.match(f.errors[0].note, /could not prove that the index is in bounds: for example when array_length\(a\) = (\d+), i = \1/);
 });
 
+test('refinements: element refinements describe every element of an array', () => {
+  const pick = 'fn pick(a: Array<Int>, ix: Array<{k: Int | 0 <= k && k < array_length(a)}>, j: Int) -> Int { if 0 <= j && j < array_length(ix) { array_get(a, array_get(ix, j)) } else { 0 } }\n';
+  const call = (ix) => `${pick}fn main() { let a = array_make(5, 1); println(int_to_string(pick(a, ${ix}, 1))) }`;
+  assert.equal(sigs(call('array_push(array_make(2, 4), 0)')).pick, 'fn(Array<Int>, Array<{k: Int | 0 <= k && k < array_length(a)}>, Int) -> Int');
+  sigs(call('array_set(array_push(array_empty(), 3), 0, 4)'));
+  rejects(call('array_push(array_make(2, 4), 5)'), /cannot prove that the elements of argument `ix` of `pick` satisfy `0 <= k && k < array_length\(a\)`/);
+  rejects(call('array_set(array_make(2, 4), 1, -1)'), /cannot prove that the elements of argument `ix`/);
+  // A refined result: whoever calls indices knows every element is below n.
+  const indices = (push) => `fn indices(n: {n: Int | n > 0}, xs: List<Int>, acc: Array<{k: Int | 0 <= k && k < n}>) -> Array<{k: Int | 0 <= k && k < n}> {
+    match xs { [] -> acc, [x, ..rest] -> indices(n, rest, array_push(acc, ${push})) }
+  }
+  fn last(a: Array<Int>, xs: List<Int>) -> Int {
+    if array_length(a) > 0 { let ix = indices(array_length(a), xs, array_empty()); if array_length(ix) > 0 { array_get(a, array_get(ix, array_length(ix) - 1)) } else { 0 } } else { 0 }
+  }
+  fn main() { println(int_to_string(last(array_make(3, 9), [7, -2]))) }`;
+  const ok = indices('if x < 0 { 0 } else if x >= n { n - 1 } else { x }');
+  assert.equal(sigs(ok).last, 'fn(Array<Int>, List<Int>) -> Int');
+  assert.equal(run(ok).output, '9\n');
+  rejects(indices('if x < 0 { 0 } else if x > n { n } else { x }'), /cannot prove that the elements of argument `acc` of `indices` satisfy `0 <= k && k < n`/);
+  // Nested: the elements of the elements.
+  sigs(`fn total(rows: Array<{r: Array<{x: Int | 0 <= x && x < 10}> | array_length(r) >= 1}>, i: {i: Int | 0 <= i}, acc: Int) -> Int {
+    if i < array_length(rows) { let r = array_get(rows, i); total(rows, i + 1, acc + array_get(r, 0) + array_get(array_make(10, 1), array_get(r, array_length(r) - 1))) } else { acc }
+  }
+  fn main() { println(int_to_string(total(array_make(2, array_make(3, 4)), 0, 0))) }`);
+  rejects('fn main() { let a: Array<{x: Int | x > 0}> = array_make(2, 1); () }', /element refinements can annotate the parameters and results of named functions/);
+});
+
+test('refinements: a Boolean match is one of its arms, not their disjunction', () => {
+  // Found by the fuzzer: with `_ -> false` after `"a" -> true`, the checker
+  // took the match to be always true, so the else branch was unreachable and
+  // its out-of-bounds access counted as proved.
+  const s = sigs(`fn f(s: String, a: Array<Int>) -> Int { if (match s { "a" -> true, _ -> false }) { 0 } else { array_get(a, 10) } }
+  fn g(x: Int) -> Int { let ok = match x { 0 -> false, _ -> true }; if ok { 10 / x } else { 0 } }
+  fn main() { () }`);
+  assert.equal(s.f, 'fn(String, Array<Int>) -> Int ! fail');
+  assert.equal(s.g, 'fn(Int) -> Int', 'what the arms say about x is kept');
+});
+
+test('refinements: a value that overflowed constrains nothing', () => {
+  // Found by the fuzzer: the checker computes 9223372036854775806 + 2 as 2^63,
+  // which no Int is. Defining the if's value as equal to it made the
+  // definitions contradictory, so the access after the match counted as proved.
+  const s = sigs(`fn g(k: Int, xs: List<Int>) -> Int {
+    let a = array_make(k, 1);
+    let x = match xs { [] -> 0, [y] -> array_get(array_push(a, y), 0), _ -> if true { 9223372036854775806 + 2 } else { 10 } };
+    array_get(a, array_length(a))
+  }
+  fn h(x: Int) -> Int { let q = (x + 1) / 2; if x >= 0 && x <= 10 { array_get(array_make(6, 0), q) } else { 0 } }
+  fn main() { () }`);
+  assert.equal(s.g, 'fn(Int, List<Int>) -> Int ! fail');
+  assert.equal(s.h, 'fn(Int) -> Int', 'in range, a quotient is still known');
+});
+
+test('read_line streams standard input a line at a time', () => {
+  const src = `fn count(n: Int, bytes: Int) -> (Int, Int) ! input {
+    let l = read_line();
+    if string_length(l) == 0 { (n, bytes) } else { count(n + 1, bytes + string_length(l)) }
+  }
+  fn main() { match count(0, 0) { (n, b) -> println(int_to_string(n) ++ " lines, " ++ int_to_string(b) ++ " bytes " ++ read_input()) } }`;
+  assert.equal(sigs(src).count, 'fn(Int, Int) -> (Int, Int) ! input');
+  assert.equal(run(src, 'p\nqr\n\ns').output, '4 lines, 7 bytes p\nqr\n\ns\n');
+  assert.equal(run(src, '').output, '0 lines, 0 bytes \n');
+});
+
 test('refinements: a small decidable predicate language', () => {
   rejects('fn f(x: {x: Int | length([x]) > 0}) { x }\nfn main() { () }', /the only calls allowed in a refinement are array_length/);
   rejects('fn f(x: {x: Int | x / 2 > 0}) { x }\nfn main() { () }', /`\/` cannot be used in a refinement/);

@@ -220,7 +220,7 @@ test('differential fuzzing: random programs agree in every mode', () => {
 test('every planted bug is caught', () => {
   for (const mutant of MUTANTS) {
     let caught = false;
-    for (let seed = 1; seed <= 200 && !caught; seed++) {
+    for (let seed = 1; seed <= 300 && !caught; seed++) {
       const d = differential(generate(seed), { mutant });
       caught = d !== null && d !== 'skip';
     }

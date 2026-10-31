@@ -77,14 +77,53 @@ export function verify(program, sources, { mutant = null, keepProofs = false, in
   const copy = (st) => ({ facts: [...st.facts] });
 
   // Merges the values of two or more branches into one, with a disjunction.
+  // The value of an if or a match, from the value of each branch. A branch's
+  // condition c, when there is one, holds whenever that branch runs (one of
+  // them always runs). The conditions are *exact* when exactly one of them
+  // holds, the one of the branch that runs: an if's c and not(c). A match's
+  // conditions are only implied by its arms (a constructor or string pattern
+  // adds none, and a guarded arm does not exclude the arms after it), so
+  // several may hold at once.
+  // The least and greatest values term t can take, from its atoms' ranges.
+  const interval = (t) => {
+    let lo = t.c, hi = t.c;
+    for (const [id, k] of t.coeffs) {
+      const a = atoms.get(id);
+      lo += k > 0n ? k * a.lo : k * a.hi;
+      hi += k > 0n ? k * a.hi : k * a.lo;
+    }
+    return [lo, hi];
+  };
+  // A definition must be satisfiable for every value of the atoms it does
+  // not define, or it would make every obligation it touches vacuously true.
+  // Integer terms are mathematical, so x + 1 can exceed INT_MAX (the program
+  // stops with an overflow before such a value exists). So an atom defined to
+  // equal a term gets a range wide enough for every value the term can take.
+  const widen = (id, [lo, hi]) => {
+    if (mutant === 'refine-overflow-def') return;
+    const a = atoms.get(id);
+    if (lo < a.lo) a.lo = lo;
+    if (hi > a.hi) a.hi = hi;
+  };
+
   function merge(ty, alts, name) {
     if (alts.some((a) => !a.v)) return fresh(ty, name);
     const kind = alts[0].v.k;
-    if (kind === 'bool') return { k: 'bool', f: alts.map((a) => (a.c ? and(a.c, a.v.f) : a.v.f)).reduce((x, y) => or(x, y)) };
+    const exact = alts.every((a) => a.c && a.exact);
+    if (kind === 'bool' && (exact || mutant === 'refine-match-or')) return { k: 'bool', f: alts.map((a) => (a.c ? and(a.c, a.v.f) : a.v.f)).reduce((x, y) => or(x, y)) };
     const r = fresh(ty, name);
     if (!r || r.k !== kind) return r;
-    const cases = alts.map((a) => { const eq = compare('==', r.t, a.v.t); return a.c ? and(a.c, eq) : eq; });
+    // Otherwise the value is one of the branches' values, chosen by a branch
+    // whose condition holds. (Not the disjunction of Boolean branch values:
+    // with `_ -> false` after `"a" -> true`, that would always be true.)
+    if (kind !== 'bool') for (const a of alts) widen([...r.t.coeffs.keys()][0], interval(a.v.t));
+    const same = (v) => (kind === 'bool' ? or(and(r.f, v.f), and(not(r.f), not(v.f))) : compare('==', r.t, v.t));
+    const cases = alts.map((a) => (a.c ? and(a.c, same(a.v)) : same(a.v)));
+    // A match's conditions only follow from its arms, so make sure the
+    // definition holds even where none of them does.
+    if (!exact && alts.every((a) => a.c)) cases.push(alts.map((a) => not(a.c)).reduce((x, y) => and(x, y)));
     defs.push(cases.reduce((x, y) => or(x, y)));
+    if (kind === 'len') r.el = exact ? branchUnion(alts.map((a) => ({ c: a.c, el: a.v.el ?? null }))) : alts.map((a) => a.v.el ?? null).reduce((x, y) => union(x, y));
     return r;
   }
 
@@ -161,6 +200,90 @@ export function verify(program, sources, { mutant = null, keepProofs = false, in
     return boolOf(val(e));
   }
 
+  // ------------------------------------------------- element specs --
+  // What is known about an array's elements, as a list of parts, each of
+  // which some elements satisfy: { k: 'decl' } (a declared element
+  // refinement), { k: 'eq', x } (equal to the value x), { k: 'empty' } (no
+  // element), each possibly under branch conditions `cs`. null: unknown.
+  // Arrays get one from their construction (array_make, array_push, ...) or
+  // from an element refinement in a parameter's or result's type.
+  const EMPTY = { parts: [] };
+  const just = (x) => (x?.k === 'int' || x?.k === 'len' ? { parts: [{ k: 'eq', x, cs: [] }] } : null);
+  const union = (a, b) => (a && b ? { parts: [...a.parts, ...b.parts] } : null);
+  const declared = (spec, binding) => (spec ? { parts: [{ k: 'decl', spec, binding, cs: [] }] } : null);
+  // The value of an if: each branch's elements, under its condition.
+  const branchUnion = (alts) => (alts.some((a) => !a.el) ? null : { parts: alts.flatMap((a) => a.el.parts.map((p) => ({ ...p, cs: [...p.cs, a.c] }))) });
+
+  // The formula one part says about element v (null when unknown).
+  function partHolds(p, v) {
+    let f;
+    if (p.k === 'eq') f = p.x.k === 'int' ? (intOf(v) ? compare('==', v.t, p.x.t) : null) : (lenOf(v) ? compare('==', v.t, p.x.t) : null);
+    else if (p.k === 'decl') f = p.spec.refine ? predicate(p.spec.refine.pred, new Map(p.binding).set(p.spec.refine.vId, v)) : TRUE;
+    else f = FALSE;
+    return f && p.cs.reduce((acc, c) => and(acc, c), f);
+  }
+  // What every element satisfies: the disjunction of the parts (for array_get).
+  function elemHolds(el, v) {
+    const fs = el.parts.map((p) => partHolds(p, v));
+    if (!fs.length) return FALSE;
+    return fs.every(Boolean) ? fs.reduce((x, y) => or(x, y)) : null;
+  }
+  // What is known about the elements' elements.
+  function inner(el) {
+    if (!el) return null;
+    const parts = [];
+    for (const p of el.parts) {
+      const sub = p.k === 'eq' ? p.x.el ?? null : p.k === 'decl' ? declared(p.spec.elem, p.binding) : EMPTY;
+      if (!sub) return null;
+      parts.push(...sub.parts.map((q) => ({ ...q, cs: [...q.cs, ...p.cs] })));
+    }
+    return { parts };
+  }
+
+  // A formula as text, with atoms by number: two parts that give the same
+  // text say the same thing.
+  const key = (f) => JSON.stringify(f, (_, x) => (x instanceof Map ? [...x] : typeof x === 'bigint' ? String(x) : x));
+
+  // Proves that the elements described by `have` satisfy the declared `want`
+  // (a single 'decl' part), at every depth, one part at a time. Returns the
+  // first part that cannot be proved, or null.
+  function implies(have, want, ty, st, info) {
+    if (!want) return null;
+    const w = want.parts[0];
+    const elemTy = prune(ty).args?.[0];
+    const probe = fresh(elemTy, 'element', true);
+    const fail = (o) => ({ o, spec: w.spec });
+    if (!have) return w.spec.refine ? fail(oblige(info.kind, null, copy(st), { ...info, what: `${info.what} (its elements)` })) : implies(null, inner(want), elemTy, st, info);
+    for (const p of have.parts) {
+      if (p.k === 'empty') continue;
+      if (w.spec.refine) {
+        const s2 = copy(st);
+        for (const c of p.cs) s2.facts.push(c);
+        let goal;
+        if (p.k === 'eq') goal = partHolds(w, p.x);
+        else {
+          // The same declared refinement of the same values needs no proof.
+          if (probe && key(partHolds({ ...p, cs: [] }, probe)) === key(partHolds(w, probe))) goal = TRUE;
+          else {
+            const v = fresh(elemTy, 'element', true);
+            const h = v && partHolds({ ...p, cs: [] }, v);
+            if (h) s2.facts.push(h);
+            goal = v && h ? partHolds(w, v) : null;
+          }
+        }
+        if (goal !== TRUE) {
+          const o = oblige(info.kind, goal, s2, { ...info, what: `${info.what} (its elements)` });
+          if (o.status !== 'proved') return fail(o);
+        }
+      }
+    }
+    if (want.parts[0].spec.elem) {
+      const sub = inner(have);
+      return implies(sub, declared(w.spec.elem, w.binding), elemTy, st, info);
+    }
+    return null;
+  }
+
   // ------------------------------------------------------ expressions --
   // Returns the symbolic value of e; records obligations; facts accumulate in st.
   function sym(e, st, callee = false) {
@@ -214,7 +337,7 @@ export function verify(program, sources, { mutant = null, keepProofs = false, in
         if (c) { yes.facts.push(c); no.facts.push(mutant === 'refine-else-same' ? c : not(c)); }
         const a = sym(e.then, yes);
         const b = e.else ? sym(e.else, no) : null;
-        const r = merge(e.ty, [{ c, v: a }, { c: c ? not(c) : null, v: b }], 'if');
+        const r = merge(e.ty, [{ c, v: a, exact: true }, { c: c ? not(c) : null, v: b, exact: true }], 'if');
         learnFrom(st, [yes, no]);
         return r;
       }
@@ -229,8 +352,9 @@ export function verify(program, sources, { mutant = null, keepProofs = false, in
           if (arm.pat.k === 'pbool' && boolOf(s)) litFact = arm.pat.v ? s.f : not(s.f);
           if (litFact) a.facts.push(litFact);
           if (arm.pat.k === 'pvar') env.set(arm.pat.id, s);
-          if (arm.guard) { const g = boolOf(sym(arm.guard, a)); if (g) a.facts.push(g); }
-          alts.push({ c: null, v: sym(arm.body, a) });
+          const conds = [...before, ...(litFact ? [litFact] : [])];
+          if (arm.guard) { const g = boolOf(sym(arm.guard, a)); if (g) { a.facts.push(g); conds.push(g); } }
+          alts.push({ c: conds.length ? conds.reduce((x, y) => and(x, y)) : null, v: sym(arm.body, a) });
           armStates.push(a);
           if (litFact && !arm.guard) before.push(not(litFact));
         }
@@ -276,6 +400,8 @@ export function verify(program, sources, { mutant = null, keepProofs = false, in
           const q = { k: 'int', t: atomTerm(id) };
           const rem = subTerms(x, scaleTerm(q.t, d.c));
           const shift = d.c.toString(2).length - 1;
+          const [xlo, xhi] = interval(x);
+          widen(id, [xlo / d.c, xhi / d.c]); // (BigInt division truncates, as Lumen 2's does)
           if (d.c === 1n << BigInt(shift)) defs.push({ k: 'divpow2', q: id, t: x, s: shift });
           else {
             const nonneg = compare('>=', x, konst(0));
@@ -311,8 +437,22 @@ export function verify(program, sources, { mutant = null, keepProofs = false, in
       const name = f.ref.name;
       switch (name) {
         case 'array_length': case 'string_length': return lenOf(args[0]) ? { k: 'int', t: lenOf(args[0]) } : fresh(e.ty, `${name}(..)`);
-        case 'array_get': partial(e, inBounds(intOf(args[1]), lenOf(args[0])), st, 'the index is in bounds'); return fresh(e.ty, 'array_get(..)');
-        case 'array_set': partial(e, inBounds(intOf(args[1]), lenOf(args[0])), st, 'the index is in bounds'); return lenOf(args[0]) ? { k: 'len', t: lenOf(args[0]) } : fresh(e.ty, 'array_set(..)');
+        case 'array_get': {
+          partial(e, inBounds(intOf(args[1]), lenOf(args[0])), st, 'the index is in bounds');
+          const r = fresh(e.ty, 'array_get(..)');
+          const el = args[0]?.el;
+          if (r && el) {
+            const fact = elemHolds(el, r);
+            if (fact) st.facts.push(fact);
+            if (r.k === 'len') r.el = inner(el);
+          }
+          return r;
+        }
+        case 'array_set': {
+          partial(e, inBounds(intOf(args[1]), lenOf(args[0])), st, 'the index is in bounds');
+          const el = union(args[0]?.el ?? null, just(args[2]));
+          return lenOf(args[0]) ? { k: 'len', t: lenOf(args[0]), el } : fresh(e.ty, 'array_set(..)');
+        }
         case 'char_code_at': {
           partial(e, inBounds(intOf(args[1]), lenOf(args[0])), st, 'the index is in bounds');
           const r = newAtom('char_code_at(..)', 0n, 255n);
@@ -323,10 +463,13 @@ export function verify(program, sources, { mutant = null, keepProofs = false, in
           partial(e, n ? compare('>=', n, konst(0)) : null, st, 'the length is not negative');
           if (!n) return fresh(e.ty, 'array_make(..)');
           st.facts.push(compare('<=', n, konst(MAX_ARRAY))); // or it would have run out of memory
-          return { k: 'len', t: n };
+          return { k: 'len', t: n, el: just(args[1]) };
         }
-        case 'array_push': return lenOf(args[0]) ? { k: 'len', t: addTerms(lenOf(args[0]), konst(1)) } : fresh(e.ty, 'array_push(..)');
-        case 'array_empty': return { k: 'len', t: konst(0) };
+        case 'array_push': {
+          const el = mutant === 'refine-push-forgets' ? (args[0]?.el ?? null) : union(args[0]?.el ?? null, just(args[1]));
+          return lenOf(args[0]) ? { k: 'len', t: addTerms(lenOf(args[0]), konst(1)), el } : fresh(e.ty, 'array_push(..)');
+        }
+        case 'array_empty': return { k: 'len', t: konst(0), el: EMPTY };
         case 'char_from_code': return { k: 'len', t: konst(1) };
         case 'int_to_string': return { k: 'len', t: atomTerm(newAtom('string_length(int_to_string(..))', 1n, 20n)) };
         case 'random_int': {
@@ -357,25 +500,36 @@ export function verify(program, sources, { mutant = null, keepProofs = false, in
         throw err(`cannot prove that argument \`${p.name}\` of \`${decl.name}\` satisfies \`${textOf(p.refine.predSpan, decl.scope ?? scope)}\``, e.args[i].span, o.counterexample ?? undefined);
       }
     });
+    decl.params.forEach((p, i) => {
+      if (!p.elemRefine) return;
+      const bad = implies(args[i]?.el ?? null, declared(p.elemRefine, binding), p.ty, st, { kind: 'argument', span: e.args[i].span, what: `argument \`${p.name}\` of \`${decl.name}\`` });
+      if (bad) throw err(`cannot prove that the elements of argument \`${p.name}\` of \`${decl.name}\` satisfy \`${textOf(bad.spec.refine.predSpan, decl.scope ?? scope)}\``, e.args[i].span, bad.o.counterexample ?? undefined);
+    });
     const r = fresh(e.ty, `${decl.name}(..)`);
     if (decl.retRefine && r) {
       const fact = predicate(decl.retRefine.pred, new Map(binding).set(decl.retRefine.vId, r));
       if (fact) st.facts.push(fact);
     }
+    if (decl.retElem && r) r.el = declared(decl.retElem, binding);
     return r;
   }
 
-  const hasRefinedParams = (f) => f.params.some((p) => p.refine);
+  const hasRefinedParams = (f) => f.params.some((p) => p.refine || p.elemRefine);
 
   // A function body: refined parameters are facts; a refined result is an obligation.
   function body(params, b, decl, st) {
     for (const p of params) {
+      if (p.elemRefine) { const v = varSym(p.id, p.ty, p.name); if (v) v.el = declared(p.elemRefine, new Map()); }
       if (!p.refine) continue;
       const v = varSym(p.id, p.ty, p.name);
       const fact = predicate(p.refine.pred, new Map([[p.refine.vId, v]]));
       if (fact) st.facts.push(fact);
     }
     const r = sym(b, st);
+    if (decl?.retElem) {
+      const bad = implies(r?.el ?? null, declared(decl.retElem, new Map()), decl.ty ? prune(decl.ty).ret ?? prune(decl.ty) : null, st, { kind: 'result', span: decl.nameSpan, what: `the result of \`${decl.name}\`` });
+      if (bad) throw err(`cannot prove that the elements of the result of \`${decl.name}\` satisfy \`${textOf(bad.spec.refine.predSpan, decl.scope ?? scope)}\``, b.result?.span ?? b.span, bad.o.counterexample ?? undefined);
+    }
     if (decl?.retRefine) {
       const goal = predicate(decl.retRefine.pred, new Map([[decl.retRefine.vId, r]]));
       const o = oblige('result', goal, st, { span: decl.nameSpan, what: `the result of \`${decl.name}\`` });

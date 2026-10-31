@@ -55,6 +55,7 @@ function builtinTable() {
   t.print = fn([STRING], UNIT, ['output']);
   t.println = fn([STRING], UNIT, ['output']);
   t.read_input = fn([], STRING, ['input']);
+  t.read_line = fn([], STRING, ['input']);
   t.clock_ms = fn([], INT, ['clock']);
   t.random_int = fn([INT, INT], INT, ['random']);
   t.int_to_string = fn([INT], STRING);
@@ -501,6 +502,7 @@ function checkOnce(source, { grants = null, entry = 'main', assumeSafe = false, 
           if (st.k === 'let') {
             const vt = infer(st.value, inner);
             const refined = st.ann?.k === 'trefine';
+            if (hasElemRefine(refined ? st.ann.base : st.ann)) throw new LumenError('element refinements can annotate the parameters and results of named functions', st.ann.span);
             if (st.ann) unifyAt(sigType(refined ? st.ann.base : st.ann, ctx), vt, st.value.span, 'let binding');
             if (refined) {
               if (st.pat.k !== 'pvar') throw new LumenError('a refined let binds one variable', st.pat.span);
@@ -665,25 +667,54 @@ function checkOnce(source, { grants = null, entry = 'main', assumeSafe = false, 
     f.ty = self.ty;
   }
 
+  // Element refinements: `Array<{x: Int | p}>`, nested to any depth. The type
+  // without them is the annotation's type; the refinements become a spec,
+  // { refine (of each element), elem (the elements' own elements) }.
+  function stripElems(te) {
+    if (!te) return te;
+    if (te.k === 'trefine') return { ...te, base: stripElems(te.base) };
+    if (te.k === 'tcon' && te.name === 'Array' && te.args.length === 1) {
+      const a = te.args[0];
+      return { ...te, args: [a.k === 'trefine' ? stripElems(a.base) : stripElems(a)] };
+    }
+    return te;
+  }
+  const hasElemRefine = (te) => !!te && te.k === 'tcon' && te.name === 'Array' && te.args.length === 1
+    && (te.args[0].k === 'trefine' || hasElemRefine(te.args[0]));
+  function elemSpec(te, ty, ctx) {
+    const arr = te?.k === 'trefine' ? te.base : te;
+    if (!hasElemRefine(arr)) return null;
+    const elemTy = prune(prune(ty).args[0]);
+    const a = arr.args[0];
+    return {
+      refine: a.k === 'trefine' ? checkRefinement(a, elemTy, ctx) : null,
+      elem: elemSpec(a.k === 'trefine' ? a.base : a, elemTy, ctx),
+    };
+  }
+
   // Infers a function declaration's type in its own scope and ambient effect.
   function fnType(f, ctx, owner) {
     const inner = { ...ctx, scope: { vars: new Map(), parent: ctx.scope }, owner };
     inner.eff = f.eff ? sigEffect(f.eff, ctx) : f.presetEff ?? row([], newRowVar(ctx.level));
     if (f === main && main && grants && !f.eff) { inner.eff = row([...grants, 'fail']); inner.granted = true; }
     const params = f.params.map((p) => {
-      const ann = p.ann?.k === 'trefine' ? p.ann.base : p.ann;
+      const ann = stripElems(p.ann?.k === 'trefine' ? p.ann.base : p.ann);
       const ty = ann ? sigType(ann, ctx) : newVar(ctx.level);
       p.id = bindLocal(inner, p.name, ty, p.span).id;
       p.ty = ty;
       return ty;
     });
     // Refinements may mention any parameter (and, in a local function, enclosing variables).
-    for (const p of f.params) if (p.ann?.k === 'trefine') p.refine = checkRefinement(p.ann, p.ty, inner);
+    for (const p of f.params) {
+      if (p.ann?.k === 'trefine') p.refine = checkRefinement({ ...p.ann, base: stripElems(p.ann.base) }, p.ty, inner);
+      p.elemRefine = elemSpec(p.ann, p.ty, inner);
+    }
     const body = infer(f.body, inner);
     if (f.ret?.k === 'trefine') {
-      unifyAt(sigType(f.ret.base, ctx), body, f.body.result?.span ?? f.body.span, `\`${f.name}\` returns`);
-      f.retRefine = checkRefinement(f.ret, body, inner);
-    } else if (f.ret) unifyAt(sigType(f.ret, ctx), body, f.body.result?.span ?? f.body.span, `\`${f.name}\` returns`);
+      unifyAt(sigType(stripElems(f.ret.base), ctx), body, f.body.result?.span ?? f.body.span, `\`${f.name}\` returns`);
+      f.retRefine = checkRefinement({ ...f.ret, base: stripElems(f.ret.base) }, body, inner);
+    } else if (f.ret) unifyAt(sigType(stripElems(f.ret), ctx), body, f.body.result?.span ?? f.body.span, `\`${f.name}\` returns`);
+    if (f.ret) f.retElem = elemSpec(f.ret, body, inner);
     if (f.property) unifyAt(BOOL, body, f.body.result?.span ?? f.body.span, 'a property must be true or false');
     return tfun(params, body, inner.eff);
   }
@@ -747,14 +778,16 @@ function checkOnce(source, { grants = null, entry = 'main', assumeSafe = false, 
 
   // A signature, with any refinements written as in the source.
   const printer = (f) => {
-    const refined = f.params.some((p) => p.refine) || f.retRefine;
+    const refined = f.params.some((p) => p.refine || p.elemRefine) || f.retRefine || f.retElem;
     if (!refined) return new TypePrinter().signature(f.scheme);
     const t = prune(f.scheme);
     const p = new TypePrinter();
     p.show(t);
     const text = (r, ty) => `{${r.v}: ${p.show(ty, false)} | ${source.slice(r.predSpan.s, r.predSpan.e)}}`;
-    const params = t.params.map((pt, i) => (f.params[i].refine ? text(f.params[i].refine, pt) : p.show(pt, false)));
-    const ret = f.retRefine ? text(f.retRefine, t.ret) : p.show(t.ret, false);
+    // An annotation with element refinements is shown as written.
+    const written = (te) => source.slice(te.span.s, te.span.e).replace(/\s+/g, ' ');
+    const params = t.params.map((pt, i) => (f.params[i].elemRefine ? written(f.params[i].ann) : f.params[i].refine ? text(f.params[i].refine, pt) : p.show(pt, false)));
+    const ret = f.retElem ? written(f.ret) : f.retRefine ? text(f.retRefine, t.ret) : p.show(t.ret, false);
     const cs = [...p.names.keys()].filter((v) => v.traits.size).map((v) => `${p.names.get(v)}: ${[...v.traits].sort().join(' + ')}`);
     return `fn(${params.join(', ')}) -> ${ret}${p.effect(t.eff)}${cs.length ? ` where ${cs.join(', ')}` : ''}`;
   };

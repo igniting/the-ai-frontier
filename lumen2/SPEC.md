@@ -75,7 +75,7 @@ that stands for "whatever else". The labels are:
 
 | Label | Performed by |
 | --- | --- |
-| `input` | `read_input` |
+| `input` | `read_input`, `read_line` |
 | `output` | `print`, `println` |
 | `clock` | `clock_ms` |
 | `random` | `random_int` |
@@ -281,6 +281,34 @@ with refined parameters can only be called directly, by name: a call
 through a function value could not be checked. Lambda parameters cannot be
 refined.
 
+**Element refinements** describe every element of an array. In the
+parameters and the result of a named function, the element type of an
+`Array` may itself be a refinement, to any depth:
+
+```
+fn sum_at(a: Array<Int>, ix: Array<{k: Int | 0 <= k && k < array_length(a)}>, i: {i: Int | 0 <= i}, acc: Int) -> Int {
+  if i < array_length(ix) { sum_at(a, ix, i + 1, acc + array_get(a, array_get(ix, i))) } else { acc }
+}
+fn total(rows: Array<{r: Array<{x: Int | 0 <= x && x < 10}> | array_length(r) >= 1}>) -> Int { ... }
+```
+
+The predicate may mention the function's other parameters (here `a`), so an
+array of indices can be tied to the array they index. A caller must prove
+the predicate for every element it could have put in the array, and the
+function assumes it for every element it reads. The checker tracks what an
+array's elements can be, as a set of possibilities, each holding under the
+conditions of the path that produced it:
+- `array_make(n, x)` has elements that are all `x`; `array_empty()` has none;
+- `array_set(a, i, x)` and `array_push(a, x)` have the elements of `a`, or `x`;
+- a parameter or a call's result with an element refinement has elements
+  that satisfy it;
+- after an `if` or `match` the elements are those of the branch that ran.
+
+`array_get` of such an array returns a value that is one of the
+possibilities (and, for nested refinements, its own elements are known the
+same way). Element refinements cannot annotate a `let`. Arrays of other
+element types, lists and strings carry no element facts.
+
 **What the checker knows** on a path through a function:
 - the integer values of variables, as linear terms;
 - the lengths of arrays and strings, including through `array_set`,
@@ -293,7 +321,9 @@ refined.
   after `array_get(a, i)` returns, `i` is in bounds;
 - the quotient and remainder of division by a constant `c >= 1`: `x / c` is
   the `q` with `x = c * q + r`, where `0 <= r < c` when `x >= 0` and
-  `-c < r <= 0` otherwise, and `x % c` is that `r`;
+  `-c < r <= 0` otherwise, and `x % c` is that `r` (when `c` is a power of
+  two, the quotient is given to the SAT solver as a shift circuit);
+- the elements of arrays, as described under element refinements;
 - after an `if` or `match`, what one of its branches learned: since one of
   them ran to its end, the disjunction of the facts each one added (its
   conditions, the refined results of its calls, its partial operations)
@@ -395,9 +425,17 @@ constraints.
 | `print(s)` | `fn(String) -> () ! output` | writes the bytes of `s` |
 | `println(s)` | `fn(String) -> () ! output` | writes `s` and a newline |
 | `read_input()` | `fn() -> String ! input` | all of standard input, as bytes |
+| `read_line()` | `fn() -> String ! input` | the next line of standard input, with its newline; `""` at the end |
 | `clock_ms()` | `fn() -> Int ! clock` | the time in milliseconds |
 | `random_int(lo, hi)` | `fn(Int, Int) -> Int ! random` | a number between `lo` and `hi` inclusive (in either order) |
 | `panic(s)` | `fn(String) -> a ! fail` | stops with `panic: s` |
+
+`read_line` keeps its own position, separate from `read_input`, which always
+returns the whole input. Every line it returns before the end has at least
+its newline, so `""` means the input is exhausted. A program that reads a
+line at a time can process input longer than the longest string. Either
+builtin stops with `string too long` if what it would return is longer
+than 2^24 - 1 bytes.
 
 The clock and the random numbers come from the host. A seeded host
 (`lumen2 run --seed N`) makes `random_int` reproducible. In tests, a

@@ -129,6 +129,8 @@ export function compileProgram(program, { paranoid = false, reuse = true, borrow
   m.importFunc('env', 'write', 'host_write', ['i32', 'i32'], []);
   m.importFunc('env', 'input_len', 'host_input_len', [], ['i32']);
   m.importFunc('env', 'input_read', 'host_input_read', ['i32'], []);
+  m.importFunc('env', 'line_len', 'host_line_len', [], ['i32']);
+  m.importFunc('env', 'line_read', 'host_line_read', ['i32'], []);
   m.importFunc('env', 'fail', 'host_fail', ['i32'], []);
   m.importFunc('env', 'panic', 'host_panic', ['i32', 'i32'], []);
   m.importFunc('env', 'clock', 'host_clock', [], ['i64']);
@@ -318,6 +320,9 @@ export function compileProgram(program, { paranoid = false, reuse = true, borrow
   fn('str_println', [['s', 'i32']], [], [], [get('s'), call('str_print'), i32(newline + 8), i32(1), call('host_write')]);
   fn('str_read_input', [], ['i32'], [['p', 'i32']], [
     call('host_input_len'), call('str_new'), tee('p'), i32(8), ['i32.add'], call('host_input_read'), get('p'),
+  ]);
+  fn('str_read_line', [], ['i32'], [['p', 'i32']], [
+    call('host_line_len'), call('str_new'), tee('p'), i32(8), ['i32.add'], call('host_line_read'), get('p'),
   ]);
   fn('str_panic', [['s', 'i32']], [], [], [get('s'), i32(8), ['i32.add'], len('s'), call('host_panic'), ['unreachable']]);
 
@@ -657,6 +662,7 @@ export function compileProgram(program, { paranoid = false, reuse = true, borrow
         case 'print': return [args, call('str_print'), i32(0)];
         case 'println': return [args, call('str_println'), i32(0)];
         case 'read_input': return call('str_read_input');
+        case 'read_line': return call('str_read_line');
         case 'clock_ms': return call('host_clock');
         case 'random_int': return [args, call('host_random')];
         case 'int_to_string': return [args, call('int_to_string')];
@@ -787,10 +793,15 @@ export function runWasm(bytes, { input = '', host = makeHost() } = {}) {
   let memory = null;
   const bytesAt = (ptr, len) => new Uint8Array(memory.buffer, ptr, len);
   const asString = (b) => { let s = ''; for (let i = 0; i < b.length; i += 8192) s += String.fromCharCode(...b.subarray(i, i + 8192)); return s; };
+  let cursor = 0; // where read_line reads next
+  const lineEnd = () => { const nl = input.indexOf('\n', cursor); return nl < 0 ? input.length : nl + 1; };
   const env = {
     write: (ptr, len) => { out += asString(bytesAt(ptr, len)); },
     input_len: () => input.length,
     input_read: (ptr) => { const b = bytesAt(ptr, input.length); for (let i = 0; i < input.length; i++) b[i] = input.charCodeAt(i) & 0xff; },
+    // read_line: the length of the next line (with its newline), then its bytes.
+    line_len: () => lineEnd() - cursor,
+    line_read: (ptr) => { const end = lineEnd(); const b = bytesAt(ptr, end - cursor); for (let i = cursor; i < end; i++) b[i - cursor] = input.charCodeAt(i) & 0xff; cursor = end; },
     fail: (code) => { throw new LumenTrap(FAILURES[code] ?? `internal error ${code}`); },
     panic: (ptr, len) => { throw new LumenTrap(`panic: ${asString(bytesAt(ptr, len))}`); },
     clock: () => host.clock(),

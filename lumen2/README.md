@@ -41,6 +41,10 @@ no garbage collector.** Lumen 2 is a fresh design, not an extension of
   Schur number S(4) = 44. It prints the same 255,663-step refutation, byte
   for byte, as the original Lumen's imperative solver, at about the same
   speed.
+- **A proof checker that cannot crash.** [`proofs/rup.lm`](proofs/rup.lm),
+  a DRUP checker written in Lumen 2, has every array access proved in
+  bounds, so none of its functions has `fail` in its type. It checks the
+  22 MB S(4) refutation again, sharing no code with the JavaScript checker.
 
 **[Open the Lumen 2 playground →](https://igniting.github.io/the-ai-frontier/lumen2/playground.html)**
 (types and effects, every proof obligation, the code after reference
@@ -50,7 +54,7 @@ counting, property tests and certificates, all in the browser) ·
 
 ```sh
 cd lumen2
-npm test                                         # 43 tests, about 50 s
+npm test                                         # 48 tests, about 1.5 minutes
 node bin/lumen2.js check examples/refine.lm      # inferred types, effects, refinements
 node bin/lumen2.js run examples/tour.lm          # compile to wasm and run
 node bin/lumen2.js test examples/properties.lm   # check the properties
@@ -58,8 +62,9 @@ node bin/lumen2.js certify examples/refine.lm --out cert   # every certificate, 
 node bin/lumen2.js ir examples/tour.lm insert    # the IR, with reference counting
 node test/fuzz.js 1000                           # differential fuzzing
 node test/fuzz.js --mutants                      # are planted bugs caught?
-node proofs/prove-schur.js 4 44                  # prove S(4) = 44 (about 5 minutes)
+node proofs/prove-schur.js 4 44 --out s4         # prove S(4) = 44 (about 5 minutes)
 node proofs/compare-lumen.js 4 44                # the same proof as the Lumen solver's?
+node proofs/check-drup.js s4/schur-4-45.cnf s4/schur-4-45.drup   # check it again, with a checker proved not to crash
 node superopt/search.js                          # search for rewrite rules (about 30 s)
 node superopt/verify.js                          # re-prove every rule the compiler applies
 node selfhost/bootstrap.js                       # the self-hosting fixed point (about 3 s)
@@ -198,6 +203,26 @@ checker; drat-trim was not run).
 The prelude uses refinements too: `array_to_list` is pure because a
 refinement on its loop index proves every access in bounds.
 
+**Element refinements** say something about every element of an array, so
+an array of indices can carry the fact that each one is in bounds for
+another array:
+
+```
+fn sum_at(a: Array<Int>, ix: Array<{k: Int | 0 <= k && k < array_length(a)}>, i: {i: Int | 0 <= i}, acc: Int) -> Int {
+  if i < array_length(ix) { sum_at(a, ix, i + 1, acc + array_get(a, array_get(ix, i))) } else { acc }
+}
+```
+
+Inside `sum_at`, every element of `ix` is assumed in bounds for `a`, so
+`array_get(a, array_get(ix, i))` is proved. At each call the checker proves
+it for every element the caller could have put in `ix`: it tracks an
+array's possible elements through `array_make`, `array_set`, `array_push`
+and branches. A caller that pushes an unchecked index gets `cannot prove
+that the elements of argument `ix` of `sum_at` satisfy ...`. They nest:
+[`proofs/rup.lm`](proofs/rup.lm) keeps its clauses as
+`Array<{c: Array<{x: Int | 2 <= x && x < 2 * n + 2}> | array_length(c) >= 2}>`,
+every clause at least two literals long and every literal a valid index.
+
 ## Traits
 
 ```
@@ -323,11 +348,81 @@ new planted bug:
 **What refinements prove here, and what they do not.** The checker proves
 19 of the solver's 20 divisions and the input parser's string indexing safe,
 so those carry no `fail`. It does not prove the solver's 27 accesses to its
-state arrays: their lengths live inside the `Solver` record, and the facts
-that would make them safe (every literal in every clause is below 2n + 2)
-are about array contents, which refinements cannot state. The solver's
-functions therefore have `! fail` in their types, and the bounds checks stay
-in the compiled code.
+state arrays, and element refinements (above) do not change that. Its arrays
+live inside the `Solver` record, and a record's fields cannot be refined.
+Worse, each array mixes several kinds of number: `db` holds every clause as
+its length followed by its literals, `w` holds list heads and tails followed
+by (clause, next) pairs, and `vars` holds six fields per variable. The facts
+that would make the accesses safe are about positions ("the element after a
+clause's start is a literal"), not about every element, and no refinement
+can state them. The solver's functions therefore have `! fail` in their
+types, and the bounds checks stay in the compiled code.
+
+**A second checker, proved not to crash.** So the proof is also checked by a
+program that is proved safe: [`proofs/rup.lm`](proofs/rup.lm), a DRUP
+checker written for the purpose. It keeps each kind of data in its own
+array, so that every invariant is about every element, and passes its whole
+state from function to function as refined parameters:
+
+```
+vals:  {v: Array<Int> | array_length(v) == 2 * n + 2}             per literal: true, false or unassigned
+db:    Array<{c: Array<{x: Int | 2 <= x && x < 2 * n + 2}> | array_length(c) >= 2}>
+w:     {ws: Array<Array<{k: Int | 0 <= k && k < array_length(db)}>> | array_length(ws) == 2 * n + 2}
+trail: Array<{x: Int | 2 <= x && x < 2 * n + 2}>                  with top: {t: Int | 0 <= t && t <= array_length(trail)}
+```
+
+The checker proves all 360 of its obligations (in about 16 s), and no
+function in it has `fail` in its type. Input that would break an invariant,
+such as a literal above n, is reported rather than trusted. It reads its
+input a line at a time with `read_line`, so the 22.6 MB proof does not have
+to fit in one string (at most 16 MB). `node proofs/check-drup.js` runs it:
+
+```
+$ node proofs/check-drup.js schur-4-45.cnf schur-4-45.drup
+rup.lm: proved (no function can fail) and compiled by the reference compiler in 17.4 s (12834 bytes)
+s VERIFIED  (255663 lemmas in 528.7 s)
+```
+
+That run shared the machine with other jobs, as did the 303.8 s of
+`src/rup.js` on the same proof in the same session. On smaller proofs the
+Lumen 2 checker takes 1.5 to 2 times as long as the JavaScript one. With
+`--selfhost`, the checker is compiled by the self-hosted compiler instead
+(stage 2 of the bootstrap), so the code that checks the proof comes from
+`lumen2c`'s code generator, not from `src/codegen.js`. Built that way it
+verified the S(4) proof in 629 s, on the same busy machine. CI runs it that
+way, in its own job, on every push. The tests check that it agrees with `src/rup.js`
+on real proofs and on tampered ones.
+
+Writing it found three problems. The first version took 50 times as long as
+`src/rup.js`. A visit to a clause wrote `array_set(db, k, c2)` after an
+earlier `array_set(db, k, c)` had already made a new `db`, so the old one was
+still needed and every visit copied the whole clause database. Taking the
+clause out of `db` while it changes (and putting a two-literal placeholder
+in its slot, which keeps the invariant) made the updates in place again.
+The second was in the refinement checker itself, found when CI fuzzed fresh
+seeds while this was being written. It took the value of a Boolean `match`
+to be the disjunction of its arms' values. So
+`if (match s { "a" -> true, _ -> false }) { ... } else { array_get(a, 10) }`
+had an unreachable `else`, and the out-of-bounds access in it counted as
+proved. The interpreter's run-time re-check caught the false proof on the
+first run that took the `else`. A match's value is now one of its arms'
+values, chosen by an arm whose conditions hold. The mistake is a planted bug
+now, with a test of its own.
+
+The third, also in the refinement checker, turned up when the 3,000-program
+campaign below was run again after that fix. The checker's integers are
+mathematical, so in `if true { 9223372036854775806 + 2 } else { 10 }` it
+took the `if`'s value to be 2^63. At run time the addition overflows and
+the program stops, so no such value exists. But the value of an `if` is a
+fresh 64-bit atom with a definition, here "the atom equals 2^63", that no
+64-bit number satisfies. A contradictory definition makes every obligation
+it touches true, and an out-of-bounds access later in the same function
+counted as proved. Again the interpreter's re-check stopped where the
+compiled code read out of bounds. Every definition must be satisfiable,
+whatever the values of the atoms it does not define. So an atom defined as
+equal to a term now has a range wide enough for every value the term can
+take, as does the quotient in a division by a constant. This too is a
+planted bug, with a test.
 
 ## Memory without a garbage collector
 
@@ -430,9 +525,9 @@ updates in place because it never shares them.
 
 ```
 $ node selfhost/bootstrap.js
-stage 1: lumen2c.lm (2844 lines) compiled by the reference compiler: 572987 bytes
-stage 2: compiled by stage 1: 287308 bytes, e29b35f5fd90dccf (540 ms, 5222502 allocations, nothing leaked)
-stage 3: compiled by stage 2: 287308 bytes, e29b35f5fd90dccf (739 ms, 10043674 allocations, nothing leaked)
+stage 1: lumen2c.lm (2853 lines) compiled by the reference compiler: 574696 bytes, 90b42ec3efe34ab6 (3808 ms)
+stage 2: compiled by stage 1: 288477 bytes, 4b24d99b486f9b55 (660 ms, 5241087 allocations, nothing leaked)
+stage 3: compiled by stage 2: 288477 bytes, 4b24d99b486f9b55 (953 ms, 10081718 allocations, nothing leaked)
 FIXED POINT: stage 2 and stage 3 are byte-identical
 ```
 
@@ -441,11 +536,11 @@ compiler as it builds itself, and stage 3, built by stage 2, is the same
 bytes: the compiler reproduces itself. Stage 1 and stage 2 are different
 programs from different compilers, so the test suite also checks that both
 behave like the reference interpreter. On every example, the SAT solver,
-the Schur encoder and 1,000 generated programs, the modules they write print
-exactly what the interpreter prints, stop with the same error, and free
-every object. That run found one bug: a trait method called on a type
-that inference leaves undetermined, as in `size([])`, which both compilers
-default to `()`, where `()` has no impl. The reference compiler emits
+the Schur encoder, the DRUP checker and 1,000 generated programs, the
+modules they write print exactly what the interpreter prints, stop with
+the same error, and free every object. That run found one bug: a trait
+method called on a type that inference leaves undetermined, as in
+`size([])`, which both compilers default to `()`, where `()` has no impl. The reference compiler emits
 `unreachable` there, because such a call is never reached with a value, and
 now so does `lumen2c`.
 
@@ -509,10 +604,10 @@ after type checking.
   proof therefore shows up as a disagreement with the compiled code.
 - **Certificates on every compile**: IR types, reference counting, every
   DRUP proof, and the engine's validation of the module.
-- **Planted bugs.** Twenty-one deliberate bugs in the compiler, the verifier
-  and the SAT solver check that all of this catches what it should. Seven
-  are caught at compile time by a certificate checker, before any program
-  runs:
+- **Planted bugs.** Twenty-four deliberate bugs in the compiler, the
+  verifier and the SAT solver check that all of this catches what it should.
+  Seven are caught at compile time by a certificate checker, before any
+  program runs:
 
   | Planted bug | Caught by | First seed |
   | --- | --- | --- |
@@ -524,27 +619,38 @@ after type checking.
   | give a pattern variable the type of the pattern's first variable | IR type checker | 1 |
   | a SAT solver that claims every formula is unsatisfiable | RUP proof checker | 1 |
   | read a closure's captured value without taking a reference | differential run | 1 |
-  | reuse a cell even when it is shared | differential run | 4 |
-  | move the fields out of a cell even when it is shared | differential run | 19 |
+  | reuse a cell even when it is shared | differential run | 1 |
+  | move the fields out of a cell even when it is shared | differential run | 1 |
   | update a shared array in place | differential run | 6 |
   | free an object without releasing its last field | leak check | 1 |
-  | drop the overflow check on `+` | differential run | 28 |
-  | an off-by-one in the overflow bound for multiplying by a constant | differential run | 37 |
-  | apply a rewrite rule without checking its side condition | differential run | 8 |
-  | a remainder range one too narrow in the model of division by a constant | run-time re-check of proofs | 106 |
+  | drop the overflow check on `+` | differential run | 9 |
+  | an off-by-one in the overflow bound for multiplying by a constant | differential run | 36 |
+  | apply a rewrite rule without checking its side condition | differential run | 1 |
+  | a remainder range one too narrow in the model of division by a constant | run-time re-check of proofs | 52 |
+  | forget the element `array_push` adds, when tracking an array's elements | run-time re-check of proofs | 33 |
+  | take a Boolean `match` to be the disjunction of its arms' values | run-time re-check of proofs | 44 |
+  | define a branch's value as equal to a result that overflowed | run-time re-check of proofs | 142 |
   | compare constructors by their fields only | differential run | 9 |
-  | an off-by-one at the end of `substring` | differential run | 47 |
-  | compare a type structurally despite its `impl Ord` | differential run | 23 |
+  | an off-by-one at the end of `substring` | differential run | 89 |
+  | compare a type structurally despite its `impl Ord` | differential run | 3 |
   | assume an `if`'s condition in its `else` branch too | run-time re-check of proofs | 1 |
-  | a bit-blasted adder that drops the carry | run-time re-check of proofs | 21 |
+  | a bit-blasted adder that drops the carry | run-time re-check of proofs | 10 |
+
+  The generator makes `main` itself run some of the partial operations and
+  updates of value arrays, so the bugs that need one of them to execute
+  are caught sooner. Each bug must be caught within 300 programs. Before
+  this, the remainder bug needed 106, and a change to the generator once
+  pushed it past 200.
 
   An earlier planted bug, letting a borrowed projection outlive the value it
   was read from, was never caught. It turned out to be unobservable, because
   lowering already re-reads every pattern variable from the matched value
   after the guard. It was replaced rather than counted.
 - With every feature in place, 3,000 generated programs (seeds
-  20000–22999) ran with no disagreement; 14 were skipped because the
+  20000–22999) ran with no disagreement; 10 were skipped because the
   interpreter ran out of fuel. CI runs 1,000 fresh seeds on every push.
+  Generated programs found the two false proofs described below, one in
+  CI and one in an earlier run of this campaign.
 
 Problems the checks found during development:
 
@@ -572,6 +678,19 @@ Problems the checks found during development:
   before it was read, once inside an instruction and once at the
   projection's own definition. Both were liveness bugs in `perceus.js`. One
   is now a planted bug.
+- The refinement checker took a Boolean `match`'s value to be the
+  disjunction of its arms' values, so an `if` on
+  `match s { "a" -> true, _ -> false }` had an unreachable `else`, and an
+  out-of-bounds access there counted as proved. CI's fuzzing found it on
+  fresh seeds (seed 161216): the interpreter's run-time re-check of proofs
+  stopped where the compiled code read out of bounds. See the S(4) section
+  for the details; it is now a planted bug.
+- Rerunning 3,000 programs after that fix found a second false proof (seed
+  20978): the value of a branch that overflowed, such as 2^63 from
+  `9223372036854775806 + 2`, was defined as equal to a 64-bit atom, a
+  definition nothing satisfies, so obligations that touched it held
+  vacuously. Defined atoms now have ranges wide enough for their
+  definitions. It is a planted bug too.
 - The interpreter, the compiled code and the Lumen solver agree on every
   small Schur instance in the tests, and on S(4) the two solvers agree byte
   for byte; a difference anywhere in the 22 MB would have shown a bug in
@@ -588,9 +707,11 @@ Refinement predicates are linear integer arithmetic over variables and
 lengths; the checker also knows division and remainder by constants. Hard
 arithmetic obligations take a few seconds: the binary search showcase takes
 about 4 s to check. The checker does not infer loop invariants: a recursive function
-needs a refined parameter to carry one. It knows nothing about list lengths
-or array contents. A function with refined parameters cannot be passed as a
-value. Proofs run at a width of about 66 bits, and a hard obligation can
+needs a refined parameter to carry one. It knows nothing about list lengths.
+It knows about array contents only through element refinements, which state
+one fact about every element; facts about particular positions, or arrays
+inside records, are out of reach. A function with refined parameters cannot
+be passed as a value. Proofs run at a width of about 66 bits, and a hard obligation can
 take a second; results are cached by the query's canonical form.
 
 The reference compiler's lowering recurses once per binding in a function,
@@ -615,7 +736,8 @@ src/        lexer, parser, checker, exhaustiveness, refinements, SAT solver,
             proof checker, interpreter, properties, lowering, inlining,
             Perceus, reuse, drop specialization, certificate checkers,
             code generator, wasm encoder
-proofs/     a SAT solver and a Schur encoder written in Lumen 2; S(4) = 44
+proofs/     a SAT solver, a Schur encoder and a DRUP checker proved free of
+            run-time errors, all written in Lumen 2; S(4) = 44
 superopt/   the superoptimizer: corpus, synthesis, proofs, RULES.md
 selfhost/   a Lumen 2 compiler written in Lumen 2, and the bootstrap
 bin/        the lumen2 command

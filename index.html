@@ -257,10 +257,10 @@ table.t.trace td code { white-space: nowrap; }
     <div class="stat" role="listitem"><div class="v">3,362</div><div class="k">lines of the compiler rewritten in Lumen</div></div>
     <div class="stat" role="listitem"><div class="v">40</div><div class="k">rewrite rules, each with a checked proof</div></div>
     <div class="stat" role="listitem"><div class="v">34 / 34</div><div class="k">planted bugs caught</div></div>
-    <div class="stat" role="listitem"><div class="v">S(4) = 44</div><div class="k">proved in Lumen, 255,663 proof steps checked</div></div>
+    <div class="stat" role="listitem"><div class="v">S(4) = 44</div><div class="k">proved in Lumen and in Lumen 2; 255,663 proof steps checked, once by a checker proved unable to crash</div></div>
     <div class="stat" role="listitem"><div class="v">−31%</div><div class="k">instructions executed with <code>-O</code> (geometric mean, 11 programs)</div></div>
     <div class="stat" role="listitem"><div class="v">12</div><div class="k">allocations in all for Lumen 2 to sort a million numbers in pure code, proved unable to fail</div></div>
-    <div class="stat" role="listitem"><div class="v">2,847</div><div class="k">lines of a Lumen 2 compiler in Lumen 2 that reproduces itself byte for byte</div></div>
+    <div class="stat" role="listitem"><div class="v">2,852</div><div class="k">lines of a Lumen 2 compiler in Lumen 2 that reproduces itself byte for byte</div></div>
     <div class="stat" role="listitem"><div class="v">22 MB</div><div class="k">of proof, byte for byte the same from the Lumen and Lumen 2 solvers</div></div>
   </div>
   <p class="readtime">About an hour and a half to read, longer with the demos. The chapters build on each other, and each part opens with a short summary.</p>
@@ -1860,15 +1860,36 @@ fn main() {
   And the reference interpreter re-checks every proved fact as the program runs, while the compiled code does not.
   If a proof were wrong, the two would disagree on some program, and the fuzzer would see it. Two of the planted
   bugs in chapter 18 test exactly this: a checker that assumes an <code>if</code>'s condition in its
-  <code>else</code> branch too, and an adder circuit that drops its carry. The run-time re-check catches both.</p>
+  <code>else</code> branch too, and an adder circuit that drops its carry. The run-time re-check catches both. It
+  has also caught two real mistakes in the checker, described in chapter 21.</p>
   <p>How far does this go? Chapter 17 ends with a complete program that the checker proves cannot stop with an
   error.</p>
-  <p>The checker has clear limits. Its facts are linear arithmetic over integers and array lengths. It knows
-  nothing about list lengths or array contents, and it never invents an invariant. In the SAT solver of chapter 19,
-  it proves 19 of the 20 divisions safe, and all of the input parser's indexing. It does not prove the 27 accesses
-  to the solver's state arrays, because those depend on facts about array contents, such as every literal in every
-  clause being smaller than the array it indexes, and a refinement cannot state them. Those accesses keep their
-  run-time checks, and the solver's functions have <code>fail</code> in their types.</p>
+
+  <h3>Facts about every element</h3>
+  <p>A fact about an integer or a length is not enough for code that keeps indices in arrays: a graph's
+  adjacency lists, a heap of positions, a SAT solver's clauses. Each holds numbers that are later used to index
+  another array. So a refinement can also describe every element of an array:</p>
+  <figure>
+    <pre class="listing">fn sum_at(a: Array&lt;Int&gt;, ix: Array&lt;{k: Int | 0 &lt;= k &amp;&amp; k &lt; array_length(a)}&gt;, i: {i: Int | 0 &lt;= i}, acc: Int) -&gt; Int {
+  if i &lt; array_length(ix) { sum_at(a, ix, i + 1, acc + array_get(a, array_get(ix, i))) } else { acc }
+}</pre>
+  </figure>
+  <p>Inside <code>sum_at</code>, every element of <code>ix</code> is assumed to be a valid index into
+  <code>a</code>, so the inner access is proved. At each call, the checker must prove it for every element the
+  caller could have put in <code>ix</code>. To do that, it tracks what each array's elements can be:
+  <code>array_make(n, x)</code> holds only <code>x</code>, <code>array_push(a, x)</code> holds the elements of
+  <code>a</code> or <code>x</code>, and after an <code>if</code> the array holds the elements of the branch that
+  ran. These refinements nest, so an array of clauses can say that each clause has at least two literals and
+  that each literal is in range.</p>
+  <p>The checker still has clear limits. Its facts are linear arithmetic over integers and array lengths, plus
+  one fact about every element of an array. It knows nothing about list lengths, it cannot state a fact about
+  particular positions in an array, and it never invents an invariant. In the SAT solver of chapter 19, it proves
+  19 of the 20 divisions safe, and all of the input parser's indexing. It does not prove the 27 accesses to the
+  solver's state arrays. Those arrays sit inside a record, whose fields cannot be refined, and each mixes several
+  kinds of number: the clause array holds each clause's length followed by its literals. The fact that would make
+  an access safe, "the number after a clause's start is a literal", is about a position, not about every
+  element. Those accesses keep their run-time checks, and the solver's functions have <code>fail</code> in their
+  types. Chapter 19 shows what I did instead.</p>
 </section>
 
 <section class="chapter" id="perceus">
@@ -2058,7 +2079,7 @@ fn main() {
   of an instruction and once at the field read itself. On most programs, nothing visible would have happened,
   because freed memory still holds its old contents. The ownership checker rejected both versions on the first
   compile. One of the two mistakes is now a planted bug.</p>
-  <p>As in Part two, planted bugs check the checks. There are 21, spread across the compiler, the refinement
+  <p>As in Part two, planted bugs check the checks. There are 24, spread across the compiler, the refinement
   checker and the SAT solver, and every one is caught. Seven are caught at compile time by a certificate checker,
   before any program runs. Pick one and compile:</p>
 
@@ -2102,13 +2123,14 @@ fn main() {
     <pre class="out" id="pb-out" hidden></pre>
   </div>
 
-  <p>The other fourteen planted bugs produce code that passes every certificate, so they need the dynamic checks
+  <p>The other seventeen planted bugs produce code that passes every certificate, so they need the dynamic checks
   to catch them. They include reusing a cell that is shared, updating a shared array in place, dropping the
   overflow check on addition, an off-by-one in the overflow bound for multiplication by a constant, and
   applying a rewrite rule from chapter 19 without checking its side condition. The
   differential runs catch them, as do the leak check and the interpreter's run-time re-check of proofs. Each is
-  caught by one of the first 47 generated programs. With every feature in place, 3,000 generated programs ran with
-  no disagreement, and CI runs 1,000 fresh ones on every push.</p>
+  caught by one of the first 142 generated programs. With every feature in place, 3,000 generated programs ran with
+  no disagreement, and CI runs 1,000 fresh ones on every push. Fresh programs have found two false proofs in the
+  refinement checker (chapter 21).</p>
 </section>
 
 <section class="chapter" id="lumen2-schur">
@@ -2212,7 +2234,38 @@ fn main() {
   because most of its finds cleaned up after tagged 31-bit integers. Lumen 2's integers are plain 64-bit values,
   so its code generator leaves little to clean up, and the engine's own optimizing compiler already makes
   rewrites like these. The rules stay in, because they are proved and make the binaries smaller, and a planted
-  bug that ignores their side conditions is caught by the eighth generated program.</p>
+  bug that ignores their side conditions is caught by the first generated program.</p>
+
+  <h3>A proof checker that cannot crash</h3>
+  <p>The refutation above is checked by <code>lumen2/src/rup.js</code>, a JavaScript program. A stronger check
+  is a checker written in Lumen 2 that its own compiler proves free of run-time errors. That is
+  <a href="https://github.com/igniting/the-ai-frontier/blob/main/lumen2/proofs/rup.lm"><code>lumen2/proofs/rup.lm</code></a>.
+  Like the solver, it passes its state from function to function, but it keeps each kind of data in its own
+  array, so that every invariant is a fact about every element:</p>
+  <figure>
+    <pre class="listing">vals:  {v: Array&lt;Int&gt; | array_length(v) == 2 * n + 2}
+db:    Array&lt;{c: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt; | array_length(c) &gt;= 2}&gt;
+w:     {ws: Array&lt;Array&lt;{k: Int | 0 &lt;= k &amp;&amp; k &lt; array_length(db)}&gt;&gt; | array_length(ws) == 2 * n + 2}
+trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
+  </figure>
+  <p><code>vals</code> has one entry per literal. Each clause in <code>db</code> is an array of at least two
+  literal codes, each a valid index into <code>vals</code>. Each watch list in <code>w</code> holds clause numbers
+  below the number of clauses. With these types, the checker proves all 360 of the program's obligations in about
+  16 seconds, and no function in it has <code>fail</code> in its type. Input that would break an invariant, such as
+  a literal larger than the number of variables, is reported as an error rather than trusted.</p>
+  <p>The language needed two additions for it. One was element refinements (chapter 16). The other was
+  reading input a line at a time: the proof is 22.6 MB, a Lumen 2 string holds at most 16 MB, so
+  <code>read_input</code> could not hold it, and a new builtin, <code>read_line</code>, reads one line at a time.
+  The program needed one fix. The first version took fifty times as long as the JavaScript checker. When a clause
+  changed, it wrote <code>array_set(db, k, c2)</code> after an earlier line had already made a new
+  <code>db</code> from the old one. The old one was still needed, so every visit to a clause copied the whole
+  clause database. Nothing was wrong, only slow, as with the borrow inference above. Taking the clause out of
+  <code>db</code> while it changes, and leaving a two-literal placeholder in its slot so that the invariant
+  still holds, made the updates happen in place again.</p>
+  <p>On S(4) it checks all 255,663 lemmas in 529 seconds, on a machine busy with other work, where
+  <code>src/rup.js</code> took 304. On smaller proofs it takes 1.5 to 2 times as long as the JavaScript checker.
+  CI runs it on every push, compiled by the self-hosted compiler of chapter 20, so the WebAssembly that checks the
+  proof comes from that compiler's code generator rather than the reference compiler's.</p>
 
 </section>
 
@@ -2261,10 +2314,10 @@ fn main() {
     <div class="verdict" id="boot2-verdict" hidden></div>
   </div>
 
-  <p>Stages 2 and 3 are byte-identical, 287,458 bytes each. Each self-compilation takes under a second, and
+  <p>Stages 2 and 3 are byte-identical, 288,477 bytes each. Each self-compilation takes under a second, and
   nothing leaks. A fixed point alone could hide a bug that reproduces itself, for example one that miscompiles
   multiplication everywhere, including in the compiler's own code. So the modules from stages 1 and 2 were also
-  compared with the reference interpreter on every example, the SAT solver and 1,000 generated programs. Every
+  compared with the reference interpreter on every example, the SAT solver, the proof checker and 1,000 generated programs. Every
   one printed the same output and stopped with the same error. CI repeats the bootstrap and a smaller version of
   that comparison on every push.</p>
   <p>The comparison found one bug. A trait method called on a type that inference leaves undetermined, as in
@@ -2349,6 +2402,20 @@ fn main() {
     <li><b>Proofs ten times too slow.</b> My first encoding of division by a constant made the binary search
     take 38 seconds to check. Encoding division by a power of two as a shift circuit brought that down to about
     4 seconds.</li>
+    <li><b>A false proof.</b> The refinement checker took the value of a Boolean <code>match</code> to be the
+    disjunction of its arms' values. With <code>"a" -&gt; true</code> and <code>_ -&gt; false</code>, that is always
+    true, so an <code>else</code> on it counted as unreachable, and an out-of-bounds access there counted as
+    proved. CI's fuzzer found it on fresh seeds: the interpreter's re-check of proofs stopped exactly where the
+    compiled code read out of bounds. This is what the re-check is for. A match's value is now one of its arms'
+    values, chosen by an arm whose conditions hold, and the mistake is a planted bug.</li>
+    <li><b>A second false proof.</b> Running the 3,000 generated programs again after that fix found another. The
+    checker's integers are mathematical, so it took <code>if true { 9223372036854775806 + 2 } else { 10 }</code> to
+    be worth 2<sup>63</sup>. At run time the addition overflows and the program stops. But the checker had
+    defined a fresh 64-bit value as equal to 2<sup>63</sup>, a definition no 64-bit number satisfies, and from a
+    contradiction anything follows: an out-of-bounds access later in the function counted as proved. A defined
+    value's range now covers every value its definition allows. This is a planted bug too.</li>
+    <li><b>A checker that copied its database on every step</b>, until the clause being changed was taken out of
+    it first (chapter 19).</li>
   </ul>
 
   <h3>How the session went</h3>
@@ -2385,13 +2452,15 @@ fn main() {
   output on every compile, which reproduced the theorem's proof exactly, and which compiles itself. Every claim on this page can be
   re-run with the commands below, which are also in the
   <a href="https://github.com/igniting/the-ai-frontier#readme">README</a>. CI repeats the checks, including the
-  whole proof of S(4) = 44 in both languages, on every push.</p>
+  whole proof of S(4) = 44 in both languages, and a second check of the Lumen 2 proof by a checker proved unable to
+  crash, on every push.</p>
   <p>It does not show that earlier models could not have done this. I can't run that comparison. If you want to,
   <a href="https://github.com/igniting/the-ai-frontier/blob/main/CHALLENGE.md">CHALLENGE.md</a> turns the original
   task into a benchmark with an automatic scorer. S(4) = 44 has been known since 1965; what is new here is that a
   language built in this session produced the proof, not the result itself. Lumen is also small by design: no
   floating point, no modules, 31-bit integers, and arrays as its only mutable values. Lumen 2 has no floating
-  point or modules either. Its refinements are limited to linear arithmetic over integers and array lengths, and it
+  point or modules either. Its refinements are limited to linear arithmetic over integers and array lengths, plus one fact
+  about every element of an array, and it
   reuses memory only where the size of a cell is known when compiling. Its S(4) proof rests on the same symmetry
   argument as Lumen's. And every timing here comes from one JavaScript engine on one machine.</p>
   <h3>Reproduce it</h3>
@@ -2406,13 +2475,14 @@ node superopt/verify.js                     <span class="c"># re-prove the 40 ru
 node bench/gate.js                          <span class="c"># the whole gate, about 7 minutes</span>
 node proofs/prove-schur.js 4 44             <span class="c"># prove S(4) = 44, about 6 minutes</span>
 
-cd lumen2 &amp;&amp; npm test &amp;&amp; cd ..              <span class="c"># Lumen 2: 31 tests</span>
+cd lumen2 &amp;&amp; npm test &amp;&amp; cd ..              <span class="c"># Lumen 2: 48 tests</span>
 node lumen2/test/fuzz.js 1000               <span class="c"># Lumen 2: differential fuzzing, four ways</span>
-node lumen2/test/fuzz.js --mutants          <span class="c"># all 21 planted bugs must be caught</span>
+node lumen2/test/fuzz.js --mutants          <span class="c"># all 24 planted bugs must be caught</span>
 node lumen2/superopt/verify.js              <span class="c"># re-prove the 19 rewrite rules</span>
 node lumen2/selfhost/bootstrap.js           <span class="c"># Lumen 2's self-hosting fixed point</span>
-node lumen2/proofs/prove-schur.js 4 44      <span class="c"># S(4) = 44 in Lumen 2, about 5 minutes</span>
-node lumen2/proofs/compare-lumen.js 4 44    <span class="c"># the same proof as Lumen's, byte for byte</span></pre>
+node lumen2/proofs/prove-schur.js 4 44 --out s4   <span class="c"># S(4) = 44 in Lumen 2, about 5 minutes; s4/ gets the proof</span>
+node lumen2/proofs/compare-lumen.js 4 44    <span class="c"># the same proof as Lumen's, byte for byte</span>
+node lumen2/proofs/check-drup.js s4/schur-4-45.cnf s4/schur-4-45.drup   <span class="c"># check it again, with the checker proved not to crash</span></pre>
   </figure>
   <div class="callout">
     <p><b>Explore it yourself.</b> The <a href="playground.html">playground</a> has the full editor with types,

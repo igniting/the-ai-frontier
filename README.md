@@ -52,7 +52,8 @@ printing the same 255,663-step refutation as Lumen's solver, byte for
 byte, and a Lumen 2 compiler written in Lumen 2 compiles itself to a fixed
 point. Its [showcase](lumen2/README.md#showcase) has a heapsort that is pure,
 sorts a million numbers in place with 106 allocations, and is proved unable
-to fail. It has its own
+to fail. The S(4) proof is also checked by a DRUP checker written in Lumen 2
+whose every array access is proved in bounds, so it cannot crash. It has its own
 [playground](https://igniting.github.io/the-ai-frontier/lumen2/playground.html),
 and [Part five of the story](https://igniting.github.io/the-ai-frontier/#lumen2)
 explains it.

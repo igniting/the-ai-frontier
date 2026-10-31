@@ -41,6 +41,9 @@ test('its modules agree with the interpreter on the examples and the Schur progr
   const cnf = `p cnf ${f.numVars} ${f.clauses.length}\n${f.clauses.map((c) => `${c.join(' ')} 0`).join('\n')}\n`;
   agrees('sat.lm', readFileSync(new URL('../proofs/sat.lm', import.meta.url), 'utf8'), cnf);
   agrees('schur.lm', readFileSync(new URL('../proofs/schur.lm', import.meta.url), 'utf8'), '4 44');
+  // The proved DRUP checker, on the solver's refutation of 1..14 in three groups.
+  const proof = runWasm(compileWith(s2, readFileSync(new URL('../proofs/sat.lm', import.meta.url), 'utf8')).bytes, { input: cnf }).output;
+  assert.ok(agrees('rup.lm', readFileSync(new URL('../proofs/rup.lm', import.meta.url), 'utf8'), cnf + proof.split('\n').filter((l) => /^-?\d/.test(l)).join('\n') + '\n'), 'the interpreter ran out of fuel');
 });
 
 test('its modules agree with the interpreter on generated programs', () => {
