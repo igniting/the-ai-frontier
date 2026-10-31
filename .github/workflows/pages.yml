@@ -41,6 +41,7 @@ jobs:
           mkdir -p _site/lumen2/proofs
           cp -r lumen2/src lumen2/examples lumen2/playground lumen2/playground.html _site/lumen2/
           cp lumen2/proofs/sat.lm lumen2/proofs/schur.lm _site/lumen2/proofs/
+          mkdir -p _site/lumen2/selfhost && cp lumen2/selfhost/lumen2c.lm _site/lumen2/selfhost/
           touch _site/.nojekyll
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

@@ -120,11 +120,34 @@ async function schur({ k, n, refute }, post) {
   return { proved: refute ? agree && !splitError && rupOk : null, same };
 }
 
+// The self-hosting fixed point: the reference compiler builds lumen2c.lm
+// (stage 1), which compiles itself (stage 2), which compiles itself (stage 3).
+async function bootstrap(_, post) {
+  const src = await text('../lumen2/selfhost/lumen2c.lm');
+  const digest = async (b) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', b))].slice(0, 8).map((x) => x.toString(16).padStart(2, '0')).join('');
+  let t = performance.now();
+  const c = compileSource(src);
+  if (!c.ok) throw new Error(c.errors[0].message);
+  post({ step: 'stage1', bytes: c.bytes.length, ms: since(t), hash: await digest(c.bytes), lines: src.split('\n').length });
+  const stage = async (compiler, name) => {
+    const t0 = performance.now();
+    const r = runWasm(compiler, { input: src, host: makeHost() });
+    if (r.error) throw new Error(`${name} stopped: ${r.error}`);
+    const bytes = Uint8Array.from(r.output, (ch) => ch.charCodeAt(0));
+    post({ step: name, bytes: bytes.length, ms: since(t0), hash: await digest(bytes), allocs: r.allocs, live: r.live });
+    return bytes;
+  };
+  const s2 = await stage(c.bytes, 'stage2');
+  const s3 = await stage(s2, 'stage3');
+  return { same: s2.length === s3.length && s2.every((b, i) => b === s3[i]) };
+}
+
 const HANDLERS = { signatures, obligations, run, plant };
+const STREAMING = { schur, bootstrap };
 self.onmessage = async ({ data: m }) => {
   try {
-    if (m.type === 'schur') {
-      const r = await schur(m, (x) => self.postMessage({ id: m.id, progress: true, ...x }));
+    if (STREAMING[m.type]) {
+      const r = await STREAMING[m.type](m, (x) => self.postMessage({ id: m.id, progress: true, ...x }));
       self.postMessage({ id: m.id, ok: true, ...r });
     } else self.postMessage({ id: m.id, ...HANDLERS[m.type](m) });
   } catch (e) {

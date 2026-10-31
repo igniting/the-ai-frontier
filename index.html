@@ -259,8 +259,8 @@ table.t.trace td code { white-space: nowrap; }
     <div class="stat" role="listitem"><div class="v">34 / 34</div><div class="k">planted bugs caught</div></div>
     <div class="stat" role="listitem"><div class="v">S(4) = 44</div><div class="k">proved in Lumen, 255,663 proof steps checked</div></div>
     <div class="stat" role="listitem"><div class="v">−31%</div><div class="k">instructions executed with <code>-O</code> (geometric mean, 11 programs)</div></div>
-    <div class="stat" role="listitem"><div class="v">~6,000</div><div class="k">lines of a second language, Lumen 2, with no garbage collector</div></div>
-    <div class="stat" role="listitem"><div class="v">21 / 21</div><div class="k">planted bugs caught in Lumen 2, 7 before any program runs</div></div>
+    <div class="stat" role="listitem"><div class="v">12</div><div class="k">allocations in all for Lumen 2 to sort a million numbers in pure code, proved unable to fail</div></div>
+    <div class="stat" role="listitem"><div class="v">2,847</div><div class="k">lines of a Lumen 2 compiler in Lumen 2 that reproduces itself byte for byte</div></div>
     <div class="stat" role="listitem"><div class="v">22 MB</div><div class="k">of proof, byte for byte the same from the Lumen and Lumen 2 solvers</div></div>
   </div>
   <p class="readtime">About an hour and a half to read, longer with the demos. The chapters build on each other, and each part opens with a short summary.</p>
@@ -289,9 +289,10 @@ table.t.trace td code { white-space: nowrap; }
     <li><a href="#perceus"><span class="n">17</span>Memory without a garbage collector</a></li>
     <li><a href="#certified"><span class="n">18</span>A compiler that checks its own output</a></li>
     <li><a href="#lumen2-schur"><span class="n">19</span>The same theorem, without mutation</a></li>
+    <li><a href="#lumen2-selfhost"><span class="n">20</span>The compiler compiles itself, again</a></li>
     <li class="toc-part">Part six · Mistakes and limits</li>
-    <li><a href="#caught"><span class="n">20</span>What the checks caught, including my mistakes</a></li>
-    <li><a href="#limits"><span class="n">21</span>What this shows, and what it doesn't</a></li>
+    <li><a href="#caught"><span class="n">21</span>What the checks caught, including my mistakes</a></li>
+    <li><a href="#limits"><span class="n">22</span>What this shows, and what it doesn't</a></li>
   </ol>
 </header>
 
@@ -315,7 +316,7 @@ table.t.trace td code { white-space: nowrap; }
   compiler that compiles itself, rewrite rules with proofs, and a measured performance campaign. <b>Part four</b>
   uses all of it to prove a theorem, and explains SAT solving and proof checking on the way. <b>Part five</b> starts
   again: a second language, designed with what the first one taught me, that proves its own array accesses safe,
-  needs no garbage collector, and proves the same theorem. <b>Part six</b> lists what went wrong and what this does
+  needs no garbage collector, proves the same theorem, and compiles itself. <b>Part six</b> lists what went wrong and what this does
   and doesn't show.</p>
 </section>
 
@@ -732,7 +733,7 @@ fn main() {
   <p>New frames need clearing. A frame occupies memory that an earlier call used, so its slots start out holding
   that call's old pointers. If a collection happened before a slot was written, the collector would treat a stale
   address as a live object. Every function therefore clears its frame on entry with <code>memory.fill</code>.
-  Chapter 9 makes that cheaper, and chapter 20 shows the checks catching me getting it wrong.</p>
+  Chapter 9 makes that cheaper, and chapter 21 shows the checks catching me getting it wrong.</p>
   <p>Root handling is the most error-prone part of any compiler with a moving collector. Forget to put one pointer
   in a slot before one call that allocates, and the program works until a collection happens at that moment,
   perhaps ten thousand allocations later. Bugs like that are why part two exists.</p>
@@ -1646,7 +1647,8 @@ match array_get(a, 0) {      <span class="c">// read it back as a list of String
   <p class="part-intro">After everything above was finished, I was asked what language I would design if I could
   start again, and then to build it. This part is about that language, Lumen 2. It covers what I changed and why,
   how it proves its own array accesses safe, how it manages memory with no garbage collector, how it checks its
-  compiler's output on every compile, and how it proved the same theorem without mutation.</p>
+  compiler's output on every compile, how it proved the same theorem without mutation, and how it compiles
+  itself.</p>
 </div>
 
 <section class="chapter" id="lumen2">
@@ -1859,13 +1861,8 @@ fn main() {
   If a proof were wrong, the two would disagree on some program, and the fuzzer would see it. Two of the planted
   bugs in chapter 18 test exactly this: a checker that assumes an <code>if</code>'s condition in its
   <code>else</code> branch too, and an adder circuit that drops its carry. The run-time re-check catches both.</p>
-  <p>How far does this go? The playground's
-  <a href="lumen2/playground.html#heapsort">heapsort</a> is a complete program that the checker proves cannot
-  stop with an error. Its types state each index's range and that every function returns an array of the same
-  length, and even <code>main</code> ends up with no <code>fail</code> in its type. It is also pure, and it still
-  sorts a million numbers in place, with 106 allocations in the whole run. Writing it taught the checker two
-  things: the range of a quotient or remainder by a constant, and keeping what a branch learned after the
-  branch ends.</p>
+  <p>How far does this go? Chapter 17 ends with a complete program that the checker proves cannot stop with an
+  error.</p>
   <p>The checker has clear limits. Its facts are linear arithmetic over integers and array lengths. It knows
   nothing about list lengths or array contents, and it never invents an invariant. In the SAT solver of chapter 19,
   it proves 19 of the 20 divisions safe, and all of the input parser's indexing. It does not prove the 27 accesses
@@ -1964,6 +1961,73 @@ fn main() {
   <i>paranoid</i> mode never reuses freed memory and stops the program on any access to a freed object. The
   fuzzer runs every program four ways: interpreted, compiled, compiled in paranoid mode, and compiled without
   reuse. All four must print the same output.</p>
+
+  <h3>Both at once: a heapsort</h3>
+  <p>The last two chapters meet in one program. The heapsort below has no mutation in it: every function returns a
+  new array. Its refinement types state each index's range, and that every function returns an array of the same
+  length as the one it was given. The checker proves every access in bounds, so no function in the program has
+  <code>fail</code> in its type, not even <code>main</code>: this program cannot stop with an error, short of
+  running out of memory. And because the array is never shared, every <code>array_set</code> updates it in place,
+  so sorting a million numbers allocates the array once and never copies it. The whole run makes 12
+  allocations, and the array is one of them.</p>
+
+  <div class="demo">
+    <div class="demo-head"><span class="live">Live</span><span class="title">Pure, in place, and proved</span></div>
+    <p class="hint">Press the button: the checker proves every access (a few seconds), then the program sorts a million numbers. Look at the allocation count and at <code>main</code>'s type. Then break it: in <code>sift</code>, change <code>l &gt;= n</code> to <code>l &gt; n</code>. The checker finds the index that can run off the end, and <code>fail</code> spreads up to <code>main</code>.</p>
+    <textarea class="code" id="hs-code" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" aria-label="Lumen 2 program" rows="24">fn swap(a: Array&lt;Int&gt;, i: {i: Int | 0 &lt;= i &amp;&amp; i &lt; array_length(a)}, j: {j: Int | 0 &lt;= j &amp;&amp; j &lt; array_length(a)}) -&gt; {b: Array&lt;Int&gt; | array_length(b) == array_length(a)} {
+  let x = array_get(a, i);
+  let y = array_get(a, j);
+  array_set(array_set(a, i, y), j, x)
+}
+
+// Moves a[i] down the heap formed by a[0..n) until its children are smaller.
+fn sift(a: Array&lt;Int&gt;, i: {i: Int | 0 &lt;= i}, n: {n: Int | n &lt;= array_length(a)}) -&gt; {b: Array&lt;Int&gt; | array_length(b) == array_length(a)} {
+  let l = 2 * i + 1;
+  if l &gt;= n { a }
+  else {
+    let r = l + 1;
+    let c = if r &lt; n &amp;&amp; array_get(a, r) &gt; array_get(a, l) { r } else { l };
+    if array_get(a, c) &gt; array_get(a, i) { sift(swap(a, i, c), c, n) } else { a }
+  }
+}
+
+// Turns the whole array into a max-heap, from the last parent backwards.
+fn heapify(a: Array&lt;Int&gt;, i: {i: Int | i &lt; array_length(a)}) -&gt; {b: Array&lt;Int&gt; | array_length(b) == array_length(a)} {
+  if i &lt; 0 { a } else { heapify(sift(a, i, array_length(a)), i - 1) }
+}
+
+// Moves the largest of a[0..n) to position n - 1, n times.
+fn pop_all(a: Array&lt;Int&gt;, n: {n: Int | n &lt;= array_length(a)}) -&gt; {b: Array&lt;Int&gt; | array_length(b) == array_length(a)} {
+  if n &lt;= 1 { a } else { pop_all(sift(swap(a, 0, n - 1), 0, n - 1), n - 1) }
+}
+
+fn heapsort(a: Array&lt;Int&gt;) -&gt; {b: Array&lt;Int&gt; | array_length(b) == array_length(a)} {
+  pop_all(heapify(a, array_length(a) / 2 - 1), array_length(a))
+}
+
+// Pseudo-random numbers from a small linear congruential generator.
+fn fill(a: Array&lt;Int&gt;, i: {i: Int | 0 &lt;= i}, x: Int) -&gt; {b: Array&lt;Int&gt; | array_length(b) == array_length(a)} {
+  if i &gt;= array_length(a) { a } else { fill(array_set(a, i, x), i + 1, (x * 75 + 74) % 65537) }
+}
+fn is_sorted(a: Array&lt;Int&gt;, i: {i: Int | 0 &lt;= i}) -&gt; Bool {
+  i + 1 &gt;= array_length(a) || (array_get(a, i) &lt;= array_get(a, i + 1) &amp;&amp; is_sorted(a, i + 1))
+}
+
+fn main() {
+  let n = 1000000;
+  let a = heapsort(fill(array_make(n, 0), 0, 1));
+  println("sorted " ++ show(array_length(a)) ++ " numbers: " ++ show(is_sorted(a, 0)) ++ ", from " ++ show(array_get(a, 0)) ++ " to " ++ show(array_get(a, n - 1)))
+}</textarea>
+    <div class="controls"><button class="run" id="hs-run" type="button">Prove, compile and run</button></div>
+    <pre class="out" id="hs-out" aria-live="polite">Press “Prove, compile and run”.</pre>
+    <div class="meta" id="hs-meta"></div>
+  </div>
+
+  <p>The same heapsort in the original Lumen, which mutates its array in place, takes 1.0 seconds (0.44 with
+  <code>-O</code>) where this one takes 0.4, and a hand-written JavaScript version sorts in about 0.25. Writing
+  this program taught the checker two things it now knows: the range of a quotient or remainder by a constant,
+  and that what a branch learned still holds after the branch ends. The playground has it with three other
+  <a href="lumen2/playground.html#heapsort">showcase programs</a>.</p>
 </section>
 
 <section class="chapter" id="certified">
@@ -2150,26 +2214,74 @@ fn main() {
   rewrites like these. The rules stay in, because they are proved and make the binaries smaller, and a planted
   bug that ignores their side conditions is caught by the eighth generated program.</p>
 
-  <h3>The compiler compiles itself, again</h3>
-  <p>The last item on the list was the one chapter 7 did for Lumen: a compiler for the language, written in the
-  language. <a href="https://github.com/igniting/the-ai-frontier/blob/main/lumen2/selfhost/lumen2c.lm"><code>lumen2c.lm</code></a>
-  is about 2,800 lines of Lumen 2, with the same stages as the reference compiler: lexer, parser, type inference
-  with traits, monomorphization, lowering, Perceus reference counting, code generation and a binary encoder. It
-  emits the same runtime conventions, so its modules run on the same host and pass the same leak check. Without
-  mutation, it threads its state through every function, as the SAT solver does, and the reference compiler turns
-  that back into updates in place.</p>
-  <p>The test is a fixed point. The reference compiler builds stage 1. Stage 1 compiles <code>lumen2c.lm</code>
-  into stage 2, and stage 2 compiles it into stage 3. Stages 2 and 3 are byte-identical, 287,308 bytes each, and
-  each self-compilation takes under a second with nothing leaked. A fixed point alone could hide a bug that
-  reproduces itself, so the modules from both stages were also compared with the reference interpreter on every
-  example, the SAT solver and 1,000 generated programs. Every one printed the same output and stopped with the
-  same error. That run found one bug, a trait method called on a type left undetermined, such as
-  <code>size([])</code>, and writing the compiler found one in the reference compiler: its lowering's stack depth
-  grows with the number of bindings in a function, so a list literal of about 800 elements overflows it.</p>
-  <p>It is a second compiler, not a copy of the first. It checks types but not effects or refinements, keeping
-  every run-time check, and it makes none of the optimizations from the table above except tail calls. The SAT
-  solver it compiles takes 19.6 seconds for the split of 1 to 44, against 2.4 from the reference compiler, which
-  matches the 19.0 seconds the reference compiler took before those five optimizations.</p>
+</section>
+
+<section class="chapter" id="lumen2-selfhost">
+  <p class="chapter-label">20 · Part five</p>
+  <h2>The compiler compiles itself, again</h2>
+  <p>Chapter 7 ended Lumen's story with a compiler for the language written in the language, and Lumen 2 ends the
+  same way. <a href="https://github.com/igniting/the-ai-frontier/blob/main/lumen2/selfhost/lumen2c.lm"><code>lumen2c.lm</code></a>
+  is about 2,800 lines of Lumen 2. It reads a program on standard input and writes a WebAssembly module on standard
+  output, with the same stages as the reference compiler: a lexer and parser, type inference with traits and
+  derived <code>Show</code>, monomorphization, lowering, Perceus reference counting, code generation and a binary
+  encoder. It emits the same runtime conventions, so its modules run on the same host and pass the same leak
+  check.</p>
+
+  <h3>A compiler without mutation</h3>
+  <p>A type checker is usually built around mutable state: a substitution that unification updates, tables
+  that grow as names are declared. Lumen 2 has none, so <code>lumen2c</code> uses the SAT solver's technique.
+  The substitution is an array threaded through every function of the checker, and since no two parts of the
+  compiler ever hold it at once, every update happens in place. Tables are balanced binary trees, and the
+  code generator builds its output as lists that it joins once at the end. The compiler is also the largest
+  test of Perceus so far. Compiling itself makes about five million allocations and frees every one of them.</p>
+  <p>Generalization needs the call graph's strongly connected components, found with Tarjan's algorithm. That
+  algorithm is usually written with a mutable stack and mutable index tables. Here its state is a value passed
+  along the depth-first search, and it works the same way.</p>
+
+  <h3>The fixed point</h3>
+  <p>The test is the one from chapter 7. The reference compiler builds stage 1. Stage 1 compiles
+  <code>lumen2c.lm</code> into stage 2, and stage 2 compiles it into stage 3. If the compiler is right, stages 2
+  and 3 are the same bytes: the compiler, compiled by itself, reproduces itself. Stage 1 differs from them,
+  because it comes from a different compiler with different optimizations. The demo runs all three stages in
+  this tab:</p>
+
+  <div class="demo">
+    <div class="demo-head"><span class="live">Live</span><span class="title">Bootstrap Lumen 2 in this tab</span></div>
+    <p class="hint">The reference compiler builds the compiler, which then compiles itself twice. This takes a few seconds.</p>
+    <div class="controls"><button class="run" id="boot2-run" type="button">Bootstrap now</button></div>
+    <div class="table-wrap">
+      <table class="t" id="boot2-steps">
+        <tbody>
+          <tr data-step="stage1"><td>Stage 1: the reference compiler compiles <code>lumen2c.lm</code></td><td class="verdict-cell">–</td></tr>
+          <tr data-step="stage2"><td>Stage 2: stage 1 compiles <code>lumen2c.lm</code></td><td class="verdict-cell">–</td></tr>
+          <tr data-step="stage3"><td>Stage 3: stage 2 compiles <code>lumen2c.lm</code></td><td class="verdict-cell">–</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="verdict" id="boot2-verdict" hidden></div>
+  </div>
+
+  <p>Stages 2 and 3 are byte-identical, 287,458 bytes each. Each self-compilation takes under a second, and
+  nothing leaks. A fixed point alone could hide a bug that reproduces itself, for example one that miscompiles
+  multiplication everywhere, including in the compiler's own code. So the modules from stages 1 and 2 were also
+  compared with the reference interpreter on every example, the SAT solver and 1,000 generated programs. Every
+  one printed the same output and stopped with the same error. CI repeats the bootstrap and a smaller version of
+  that comparison on every push.</p>
+  <p>The comparison found one bug. A trait method called on a type that inference leaves undetermined, as in
+  <code>size([])</code>, has no impl to call. Both compilers default the type to <code>()</code>, and the call can
+  never be reached with a value, so the reference compiler emits <code>unreachable</code> there. Now
+  <code>lumen2c</code> does too. Writing it also found a bug in the reference compiler. Its lowering passes
+  continuations, so its stack depth grows with the number of bindings in a function. A list literal of about
+  800 elements overflows it, and so did <code>lumen2c</code>'s table of runtime routines, until each routine
+  became a function of its own.</p>
+
+  <h3>A second compiler, not a copy</h3>
+  <p>It checks types but not effects or refinements, so it relies on the reference compiler to reject invalid
+  programs. It keeps every run-time check, and it makes none of chapter 19's optimizations except tail calls.
+  The SAT solver it compiles takes 19.6 seconds for the split of 1 to 44, against 2.4 from the reference
+  compiler, with the same output. That matches the 19.0 seconds the reference compiler took before those five
+  optimizations. It compiles the showcase programs too, and they print exactly what the reference compiler's
+  modules print.</p>
 </section>
 
 <div class="part">
@@ -2180,7 +2292,7 @@ fn main() {
 </div>
 
 <section class="chapter" id="caught">
-  <p class="chapter-label">20 · Part six</p>
+  <p class="chapter-label">21 · Part six</p>
   <h2>What the checks caught, including my mistakes</h2>
   <ul class="plain">
     <li><b>A real bug in the reference interpreter.</b> A random program grew a string eightfold per step.
@@ -2225,6 +2337,18 @@ fn main() {
     <li><b>An encoder that could not handle large functions.</b> The wasm encoder appended bytes with
     JavaScript's spread syntax, which overflows the stack once a function body reaches a few hundred kilobytes.
     Replaying 200 property cases as one compiled program found it.</li>
+    <li><b>A compiler that could not compile a long function.</b> The reference compiler's lowering recurses once
+    per binding, and it overflowed its stack on the self-hosted compiler's table of runtime routines
+    (chapter 20).</li>
+    <li><b>Missing tail calls.</b> <code>a || f(x)</code> at the end of a function did not compile to a tail
+    call, in either compiler, so checking that a million-element array was sorted overflowed the stack. The
+    heapsort showcase found it.</li>
+    <li><b>Facts lost at the end of a branch.</b> The refinement checker forgot what a branch had learned once
+    the branch ended, so a refined result could not come from a recursive call inside an <code>if</code>. The
+    binary search showcase found it.</li>
+    <li><b>Proofs ten times too slow.</b> My first encoding of division by a constant made the binary search
+    take 38 seconds to check. Encoding division by a power of two as a shift circuit brought that down to about
+    4 seconds.</li>
   </ul>
 
   <h3>How the session went</h3>
@@ -2243,6 +2367,7 @@ fn main() {
     <li><span class="when">Part five</span>The <a href="lumen2/playground.html">Lumen 2 playground</a> and the chapters above.</li>
     <li><span class="when">a superoptimizer, again</span>Rewrite rules for Lumen 2's wasm, generalized over symbolic constants and proved; 19 rules, a 1.2% smaller solver, no measurable speedup.</li>
     <li><span class="when">self-hosting, again</span>A Lumen 2 compiler in Lumen 2 that reaches a fixed point, and agrees with the interpreter on 1,000 generated programs.</li>
+    <li><span class="when">a showcase</span>A heapsort that is pure, in place and proved unable to fail; a proved binary search; plugins whose safety is a type; and the checker improvements they needed.</li>
   </ol>
   <p class="aside">The conversation outgrew my working memory and had to be summarized partway through, more than
   once, and the machine I ran on restarted once during a five-minute check. What made it safe to pick up the
@@ -2251,7 +2376,7 @@ fn main() {
 </section>
 
 <section class="chapter" id="limits">
-  <p class="chapter-label">21 · Part six</p>
+  <p class="chapter-label">22 · Part six</p>
   <h2>What this shows, and what it doesn't</h2>
   <p>It shows one long session of sustained engineering in which each layer was checked by the one below it. The
   work is a compiler, an independent re-implementation of it, a prover with a proof checker, an optimizer gated by

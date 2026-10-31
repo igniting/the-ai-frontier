@@ -148,3 +148,50 @@ function schur(k, n, refute) {
 }
 $('l2-s3').addEventListener('click', () => schur(3, 13, true));
 $('l2-s44').addEventListener('click', () => schur(4, 44, false));
+
+// ---------------------------------------------------- proved heapsort --
+$('hs-run').addEventListener('click', () => {
+  const out = $('hs-out'), meta = $('hs-meta');
+  return busy($('hs-run'), out, async () => {
+    out.className = 'out';
+    out.textContent = 'Proving every access, then compiling and running…';
+    meta.textContent = '';
+    const src = $('hs-code').value;
+    const c = await ask({ type: 'obligations', source: src });
+    if (!c.ok) return showErrors(out, c.errors);
+    const r = await ask({ type: 'run', source: src });
+    if (!r.ok) return showErrors(out, r.errors);
+    const proved = c.obligations.filter((o) => o.status === 'proved').length;
+    const failing = c.signatures.filter((s) => / ! .*fail|! fail/.test(s.type)).map((s) => s.name);
+    const unproved = c.obligations.filter((o) => o.status !== 'proved').map((o) => `  line ${o.line}: ${o.what}: ${o.counterexample ?? 'not proved'}`);
+    out.textContent = `${r.output}${r.error ? `runtime error: ${r.error}\n` : ''}\n${pad(c.signatures.map((s) => [s.name, s.type]))}`
+      + (unproved.length ? `\n\nNot proved:\n${unproved.join('\n')}` : '');
+    meta.innerHTML = `<b>${proved} of ${c.obligations.length}</b> obligations proved in ${secs(c.ms)} · `
+      + (failing.length ? `can fail: <b>${failing.join(', ')}</b>` : '<b>no function can fail</b>, not even <code>main</code>')
+      + ` · <b>${num(r.allocs)}</b> allocations · ran in ${ms(r.runMs)}`;
+  });
+});
+
+// ------------------------------------------------- self-hosting, live --
+$('boot2-run').addEventListener('click', () => {
+  const btn = $('boot2-run'), verdict = $('boot2-verdict');
+  const cell = (step) => document.querySelector(`#boot2-steps tr[data-step="${step}"] td:last-child`);
+  btn.disabled = true;
+  verdict.hidden = true;
+  for (const td of document.querySelectorAll('#boot2-steps td:last-child')) { td.className = 'verdict-cell'; td.textContent = '…'; }
+  cell('stage1').textContent = 'compiling lumen2c.lm with the reference compiler…';
+  const done = (m) => `${num(m.bytes)} bytes in ${secs(m.ms)}${m.allocs ? `, ${num(m.allocs)} allocations, ${m.live === 0 ? 'nothing leaked' : `${m.live} leaked`}` : ''} · ${m.hash}`;
+  ask({ type: 'bootstrap' }, (m) => {
+    const c = cell(m.step);
+    c.className = 'verdict-cell ok';
+    c.textContent = done(m);
+    const next = m.step === 'stage1' ? 'stage2' : m.step === 'stage2' ? 'stage3' : null;
+    if (next) cell(next).textContent = 'compiling…';
+  }).then((r) => {
+    btn.disabled = false;
+    verdict.hidden = false;
+    if (!r.ok) { verdict.className = 'verdict bad'; verdict.textContent = `Failed: ${r.errors.join('; ')}`; return; }
+    verdict.className = `verdict ${r.same ? 'ok' : 'bad'}`;
+    verdict.textContent = r.same ? '✓ Fixed point: the compiler, compiled by itself, reproduced itself byte for byte.' : '✗ Stage 2 and stage 3 differ.';
+  }, (e) => { btn.disabled = false; verdict.hidden = false; verdict.className = 'verdict bad'; verdict.textContent = e.message; });
+});
