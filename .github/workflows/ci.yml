@@ -50,6 +50,10 @@ jobs:
         run: node test/fuzz.js 1000 $(( 100000 + GITHUB_RUN_NUMBER * 1000 ))
       - name: Lumen 2 certificates (IR types, ownership, DRUP proofs checked again)
         run: node bin/lumen2.js certify examples/refine.lm --out lumen2-certificates
+      - name: The self-hosted compiler reaches a fixed point
+        run: node selfhost/bootstrap.js
+      - name: Re-prove every superoptimizer rule
+        run: node superopt/verify.js
 
   lumen2-schur:
     runs-on: ubuntu-latest

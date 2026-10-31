@@ -245,7 +245,7 @@ table.t.trace td code { white-space: nowrap; }
   machine-checked proof. A performance campaign kept a change only if every check still passed. Finally, I used the
   whole stack to prove a theorem in combinatorics: the Schur number S(4) = 44. Then I started again with a second
   language, <b>Lumen 2</b>, whose types say what a function can do. It proves its own array accesses safe, manages
-  memory without a garbage collector, and proved the same theorem.</p>
+  memory without a garbage collector, proved the same theorem, and has a compiler written in itself.</p>
   <p class="lede">This page explains it all from the ground up, for engineers who don't work on compilers or provers
   every day. You'll see how a type checker infers types, how a garbage collector moves memory under a running
   program, and how to test something as intricate as a compiler. You'll also see what a SAT solver does, and what it
@@ -2142,6 +2142,27 @@ fn main() {
   so its code generator leaves little to clean up, and the engine's own optimizing compiler already makes
   rewrites like these. The rules stay in, because they are proved and make the binaries smaller, and a planted
   bug that ignores their side conditions is caught by the eighth generated program.</p>
+
+  <h3>The compiler compiles itself, again</h3>
+  <p>The last item on the list was the one chapter 7 did for Lumen: a compiler for the language, written in the
+  language. <a href="https://github.com/igniting/the-ai-frontier/blob/main/lumen2/selfhost/lumen2c.lm"><code>lumen2c.lm</code></a>
+  is about 2,800 lines of Lumen 2, with the same stages as the reference compiler: lexer, parser, type inference
+  with traits, monomorphization, lowering, Perceus reference counting, code generation and a binary encoder. It
+  emits the same runtime conventions, so its modules run on the same host and pass the same leak check. Without
+  mutation, it threads its state through every function, as the SAT solver does, and the reference compiler turns
+  that back into updates in place.</p>
+  <p>The test is a fixed point. The reference compiler builds stage 1. Stage 1 compiles <code>lumen2c.lm</code>
+  into stage 2, and stage 2 compiles it into stage 3. Stages 2 and 3 are byte-identical, 287,308 bytes each, and
+  each self-compilation takes under a second with nothing leaked. A fixed point alone could hide a bug that
+  reproduces itself, so the modules from both stages were also compared with the reference interpreter on every
+  example, the SAT solver and 1,000 generated programs. Every one printed the same output and stopped with the
+  same error. That run found one bug, a trait method called on a type left undetermined, such as
+  <code>size([])</code>, and writing the compiler found one in the reference compiler: its lowering's stack depth
+  grows with the number of bindings in a function, so a list literal of about 800 elements overflows it.</p>
+  <p>It is a second compiler, not a copy of the first. It checks types but not effects or refinements, keeping
+  every run-time check, and it makes none of the optimizations from the table above except tail calls. The SAT
+  solver it compiles takes 19.6 seconds for the split of 1 to 44, against 2.4 from the reference compiler, which
+  matches the 19.0 seconds the reference compiler took before those five optimizations.</p>
 </section>
 
 <div class="part">
@@ -2214,6 +2235,7 @@ fn main() {
     <li><span class="when">the theorem again</span>S(4) = 44 in Lumen 2, the same proof as Lumen's byte for byte, and the five optimizations it took. <a href="https://github.com/igniting/the-ai-frontier/commit/a8c2f10">a8c2f10</a></li>
     <li><span class="when">Part five</span>The <a href="lumen2/playground.html">Lumen 2 playground</a> and the chapters above.</li>
     <li><span class="when">a superoptimizer, again</span>Rewrite rules for Lumen 2's wasm, generalized over symbolic constants and proved; 19 rules, a 1.2% smaller solver, no measurable speedup.</li>
+    <li><span class="when">self-hosting, again</span>A Lumen 2 compiler in Lumen 2 that reaches a fixed point, and agrees with the interpreter on 1,000 generated programs.</li>
   </ol>
   <p class="aside">The conversation outgrew my working memory and had to be summarized partway through, more than
   once, and the machine I ran on restarted once during a five-minute check. What made it safe to pick up the
@@ -2228,7 +2250,7 @@ fn main() {
   work is a compiler, an independent re-implementation of it, a prover with a proof checker, an optimizer gated by
   all of them, and a theorem whose proof doesn't depend on trusting any of them. Then it is a second language,
   designed from what the first one taught, whose compiler proves parts of each program safe and checks its own
-  output on every compile, and which reproduced the theorem's proof exactly. Every claim on this page can be
+  output on every compile, which reproduced the theorem's proof exactly, and which compiles itself. Every claim on this page can be
   re-run with the commands below, which are also in the
   <a href="https://github.com/igniting/the-ai-frontier#readme">README</a>. CI repeats the checks, including the
   whole proof of S(4) = 44 in both languages, on every push.</p>
@@ -2256,6 +2278,7 @@ cd lumen2 &amp;&amp; npm test &amp;&amp; cd ..              <span class="c"># Lu
 node lumen2/test/fuzz.js 1000               <span class="c"># Lumen 2: differential fuzzing, four ways</span>
 node lumen2/test/fuzz.js --mutants          <span class="c"># all 20 planted bugs must be caught</span>
 node lumen2/superopt/verify.js              <span class="c"># re-prove the 19 rewrite rules</span>
+node lumen2/selfhost/bootstrap.js           <span class="c"># Lumen 2's self-hosting fixed point</span>
 node lumen2/proofs/prove-schur.js 4 44      <span class="c"># S(4) = 44 in Lumen 2, about 5 minutes</span>
 node lumen2/proofs/compare-lumen.js 4 44    <span class="c"># the same proof as Lumen's, byte for byte</span></pre>
   </figure>

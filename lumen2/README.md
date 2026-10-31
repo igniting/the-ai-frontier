@@ -33,6 +33,8 @@ no garbage collector.** Lumen 2 is a fresh design, not an extension of
 - **Proved rewrite rules.** A superoptimizer searched the compiler's
   WebAssembly for cheaper equivalent code; every rule it found is proved
   with a checked SAT refutation, including side conditions on constants.
+- **Self-hosted.** A second compiler, written in Lumen 2, compiles itself
+  to a fixed point: compiled by itself, it reproduces itself byte for byte.
 - **64-bit integers that never wrap silently.** Overflow is a runtime error,
   not a wrong answer.
 - **A theorem, proved in it.** A SAT solver written in Lumen 2 proves the
@@ -48,7 +50,7 @@ counting, property tests and certificates, all in the browser) ·
 
 ```sh
 cd lumen2
-npm test                                         # 31 tests, about 25 s
+npm test                                         # 39 tests, about 40 s
 node bin/lumen2.js check examples/refine.lm      # inferred types, effects, refinements
 node bin/lumen2.js run examples/tour.lm          # compile to wasm and run
 node bin/lumen2.js test examples/properties.lm   # check the properties
@@ -60,6 +62,7 @@ node proofs/prove-schur.js 4 44                  # prove S(4) = 44 (about 5 minu
 node proofs/compare-lumen.js 4 44                # the same proof as the Lumen solver's?
 node superopt/search.js                          # search for rewrite rules (about 30 s)
 node superopt/verify.js                          # re-prove every rule the compiler applies
+node selfhost/bootstrap.js                       # the self-hosting fixed point (about 3 s)
 ```
 
 Requires Node.js 22 or later. There are no dependencies.
@@ -362,6 +365,56 @@ them cleaning up after its tagged 31-bit integers. Lumen 2's integers are
 untagged i64 values, so its code generator leaves much less behind, and the
 engine's own optimizing compiler already performs rewrites like these.
 
+## Self-hosting
+
+[`selfhost/lumen2c.lm`](selfhost/lumen2c.lm) is a Lumen 2 compiler written
+in Lumen 2, about 2,800 lines. It reads a program on standard input and
+writes a WebAssembly module on standard output, with the same stages as the
+reference compiler: a lexer and a recursive-descent parser; Hindley–Milner
+inference with traits and derived `Show`, generalized per strongly
+connected component of the call graph (found with Tarjan's algorithm);
+monomorphization and lowering to A-normal form, with closures for lambdas
+and local functions and tag tests for matches; Perceus reference counting;
+code generation with the reference compiler's runtime conventions; and a
+binary encoder. Its own data structures are AVL trees, and arrays that it
+updates in place because it never shares them.
+
+```
+$ node selfhost/bootstrap.js
+stage 1: lumen2c.lm (2844 lines) compiled by the reference compiler: 572987 bytes
+stage 2: compiled by stage 1: 287308 bytes, e29b35f5fd90dccf (540 ms, 5222502 allocations, nothing leaked)
+stage 3: compiled by stage 2: 287308 bytes, e29b35f5fd90dccf (739 ms, 10043674 allocations, nothing leaked)
+FIXED POINT: stage 2 and stage 3 are byte-identical
+```
+
+Stage 1 is the compiler as the reference compiler builds it. Stage 2 is the
+compiler as it builds itself, and stage 3, built by stage 2, is the same
+bytes: the compiler reproduces itself. Stage 1 and stage 2 are different
+programs from different compilers, so the test suite also checks that both
+behave like the reference interpreter. On every example, the SAT solver,
+the Schur encoder and 1,000 generated programs, the modules they write print
+exactly what the interpreter prints, stop with the same error, and free
+every object. That run found one bug: a trait method called on a type
+that inference leaves undetermined, as in `size([])`, which both compilers
+default to `()`, where `()` has no impl. The reference compiler emits
+`unreachable` there, because such a call is never reached with a value, and
+now so does `lumen2c`.
+
+What it leaves out, deliberately: it checks types but not effects,
+capabilities, exhaustiveness or refinements, so it relies on the reference
+compiler to reject invalid programs. A refinement type is read as its base
+type, and every partial operation keeps its run-time check. It makes none
+of the reference compiler's optimizations except tail calls. The SAT
+solver it compiles finds the split of 1..44 in 19.6 s instead of 2.4 s,
+with the same output, which matches the reference compiler before its five
+optimizations (19.0 s, in the table above).
+
+Writing it found a bug in the reference compiler too. Its lowering passes
+continuations, so its stack depth grows with the number of bindings in one
+function. A list literal of about 800 elements overflows it, and so did
+`lumen2c`'s table of runtime routines, until each routine became a function
+of its own.
+
 ## How it works
 
 | Stage | File | What it does |
@@ -488,6 +541,10 @@ or array contents. A function with refined parameters cannot be passed as a
 value. Proofs run at a width of about 66 bits, and a hard obligation can
 take a second; results are cached by the query's canonical form.
 
+The reference compiler's lowering recurses once per binding in a function,
+so a function with many hundreds of bindings, such as a list literal of
+about 800 elements, overflows its stack.
+
 Traits have no default methods or superclasses, and only types declared in
 the program can have their own `Ord` or `Show`. Equality is `Ord`'s
 `compare(a, b) == 0`.
@@ -508,6 +565,7 @@ src/        lexer, parser, checker, exhaustiveness, refinements, SAT solver,
             code generator, wasm encoder
 proofs/     a SAT solver and a Schur encoder written in Lumen 2; S(4) = 44
 superopt/   the superoptimizer: corpus, synthesis, proofs, RULES.md
+selfhost/   a Lumen 2 compiler written in Lumen 2, and the bootstrap
 bin/        the lumen2 command
 test/       node:test suites and the differential fuzzer with planted bugs
 examples/   example programs

@@ -1189,110 +1189,6 @@ fn is_impl(d) { match d { DImpl(_, _, _) -> true, _ -> false } }
 fn void(x) { () }
 fn is_none(o) { match o { None -> true, Some(_) -> false } }
 
-// The prelude, the same source as the reference compiler's (src/prelude.js).
-fn prelude_source() {
-  cat([
-    "type Option<a> { None, Some(a) }\n",
-    "type Result<a, e> { Ok(a), Err(e) }\n",
-    "type List<a> { Nil, Cons(a, List<a>) }\n",
-    "\n",
-    "trait Ord { fn compare(a: Self, b: Self) -> Int }\n",
-    "trait Show { fn show(x: Self) -> String }\n",
-    "\n",
-    "impl Show for Int { fn show(n) { int_to_string(n) } }\n",
-    "impl Show for String { fn show(s) { \"\\\"\" ++ s ++ \"\\\"\" } }\n",
-    "impl Show for Bool { fn show(b) { if b { \"true\" } else { \"false\" } } }\n",
-    "impl Show for () { fn show(u) { \"()\" } }\n",
-    "impl Show for List<a> where a: Show { fn show(xs) { \"[\" ++ join(map(xs, show), \", \") ++ \"]\" } }\n",
-    "impl Show for Array<a> where a: Show { fn show(xs) { \"#\" ++ show(array_to_list(xs)) } }\n",
-    "impl Show for (a, b) where a: Show, b: Show {\n",
-    "  fn show(p) { match p { (x, y) -> \"(\" ++ show(x) ++ \", \" ++ show(y) ++ \")\" } }\n",
-    "}\n",
-    "impl Show for (a, b, c) where a: Show, b: Show, c: Show {\n",
-    "  fn show(p) { match p { (x, y, z) -> \"(\" ++ show(x) ++ \", \" ++ show(y) ++ \", \" ++ show(z) ++ \")\" } }\n",
-    "}\n",
-    "impl Show for (a, b, c, d) where a: Show, b: Show, c: Show, d: Show {\n",
-    "  fn show(p) { match p { (x, y, z, w) -> \"(\" ++ show(x) ++ \", \" ++ show(y) ++ \", \" ++ show(z) ++ \", \" ++ show(w) ++ \")\" } }\n",
-    "}\n",
-    "\n",
-    "fn fold(xs, acc, f) {\n",
-    "  match xs { [] -> acc, [x, ..rest] -> fold(rest, f(acc, x), f) }\n",
-    "}\n",
-    "fn rev_append(xs, ys) {\n",
-    "  match xs { [] -> ys, [x, ..rest] -> rev_append(rest, [x, ..ys]) }\n",
-    "}\n",
-    "fn reverse(xs) { rev_append(xs, []) }\n",
-    "fn append(xs, ys) { rev_append(reverse(xs), ys) }\n",
-    "fn map(xs, f) { reverse(fold(xs, [], |acc, x| [f(x), ..acc])) }\n",
-    "fn filter(xs, keep) { reverse(fold(xs, [], |acc, x| if keep(x) { [x, ..acc] } else { acc })) }\n",
-    "fn flat_map(xs, f) { reverse(fold(xs, [], |acc, x| rev_append(f(x), acc))) }\n",
-    "fn concat(xss) { flat_map(xss, |xs| xs) }\n",
-    "fn each(xs, f) {\n",
-    "  match xs { [] -> (), [x, ..rest] -> { f(x); each(rest, f) } }\n",
-    "}\n",
-    "fn length(xs) { fold(xs, 0, |n, _| n + 1) }\n",
-    "fn sum(xs) { fold(xs, 0, |a, x| a + x) }\n",
-    "fn is_empty(xs) { match xs { [] -> true, _ -> false } }\n",
-    "fn range(lo, hi) {\n",
-    "  fn go(i, acc) { if i < lo { acc } else { go(i - 1, [i, ..acc]) } }\n",
-    "  go(hi - 1, [])\n",
-    "}\n",
-    "fn any(xs, p) { match xs { [] -> false, [x, ..rest] -> if p(x) { true } else { any(rest, p) } } }\n",
-    "fn all(xs, p) { match xs { [] -> true, [x, ..rest] -> if p(x) { all(rest, p) } else { false } } }\n",
-    "fn contains(xs, y) { any(xs, |x| x == y) }\n",
-    "fn find(xs, p) { match xs { [] -> None, [x, ..rest] -> if p(x) { Some(x) } else { find(rest, p) } } }\n",
-    "fn head(xs) { match xs { [] -> None, [x, .._] -> Some(x) } }\n",
-    "fn nth(xs, n) { match xs { [] -> None, [x, ..rest] -> if n == 0 { Some(x) } else { nth(rest, n - 1) } } }\n",
-    "fn take(xs, n) {\n",
-    "  fn go(xs, n, acc) { match xs { [] -> reverse(acc), [x, ..rest] -> if n <= 0 { reverse(acc) } else { go(rest, n - 1, [x, ..acc]) } } }\n",
-    "  go(xs, n, [])\n",
-    "}\n",
-    "fn drop(xs, n) { match xs { [] -> [], [_, ..rest] -> if n <= 0 { xs } else { drop(rest, n - 1) } } }\n",
-    "fn zip(xs, ys) {\n",
-    "  fn go(xs, ys, acc) {\n",
-    "    match (xs, ys) { ([x, ..xr], [y, ..yr]) -> go(xr, yr, [(x, y), ..acc]), _ -> reverse(acc) }\n",
-    "  }\n",
-    "  go(xs, ys, [])\n",
-    "}\n",
-    "fn min(a, b) { if a <= b { a } else { b } }\n",
-    "fn max(a, b) { if a >= b { a } else { b } }\n",
-    "fn abs(n) { if n < 0 { 0 - n } else { n } }\n",
-    "fn unwrap_or(o, default) { match o { Some(x) -> x, None -> default } }\n",
-    "fn map_option(o, f) { match o { Some(x) -> Some(f(x)), None -> None } }\n",
-    "fn sort_by(xs, less) {\n",
-    "  fn merge(xs, ys, acc) {\n",
-    "    match (xs, ys) {\n",
-    "      ([], _) -> rev_append(acc, ys),\n",
-    "      (_, []) -> rev_append(acc, xs),\n",
-    "      ([x, ..xr], [y, ..yr]) -> if less(y, x) { merge(xs, yr, [y, ..acc]) } else { merge(xr, ys, [x, ..acc]) },\n",
-    "    }\n",
-    "  }\n",
-    "  fn split(xs, l, r) { match xs { [] -> (l, r), [x, ..rest] -> split(rest, r, [x, ..l]) } }\n",
-    "  fn go(xs) {\n",
-    "    match xs {\n",
-    "      [] -> [],\n",
-    "      [x] -> [x],\n",
-    "      _ -> { let (l, r) = split(xs, [], []); merge(go(l), go(r), []) },\n",
-    "    }\n",
-    "  }\n",
-    "  go(xs)\n",
-    "}\n",
-    "fn sort(xs) { sort_by(xs, |a, b| a < b) }\n",
-    "fn intersperse(xs, sep) {\n",
-    "  match xs { [] -> [], [x, ..rest] -> reverse(fold(rest, [x], |acc, y| [y, sep, ..acc])) }\n",
-    "}\n",
-    "fn join(xs, sep) { concat_strings(intersperse(xs, sep)) }\n",
-    "fn show_list(xs, show) { \"[\" ++ join(map(xs, show), \", \") ++ \"]\" }\n",
-    "fn repeat_string(s, n) { if n <= 0 { \"\" } else { s ++ repeat_string(s, n - 1) } }\n",
-    "fn array_from_list(xs) { fold(xs, array_empty(), |a, x| array_push(a, x)) }\n",
-    "// Pure: the refinement on i lets the checker prove every array_get in bounds.\n",
-    "fn array_to_list(a) {\n",
-    "  fn go(i: {i: Int | i < array_length(a)}, acc) { if i < 0 { acc } else { go(i - 1, [array_get(a, i), ..acc]) } }\n",
-    "  go(array_length(a) - 1, [])\n",
-    "}\n",
-  ])
-}
-
 // ======================================= 5. lowering to an intermediate language
 //
 // Each top-level function is lowered once per type it is used at
@@ -1601,7 +1497,11 @@ fn call_named(c, l, n, ft, as) {
             let t = match ft { TFun([first, .._], _) -> first, _ -> t_unit() };
             let l = request_ord(c, l, t);
             (RCmp("three", t, as), l)
-          } else { panic("no impl of `" ++ n ++ "` for " ++ tkey(ft)) },
+          } else {
+            // Only a type left undetermined (and defaulted to ()) can lack an impl:
+            // `size([])`, where the call is never reached with a value.
+            (RBuiltin("unreachable", [], []), l)
+          },
         },
         None -> match ft { TFun(ps, _) -> (RBuiltin(n, as, ps), l), _ -> panic("internal error: builtin type") },
       },
@@ -2062,60 +1962,60 @@ fn rt_fn_rt_fail() {
 // The size class of an allocation: log2 of the block size, at least 16 bytes.
 fn rt_fn_rt_class() {
   wfn("rt_class", [("size", "i32")], ["i32"], [], [[
-      lget("size"), i32c(16), op("i32.le_u"), if_r("i32"), i32c(4),
-      else_(), i32c(32), lget("size"), i32c(1), op("i32.sub"), op("i32.clz"), op("i32.sub"), end_(),
-    ]])
+    lget("size"), i32c(16), op("i32.le_u"), if_r("i32"), i32c(4),
+    else_(), i32c(32), lget("size"), i32c(1), op("i32.sub"), op("i32.clz"), op("i32.sub"), end_(),
+  ]])
 }
 
 fn rt_fn_rt_alloc() {
   wfn("rt_alloc", [("size", "i32")], ["i32"], [("c", "i32"), ("p", "i32"), ("top", "i32")], [
-      [lget("size"), call("rt_class"), lset("c"), block("have")],
-      rt_head("c"), [load32(k_free_lists()), ltee("p"), if_()],
-      rt_head("c"), [lget("p"), load32(8), store32(k_free_lists()), br("have"), end_()],
-      [gget("hp"), lset("p"),
-       gget("hp"), i32c(1), lget("c"), op("i32.shl"), op("i32.add"), gset("hp"),
-       op("memory.size"), i32c(16), op("i32.shl"), lset("top"),
-       gget("hp"), lget("top"), op("i32.gt_u"), if_(),
-       gget("hp"), lget("top"), op("i32.sub"), i32c(65535), op("i32.add"), i32c(16), op("i32.shr_u"),
-       op("memory.grow"), i32c(0 - 1), op("i32.eq")],
-      trap_if(k_oom()),
-      [end_(), end_(),
-       lget("p"), i32c(1), store32(0),
-       gget("live"), i32c(1), op("i32.add"), gset("live"),
-       gget("allocs"), i32c(1), op("i32.add"), gset("allocs"),
-       lget("p")],
-    ])
+    [lget("size"), call("rt_class"), lset("c"), block("have")],
+    rt_head("c"), [load32(k_free_lists()), ltee("p"), if_()],
+    rt_head("c"), [lget("p"), load32(8), store32(k_free_lists()), br("have"), end_()],
+    [gget("hp"), lset("p"),
+     gget("hp"), i32c(1), lget("c"), op("i32.shl"), op("i32.add"), gset("hp"),
+     op("memory.size"), i32c(16), op("i32.shl"), lset("top"),
+     gget("hp"), lget("top"), op("i32.gt_u"), if_(),
+     gget("hp"), lget("top"), op("i32.sub"), i32c(65535), op("i32.add"), i32c(16), op("i32.shr_u"),
+     op("memory.grow"), i32c(0 - 1), op("i32.eq")],
+    trap_if(k_oom()),
+    [end_(), end_(),
+     lget("p"), i32c(1), store32(0),
+     gget("live"), i32c(1), op("i32.add"), gset("live"),
+     gget("allocs"), i32c(1), op("i32.add"), gset("allocs"),
+     lget("p")],
+  ])
 }
 
 fn rt_fn_rt_free() {
   wfn("rt_free", [("p", "i32"), ("size", "i32")], [], [("c", "i32")], [
-      [lget("p"), i32c(0), store32(0),
-       gget("live"), i32c(1), op("i32.sub"), gset("live"),
-       lget("size"), call("rt_class"), lset("c"),
-       lget("p")], rt_head("c"), [load32(k_free_lists()), store32(8)],
-      rt_head("c"), [lget("p"), store32(k_free_lists())],
-    ])
+    [lget("p"), i32c(0), store32(0),
+     gget("live"), i32c(1), op("i32.sub"), gset("live"),
+     lget("size"), call("rt_class"), lset("c"),
+     lget("p")], rt_head("c"), [load32(k_free_lists()), store32(8)],
+    rt_head("c"), [lget("p"), store32(k_free_lists())],
+  ])
 }
 
 // One more reference; immediates and static objects are not counted.
 fn rt_fn_rt_dup() {
   wfn("rt_dup", [("p", "i32")], ["i32"], [("rc", "i32")], [
-      [lget("p"), i32c(k_imm()), op("i32.ge_u"), if_(),
-       lget("p"), load32(0), ltee("rc"), i32c(0), op("i32.gt_s"), if_(),
-       lget("p"), lget("rc"), i32c(1), op("i32.add"), store32(0),
-       else_(), lget("rc"), op("i32.eqz")], trap_if(k_uaf()), [end_(), end_(), lget("p")],
-    ])
+    [lget("p"), i32c(k_imm()), op("i32.ge_u"), if_(),
+     lget("p"), load32(0), ltee("rc"), i32c(0), op("i32.gt_s"), if_(),
+     lget("p"), lget("rc"), i32c(1), op("i32.add"), store32(0),
+     else_(), lget("rc"), op("i32.eqz")], trap_if(k_uaf()), [end_(), end_(), lget("p")],
+  ])
 }
 
 // One reference fewer; 1 when that was the last one and the object must be freed.
 fn rt_fn_rt_release() {
   wfn("rt_release", [("p", "i32")], ["i32"], [("rc", "i32")], [
-      [lget("p"), i32c(k_imm()), op("i32.lt_u"), if_(), i32c(0), op("return"), end_(),
-       lget("p"), load32(0), ltee("rc"), i32c(1), op("i32.gt_s"), if_(),
-       lget("p"), lget("rc"), i32c(1), op("i32.sub"), store32(0), i32c(0), op("return"), end_(),
-       lget("rc"), i32c(1), op("i32.eq"), if_(), i32c(1), op("return"), end_(),
-       lget("rc"), op("i32.eqz")], trap_if(k_uaf()), [i32c(0)],
-    ])
+    [lget("p"), i32c(k_imm()), op("i32.lt_u"), if_(), i32c(0), op("return"), end_(),
+     lget("p"), load32(0), ltee("rc"), i32c(1), op("i32.gt_s"), if_(),
+     lget("p"), lget("rc"), i32c(1), op("i32.sub"), store32(0), i32c(0), op("return"), end_(),
+     lget("rc"), i32c(1), op("i32.eq"), if_(), i32c(1), op("return"), end_(),
+     lget("rc"), op("i32.eqz")], trap_if(k_uaf()), [i32c(0)],
+  ])
 }
 
 fn rt_fn_rt_tag() {
@@ -2125,39 +2025,39 @@ fn rt_fn_rt_tag() {
 // Checked 64-bit arithmetic.
 fn rt_fn_int_add() {
   wfn("int_add", [("a", "i64"), ("b", "i64")], ["i64"], [("r", "i64")], [
-      [lget("a"), lget("b"), op("i64.add"), lset("r"),
-       lget("a"), lget("r"), op("i64.xor"), lget("b"), lget("r"), op("i64.xor"), op("i64.and"), i64c(0), op("i64.lt_s")], trap_if(k_overflow()), [lget("r")],
-    ])
+    [lget("a"), lget("b"), op("i64.add"), lset("r"),
+     lget("a"), lget("r"), op("i64.xor"), lget("b"), lget("r"), op("i64.xor"), op("i64.and"), i64c(0), op("i64.lt_s")], trap_if(k_overflow()), [lget("r")],
+  ])
 }
 
 fn rt_fn_int_sub() {
   wfn("int_sub", [("a", "i64"), ("b", "i64")], ["i64"], [("r", "i64")], [
-      [lget("a"), lget("b"), op("i64.sub"), lset("r"),
-       lget("a"), lget("b"), op("i64.xor"), lget("a"), lget("r"), op("i64.xor"), op("i64.and"), i64c(0), op("i64.lt_s")], trap_if(k_overflow()), [lget("r")],
-    ])
+    [lget("a"), lget("b"), op("i64.sub"), lset("r"),
+     lget("a"), lget("b"), op("i64.xor"), lget("a"), lget("r"), op("i64.xor"), op("i64.and"), i64c(0), op("i64.lt_s")], trap_if(k_overflow()), [lget("r")],
+  ])
 }
 
 fn rt_fn_int_mul() {
   wfn("int_mul", [("a", "i64"), ("b", "i64")], ["i64"], [("r", "i64")], [
-      [lget("a"), op("i64.eqz"), lget("b"), op("i64.eqz"), op("i32.or"), if_(), i64c(0), op("return"), end_(),
-       lget("a"), i64c(0 - 1), op("i64.eq"), lget("b"), i64c(k_int_min()), op("i64.eq"), op("i32.and"),
-       lget("b"), i64c(0 - 1), op("i64.eq"), lget("a"), i64c(k_int_min()), op("i64.eq"), op("i32.and"), op("i32.or")], trap_if(k_overflow()),
-      [lget("a"), lget("b"), op("i64.mul"), ltee("r"), lget("b"), op("i64.div_s"), lget("a"), op("i64.ne")], trap_if(k_overflow()), [lget("r")],
-    ])
+    [lget("a"), op("i64.eqz"), lget("b"), op("i64.eqz"), op("i32.or"), if_(), i64c(0), op("return"), end_(),
+     lget("a"), i64c(0 - 1), op("i64.eq"), lget("b"), i64c(k_int_min()), op("i64.eq"), op("i32.and"),
+     lget("b"), i64c(0 - 1), op("i64.eq"), lget("a"), i64c(k_int_min()), op("i64.eq"), op("i32.and"), op("i32.or")], trap_if(k_overflow()),
+    [lget("a"), lget("b"), op("i64.mul"), ltee("r"), lget("b"), op("i64.div_s"), lget("a"), op("i64.ne")], trap_if(k_overflow()), [lget("r")],
+  ])
 }
 
 fn rt_fn_int_div() {
   wfn("int_div", [("a", "i64"), ("b", "i64")], ["i64"], [], [
-      [lget("b"), op("i64.eqz")], trap_if(k_divzero()),
-      [lget("a"), i64c(k_int_min()), op("i64.eq"), lget("b"), i64c(0 - 1), op("i64.eq"), op("i32.and")], trap_if(k_overflow()),
-      [lget("a"), lget("b"), op("i64.div_s")],
-    ])
+    [lget("b"), op("i64.eqz")], trap_if(k_divzero()),
+    [lget("a"), i64c(k_int_min()), op("i64.eq"), lget("b"), i64c(0 - 1), op("i64.eq"), op("i32.and")], trap_if(k_overflow()),
+    [lget("a"), lget("b"), op("i64.div_s")],
+  ])
 }
 
 fn rt_fn_int_rem() {
   wfn("int_rem", [("a", "i64"), ("b", "i64")], ["i64"], [], [
-      [lget("b"), op("i64.eqz")], trap_if(k_divzero()), [lget("a"), lget("b"), op("i64.rem_s")],
-    ])
+    [lget("b"), op("i64.eqz")], trap_if(k_divzero()), [lget("a"), lget("b"), op("i64.rem_s")],
+  ])
 }
 
 fn rt_fn_int_neg() {
@@ -2167,70 +2067,70 @@ fn rt_fn_int_neg() {
 // Strings.
 fn rt_fn_str_new() {
   wfn("str_new", [("n", "i32")], ["i32"], [("p", "i32")], [
-      [lget("n"), i32c(k_max_len()), op("i32.gt_u")], trap_if(k_strlong()),
-      [lget("n"), i32c(8), op("i32.add"), call("rt_alloc"), ltee("p"), lget("n"), store32(4), lget("p")],
-    ])
+    [lget("n"), i32c(k_max_len()), op("i32.gt_u")], trap_if(k_strlong()),
+    [lget("n"), i32c(8), op("i32.add"), call("rt_alloc"), ltee("p"), lget("n"), store32(4), lget("p")],
+  ])
 }
 
 fn rt_fn_str_concat() {
   wfn("str_concat", [("a", "i32"), ("b", "i32")], ["i32"], [("la", "i32"), ("lb", "i32"), ("p", "i32")], [
-      rt_len("a"), [lset("la")], rt_len("b"), [lset("lb"),
-      lget("la"), lget("lb"), op("i32.add"), call("str_new"), lset("p"),
-      lget("p"), i32c(8), op("i32.add"), lget("a"), i32c(8), op("i32.add"), lget("la"), op("memory.copy"),
-      lget("p"), i32c(8), op("i32.add"), lget("la"), op("i32.add"), lget("b"), i32c(8), op("i32.add"), lget("lb"), op("memory.copy"),
-      lget("p")],
-    ])
+    rt_len("a"), [lset("la")], rt_len("b"), [lset("lb"),
+    lget("la"), lget("lb"), op("i32.add"), call("str_new"), lset("p"),
+    lget("p"), i32c(8), op("i32.add"), lget("a"), i32c(8), op("i32.add"), lget("la"), op("memory.copy"),
+    lget("p"), i32c(8), op("i32.add"), lget("la"), op("i32.add"), lget("b"), i32c(8), op("i32.add"), lget("lb"), op("memory.copy"),
+    lget("p")],
+  ])
 }
 
 // Joins a List<String>: Cons cells hold the head at 8 and the tail at 16; Nil is the immediate 0.
 fn rt_fn_str_concat_list() {
   wfn("str_concat_list", [("xs", "i32")], ["i32"], [("c", "i32"), ("n", "i64"), ("p", "i32"), ("at", "i32"), ("s", "i32")], [
-      [lget("xs"), lset("c"), block("sized"), loop("size"),
-       lget("c"), i32c(k_imm()), op("i32.lt_u"), br_if("sized"),
-       lget("n"), lget("c"), load32(8), load32(4), op("i64.extend_i32_u"), op("i64.add"), lset("n"),
-       lget("c"), load32(16), lset("c"), br("size"), end_(), end_(),
-       lget("n"), i64c(k_max_len()), op("i64.gt_u")], trap_if(k_strlong()),
-      [lget("n"), op("i32.wrap_i64"), call("str_new"), ltee("p"), i32c(8), op("i32.add"), lset("at"),
-       lget("xs"), lset("c"), block("done"), loop("copy"),
-       lget("c"), i32c(k_imm()), op("i32.lt_u"), br_if("done"),
-       lget("c"), load32(8), lset("s"),
-       lget("at"), lget("s"), i32c(8), op("i32.add"), lget("s"), load32(4), op("memory.copy"),
-       lget("at"), lget("s"), load32(4), op("i32.add"), lset("at"),
-       lget("c"), load32(16), lset("c"), br("copy"), end_(), end_(),
-       lget("p")],
-    ])
+    [lget("xs"), lset("c"), block("sized"), loop("size"),
+     lget("c"), i32c(k_imm()), op("i32.lt_u"), br_if("sized"),
+     lget("n"), lget("c"), load32(8), load32(4), op("i64.extend_i32_u"), op("i64.add"), lset("n"),
+     lget("c"), load32(16), lset("c"), br("size"), end_(), end_(),
+     lget("n"), i64c(k_max_len()), op("i64.gt_u")], trap_if(k_strlong()),
+    [lget("n"), op("i32.wrap_i64"), call("str_new"), ltee("p"), i32c(8), op("i32.add"), lset("at"),
+     lget("xs"), lset("c"), block("done"), loop("copy"),
+     lget("c"), i32c(k_imm()), op("i32.lt_u"), br_if("done"),
+     lget("c"), load32(8), lset("s"),
+     lget("at"), lget("s"), i32c(8), op("i32.add"), lget("s"), load32(4), op("memory.copy"),
+     lget("at"), lget("s"), load32(4), op("i32.add"), lset("at"),
+     lget("c"), load32(16), lset("c"), br("copy"), end_(), end_(),
+     lget("p")],
+  ])
 }
 
 fn rt_fn_str_cmp() {
   wfn("str_cmp", [("a", "i32"), ("b", "i32")], ["i32"], [("la", "i32"), ("lb", "i32"), ("n", "i32"), ("i", "i32"), ("ca", "i32"), ("cb", "i32")], [
-      rt_len("a"), [lset("la")], rt_len("b"), [lset("lb"),
-      lget("la"), lget("lb"), lget("la"), lget("lb"), op("i32.lt_u"), op("select"), lset("n"),
-      block("done"), loop("next"),
-      lget("i"), lget("n"), op("i32.ge_u"), br_if("done"),
-      lget("a"), lget("i"), op("i32.add"), OpMem("i32.load8_u", 8), lset("ca"),
-      lget("b"), lget("i"), op("i32.add"), OpMem("i32.load8_u", 8), lset("cb"),
-      lget("ca"), lget("cb"), op("i32.ne"), if_(), i32c(0 - 1), i32c(1), lget("ca"), lget("cb"), op("i32.lt_u"), op("select"), op("return"), end_(),
-      lget("i"), i32c(1), op("i32.add"), lset("i"), br("next"),
-      end_(), end_(),
-      lget("la"), lget("lb"), op("i32.gt_u"), lget("la"), lget("lb"), op("i32.lt_u"), op("i32.sub")],
-    ])
+    rt_len("a"), [lset("la")], rt_len("b"), [lset("lb"),
+    lget("la"), lget("lb"), lget("la"), lget("lb"), op("i32.lt_u"), op("select"), lset("n"),
+    block("done"), loop("next"),
+    lget("i"), lget("n"), op("i32.ge_u"), br_if("done"),
+    lget("a"), lget("i"), op("i32.add"), OpMem("i32.load8_u", 8), lset("ca"),
+    lget("b"), lget("i"), op("i32.add"), OpMem("i32.load8_u", 8), lset("cb"),
+    lget("ca"), lget("cb"), op("i32.ne"), if_(), i32c(0 - 1), i32c(1), lget("ca"), lget("cb"), op("i32.lt_u"), op("select"), op("return"), end_(),
+    lget("i"), i32c(1), op("i32.add"), lset("i"), br("next"),
+    end_(), end_(),
+    lget("la"), lget("lb"), op("i32.gt_u"), lget("la"), lget("lb"), op("i32.lt_u"), op("i32.sub")],
+  ])
 }
 
 fn rt_fn_int_to_string() {
   wfn("int_to_string", [("n", "i64")], ["i32"], [("neg", "i32"), ("i", "i32"), ("p", "i32")], [[
-      i32c(k_scratch() + 32), lset("i"),
-      lget("n"), i64c(0), op("i64.lt_s"), lset("neg"),
-      lget("neg"), op("i32.eqz"), if_(), i64c(0), lget("n"), op("i64.sub"), lset("n"), end_(),
-      loop("digit"),
-      lget("i"), i32c(1), op("i32.sub"), lset("i"),
-      lget("i"), i64c(0), lget("n"), i64c(10), op("i64.rem_s"), op("i64.sub"), op("i32.wrap_i64"), i32c(48), op("i32.add"), OpMem("i32.store8", 0),
-      lget("n"), i64c(10), op("i64.div_s"), ltee("n"), op("i64.eqz"), op("i32.eqz"), br_if("digit"),
-      end_(),
-      lget("neg"), if_(), lget("i"), i32c(1), op("i32.sub"), ltee("i"), i32c(45), OpMem("i32.store8", 0), end_(),
-      i32c(k_scratch() + 32), lget("i"), op("i32.sub"), call("str_new"), lset("p"),
-      lget("p"), i32c(8), op("i32.add"), lget("i"), i32c(k_scratch() + 32), lget("i"), op("i32.sub"), op("memory.copy"),
-      lget("p"),
-    ]])
+    i32c(k_scratch() + 32), lset("i"),
+    lget("n"), i64c(0), op("i64.lt_s"), lset("neg"),
+    lget("neg"), op("i32.eqz"), if_(), i64c(0), lget("n"), op("i64.sub"), lset("n"), end_(),
+    loop("digit"),
+    lget("i"), i32c(1), op("i32.sub"), lset("i"),
+    lget("i"), i64c(0), lget("n"), i64c(10), op("i64.rem_s"), op("i64.sub"), op("i32.wrap_i64"), i32c(48), op("i32.add"), OpMem("i32.store8", 0),
+    lget("n"), i64c(10), op("i64.div_s"), ltee("n"), op("i64.eqz"), op("i32.eqz"), br_if("digit"),
+    end_(),
+    lget("neg"), if_(), lget("i"), i32c(1), op("i32.sub"), ltee("i"), i32c(45), OpMem("i32.store8", 0), end_(),
+    i32c(k_scratch() + 32), lget("i"), op("i32.sub"), call("str_new"), lset("p"),
+    lget("p"), i32c(8), op("i32.add"), lget("i"), i32c(k_scratch() + 32), lget("i"), op("i32.sub"), op("memory.copy"),
+    lget("p"),
+  ]])
 }
 
 fn rt_fn_str_length() {
@@ -2239,23 +2139,23 @@ fn rt_fn_str_length() {
 
 fn rt_fn_str_sub() {
   wfn("str_sub", [("s", "i32"), ("a", "i64"), ("b", "i64")], ["i32"], [("n", "i64"), ("p", "i32")], [
-      rt_len("s"), [op("i64.extend_i32_u"), lset("n"),
-      lget("a"), i64c(0), op("i64.lt_s"), if_(), i64c(0), lset("a"), end_(),
-      lget("a"), lget("n"), op("i64.gt_s"), if_(), lget("n"), lset("a"), end_(),
-      lget("b"), lget("a"), op("i64.lt_s"), if_(), lget("a"), lset("b"), end_(),
-      lget("b"), lget("n"), op("i64.gt_s"), if_(), lget("n"), lset("b"), end_(),
-      lget("b"), lget("a"), op("i64.sub"), op("i32.wrap_i64"), call("str_new"), lset("p"),
-      lget("p"), i32c(8), op("i32.add"), lget("s"), i32c(8), op("i32.add"), lget("a"), op("i32.wrap_i64"), op("i32.add"),
-      lget("b"), lget("a"), op("i64.sub"), op("i32.wrap_i64"), op("memory.copy"),
-      lget("p")],
-    ])
+    rt_len("s"), [op("i64.extend_i32_u"), lset("n"),
+    lget("a"), i64c(0), op("i64.lt_s"), if_(), i64c(0), lset("a"), end_(),
+    lget("a"), lget("n"), op("i64.gt_s"), if_(), lget("n"), lset("a"), end_(),
+    lget("b"), lget("a"), op("i64.lt_s"), if_(), lget("a"), lset("b"), end_(),
+    lget("b"), lget("n"), op("i64.gt_s"), if_(), lget("n"), lset("b"), end_(),
+    lget("b"), lget("a"), op("i64.sub"), op("i32.wrap_i64"), call("str_new"), lset("p"),
+    lget("p"), i32c(8), op("i32.add"), lget("s"), i32c(8), op("i32.add"), lget("a"), op("i32.wrap_i64"), op("i32.add"),
+    lget("b"), lget("a"), op("i64.sub"), op("i32.wrap_i64"), op("memory.copy"),
+    lget("p")],
+  ])
 }
 
 fn rt_fn_str_code_at() {
   wfn("str_code_at", [("s", "i32"), ("i", "i64")], ["i64"], [], [
-      [lget("i")], rt_len("s"), [op("i64.extend_i32_u"), op("i64.ge_u")], trap_if(k_bounds()),
-      [lget("s"), lget("i"), op("i32.wrap_i64"), op("i32.add"), OpMem("i32.load8_u", 8), op("i64.extend_i32_u")],
-    ])
+    [lget("i")], rt_len("s"), [op("i64.extend_i32_u"), op("i64.ge_u")], trap_if(k_bounds()),
+    [lget("s"), lget("i"), op("i32.wrap_i64"), op("i32.add"), OpMem("i32.load8_u", 8), op("i64.extend_i32_u")],
+  ])
 }
 
 fn rt_fn_str_from_code() {
@@ -2277,11 +2177,10 @@ fn rt_fn_str_panic() {
 // Arrays.
 fn rt_fn_arr_new() {
   wfn("arr_new", [("n", "i32"), ("cap", "i32")], ["i32"], [("p", "i32")], [[
-      lget("cap"), i32c(3), op("i32.shl"), i32c(16), op("i32.add"), call("rt_alloc"), ltee("p"), lget("n"), store32(4),
-      lget("p"), lget("cap"), store32(8), lget("p"),
-    ]])
+    lget("cap"), i32c(3), op("i32.shl"), i32c(16), op("i32.add"), call("rt_alloc"), ltee("p"), lget("n"), store32(4),
+    lget("p"), lget("cap"), store32(8), lget("p"),
+  ]])
 }
-
 
 fn valtype(t) { if t == t_int() { "i64" } else { "i32" } }
 fn load_t(t, off) { OpMem(if valtype(t) == "i64" { "i64.load" } else { "i32.load" }, off) }
@@ -2636,6 +2535,7 @@ fn gen_rhs(g, ords, cg, r) {
       else if n == "array_empty" { ([i32c(0), i32c(0), call("arr_new")], cg) }
       else if n == "array_length" { (append(args, [load32(4), op("i64.extend_i32_u")]), cg) }
       else if n == "array_make" { let t = list_get(tys, 1); (append(args, [call("array_make:" ++ tkey(t))]), array_fns(g, cg, t)) }
+      else if n == "unreachable" { ([op("unreachable")], cg) }
       else if n == "array_get" || n == "array_set" || n == "array_push" { (append(args, [call(n ++ ":" ++ tkey(elem))]), array_fns(g, cg, elem)) }
       else { panic("internal error: builtin " ++ n) }
     }
@@ -2836,4 +2736,108 @@ fn compile(src) {
 fn main() {
   let bytes = compile(read_input());
   print(concat_strings(map(bytes, char_from_code)))
+}
+
+// The prelude, the same source as the reference compiler's (src/prelude.js).
+fn prelude_source() {
+  cat([
+    "type Option<a> { None, Some(a) }\n",
+    "type Result<a, e> { Ok(a), Err(e) }\n",
+    "type List<a> { Nil, Cons(a, List<a>) }\n",
+    "\n",
+    "trait Ord { fn compare(a: Self, b: Self) -> Int }\n",
+    "trait Show { fn show(x: Self) -> String }\n",
+    "\n",
+    "impl Show for Int { fn show(n) { int_to_string(n) } }\n",
+    "impl Show for String { fn show(s) { \"\\\"\" ++ s ++ \"\\\"\" } }\n",
+    "impl Show for Bool { fn show(b) { if b { \"true\" } else { \"false\" } } }\n",
+    "impl Show for () { fn show(u) { \"()\" } }\n",
+    "impl Show for List<a> where a: Show { fn show(xs) { \"[\" ++ join(map(xs, show), \", \") ++ \"]\" } }\n",
+    "impl Show for Array<a> where a: Show { fn show(xs) { \"#\" ++ show(array_to_list(xs)) } }\n",
+    "impl Show for (a, b) where a: Show, b: Show {\n",
+    "  fn show(p) { match p { (x, y) -> \"(\" ++ show(x) ++ \", \" ++ show(y) ++ \")\" } }\n",
+    "}\n",
+    "impl Show for (a, b, c) where a: Show, b: Show, c: Show {\n",
+    "  fn show(p) { match p { (x, y, z) -> \"(\" ++ show(x) ++ \", \" ++ show(y) ++ \", \" ++ show(z) ++ \")\" } }\n",
+    "}\n",
+    "impl Show for (a, b, c, d) where a: Show, b: Show, c: Show, d: Show {\n",
+    "  fn show(p) { match p { (x, y, z, w) -> \"(\" ++ show(x) ++ \", \" ++ show(y) ++ \", \" ++ show(z) ++ \", \" ++ show(w) ++ \")\" } }\n",
+    "}\n",
+    "\n",
+    "fn fold(xs, acc, f) {\n",
+    "  match xs { [] -> acc, [x, ..rest] -> fold(rest, f(acc, x), f) }\n",
+    "}\n",
+    "fn rev_append(xs, ys) {\n",
+    "  match xs { [] -> ys, [x, ..rest] -> rev_append(rest, [x, ..ys]) }\n",
+    "}\n",
+    "fn reverse(xs) { rev_append(xs, []) }\n",
+    "fn append(xs, ys) { rev_append(reverse(xs), ys) }\n",
+    "fn map(xs, f) { reverse(fold(xs, [], |acc, x| [f(x), ..acc])) }\n",
+    "fn filter(xs, keep) { reverse(fold(xs, [], |acc, x| if keep(x) { [x, ..acc] } else { acc })) }\n",
+    "fn flat_map(xs, f) { reverse(fold(xs, [], |acc, x| rev_append(f(x), acc))) }\n",
+    "fn concat(xss) { flat_map(xss, |xs| xs) }\n",
+    "fn each(xs, f) {\n",
+    "  match xs { [] -> (), [x, ..rest] -> { f(x); each(rest, f) } }\n",
+    "}\n",
+    "fn length(xs) { fold(xs, 0, |n, _| n + 1) }\n",
+    "fn sum(xs) { fold(xs, 0, |a, x| a + x) }\n",
+    "fn is_empty(xs) { match xs { [] -> true, _ -> false } }\n",
+    "fn range(lo, hi) {\n",
+    "  fn go(i, acc) { if i < lo { acc } else { go(i - 1, [i, ..acc]) } }\n",
+    "  go(hi - 1, [])\n",
+    "}\n",
+    "fn any(xs, p) { match xs { [] -> false, [x, ..rest] -> if p(x) { true } else { any(rest, p) } } }\n",
+    "fn all(xs, p) { match xs { [] -> true, [x, ..rest] -> if p(x) { all(rest, p) } else { false } } }\n",
+    "fn contains(xs, y) { any(xs, |x| x == y) }\n",
+    "fn find(xs, p) { match xs { [] -> None, [x, ..rest] -> if p(x) { Some(x) } else { find(rest, p) } } }\n",
+    "fn head(xs) { match xs { [] -> None, [x, .._] -> Some(x) } }\n",
+    "fn nth(xs, n) { match xs { [] -> None, [x, ..rest] -> if n == 0 { Some(x) } else { nth(rest, n - 1) } } }\n",
+    "fn take(xs, n) {\n",
+    "  fn go(xs, n, acc) { match xs { [] -> reverse(acc), [x, ..rest] -> if n <= 0 { reverse(acc) } else { go(rest, n - 1, [x, ..acc]) } } }\n",
+    "  go(xs, n, [])\n",
+    "}\n",
+    "fn drop(xs, n) { match xs { [] -> [], [_, ..rest] -> if n <= 0 { xs } else { drop(rest, n - 1) } } }\n",
+    "fn zip(xs, ys) {\n",
+    "  fn go(xs, ys, acc) {\n",
+    "    match (xs, ys) { ([x, ..xr], [y, ..yr]) -> go(xr, yr, [(x, y), ..acc]), _ -> reverse(acc) }\n",
+    "  }\n",
+    "  go(xs, ys, [])\n",
+    "}\n",
+    "fn min(a, b) { if a <= b { a } else { b } }\n",
+    "fn max(a, b) { if a >= b { a } else { b } }\n",
+    "fn abs(n) { if n < 0 { 0 - n } else { n } }\n",
+    "fn unwrap_or(o, default) { match o { Some(x) -> x, None -> default } }\n",
+    "fn map_option(o, f) { match o { Some(x) -> Some(f(x)), None -> None } }\n",
+    "fn sort_by(xs, less) {\n",
+    "  fn merge(xs, ys, acc) {\n",
+    "    match (xs, ys) {\n",
+    "      ([], _) -> rev_append(acc, ys),\n",
+    "      (_, []) -> rev_append(acc, xs),\n",
+    "      ([x, ..xr], [y, ..yr]) -> if less(y, x) { merge(xs, yr, [y, ..acc]) } else { merge(xr, ys, [x, ..acc]) },\n",
+    "    }\n",
+    "  }\n",
+    "  fn split(xs, l, r) { match xs { [] -> (l, r), [x, ..rest] -> split(rest, r, [x, ..l]) } }\n",
+    "  fn go(xs) {\n",
+    "    match xs {\n",
+    "      [] -> [],\n",
+    "      [x] -> [x],\n",
+    "      _ -> { let (l, r) = split(xs, [], []); merge(go(l), go(r), []) },\n",
+    "    }\n",
+    "  }\n",
+    "  go(xs)\n",
+    "}\n",
+    "fn sort(xs) { sort_by(xs, |a, b| a < b) }\n",
+    "fn intersperse(xs, sep) {\n",
+    "  match xs { [] -> [], [x, ..rest] -> reverse(fold(rest, [x], |acc, y| [y, sep, ..acc])) }\n",
+    "}\n",
+    "fn join(xs, sep) { concat_strings(intersperse(xs, sep)) }\n",
+    "fn show_list(xs, show) { \"[\" ++ join(map(xs, show), \", \") ++ \"]\" }\n",
+    "fn repeat_string(s, n) { if n <= 0 { \"\" } else { s ++ repeat_string(s, n - 1) } }\n",
+    "fn array_from_list(xs) { fold(xs, array_empty(), |a, x| array_push(a, x)) }\n",
+    "// Pure: the refinement on i lets the checker prove every array_get in bounds.\n",
+    "fn array_to_list(a) {\n",
+    "  fn go(i: {i: Int | i < array_length(a)}, acc) { if i < 0 { acc } else { go(i - 1, [array_get(a, i), ..acc]) } }\n",
+    "  go(array_length(a) - 1, [])\n",
+    "}\n",
+  ])
 }
