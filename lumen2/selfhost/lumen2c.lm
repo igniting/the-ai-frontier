@@ -1365,6 +1365,9 @@ fn lower_tail(c, l, e) {
       let (r, l) = lower_tail(c2, l, result);
       (wrap(bs, r), l)
     }
+    // In tail position, the right operand of && and || is itself in tail position.
+    EBin(id, "&&", a, b) -> lower_tail(c, l, EIf(id, a, b, EBool(id, false))),
+    EBin(id, "||", a, b) -> lower_tail(c, l, EIf(id, a, EBool(id, true), b)),
     _ -> { let (bs, r, l) = lower_rhs(c, l, e, []); (wrap(bs, IRet(r)), l) },
   }
 }

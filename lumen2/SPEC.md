@@ -290,7 +290,14 @@ refined.
   guards;
 - refined parameters, and the refined results of functions called;
 - the success of every partial operation already performed on the path:
-  after `array_get(a, i)` returns, `i` is in bounds.
+  after `array_get(a, i)` returns, `i` is in bounds;
+- the quotient and remainder of division by a constant `c >= 1`: `x / c` is
+  the `q` with `x = c * q + r`, where `0 <= r < c` when `x >= 0` and
+  `-c < r <= 0` otherwise, and `x % c` is that `r`;
+- after an `if` or `match`, what one of its branches learned: since one of
+  them ran to its end, the disjunction of the facts each one added (its
+  conditions, the refined results of its calls, its partial operations)
+  holds afterwards.
 
 Values never change, so a fact about a variable holds wherever the variable
 is visible, including inside closures created on that path.
@@ -459,8 +466,9 @@ the compiler checks them, and so does the test suite.
   the new value reuses the old cell (Perceus reuse). So `reverse` of a list
   that is not used again, or inserting into a tree held only once, allocates
   nothing new.
-- **Constant stack** for tail calls, for freeing long lists and for comparing
-  long lists.
+- **Constant stack** for tail calls (including a call that is the right
+  operand of `&&` or `||` in tail position), for freeing long lists and for
+  comparing long lists.
 - **Certified passes.** Every compile checks the compiler's own output with
   independent checkers, and refuses to produce code if one rejects it:
   - the monomorphic IR is type-checked instruction by instruction;

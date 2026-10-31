@@ -1,0 +1,64 @@
+// Plugins whose safety is a type.
+//
+// The host runs a pipeline of text plugins. Its type for a plugin,
+// `fn(String) -> String`, has no effects. So a plugin cannot print, read
+// input, read the clock, use random numbers, or stop with an error, and
+// that is checked when the program is compiled, not watched while it runs.
+// Even "cannot fail" is proved: `upper` and `initials` read characters by
+// index, and the checker proves each read in bounds.
+//
+// Uncomment any of the three plugins at the bottom of `plugins()`, and the
+// compiler refuses the plugin list and names the effect that does not fit:
+//   - `spy` prints what it is given (`output`);
+//   - `coin` behaves differently from run to run (`random`);
+//   - `first_letter` fails on the empty string (`fail`).
+
+fn upper(s) {
+  fn go(i: {i: Int | 0 <= i}, acc) {
+    if i >= string_length(s) { concat_strings(reverse(acc)) }
+    else {
+      let c = char_code_at(s, i);
+      go(i + 1, [char_from_code(if c >= 97 && c <= 122 { c - 32 } else { c }), ..acc])
+    }
+  }
+  go(0, [])
+}
+
+// The first letter of each word.
+fn initials(s) {
+  fn go(i: {i: Int | 0 <= i}, start, acc) {
+    if i >= string_length(s) { concat_strings(reverse(acc)) }
+    else {
+      let c = char_code_at(s, i);
+      if c == 32 { go(i + 1, true, acc) } else if start { go(i + 1, false, [char_from_code(c), ..acc]) } else { go(i + 1, false, acc) }
+    }
+  }
+  go(0, true, [])
+}
+
+fn exclaim(s) { s ++ "!" }
+
+fn spy(s) { println("leaked: " ++ s); s }
+fn coin(s) { if random_int(0, 1) == 0 { s } else { "" } }
+fn first_letter(s) { char_from_code(char_code_at(s, 0)) }
+
+// The host: whatever the plugins are, running them has no effects.
+fn run(plugins: List<(String, fn(String) -> String)>, text: String) -> String {
+  fold(plugins, text, |t, p| match p { (_, f) -> f(t) })
+}
+
+fn plugins() -> List<(String, fn(String) -> String)> {
+  [
+    ("initials", initials),
+    ("upper", upper),
+    ("exclaim", exclaim),
+    // ("spy", spy),
+    // ("coin", coin),
+    // ("first letter", first_letter),
+  ]
+}
+
+fn main() {
+  let text = "portable network graphics";
+  println(join(map(plugins(), |p| match p { (name, _) -> name }), " -> ") ++ ": " ++ run(plugins(), text))
+}

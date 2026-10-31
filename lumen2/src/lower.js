@@ -215,6 +215,11 @@ export function lowerProgram(program, { mutant = null } = {}) {
       case 'if': return lowerValue(e.cond, ctx, (c) => ({ k: 'if', c, t: lowerTail(e.then, ctx), e: e.else ? lowerTail(e.else, ctx) : ret({ k: 'unit' }) }));
       case 'match': return lowerValue(e.scrut, ctx, (x) => lowerMatch(e, x, ctx));
       case 'call': return lowerCall(e, ctx, (rhs) => ({ k: 'ret', rhs }));
+      // In tail position, the right operand of && and || is itself in tail position.
+      case 'binop':
+        if (e.op === '&&') return lowerValue(e.l, ctx, (l) => ({ k: 'if', c: l, t: lowerTail(e.r, ctx), e: ret({ k: 'bool', b: false }) }));
+        if (e.op === '||') return lowerValue(e.l, ctx, (l) => ({ k: 'if', c: l, t: ret({ k: 'bool', b: true }), e: lowerTail(e.r, ctx) }));
+        return lowerValue(e, ctx, ret);
       default: return lowerValue(e, ctx, ret);
     }
   }

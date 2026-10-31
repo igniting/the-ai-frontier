@@ -50,7 +50,9 @@ design with its own compiler, interpreter, spec and fuzzer, and shares no
 code with Lumen. A SAT solver written in Lumen 2 proves S(4) = 44 too,
 printing the same 255,663-step refutation as Lumen's solver, byte for
 byte, and a Lumen 2 compiler written in Lumen 2 compiles itself to a fixed
-point. It has its own
+point. Its [showcase](lumen2/README.md#showcase) has a heapsort that is pure,
+sorts a million numbers in place with 106 allocations, and is proved unable
+to fail. It has its own
 [playground](https://igniting.github.io/the-ai-frontier/lumen2/playground.html),
 and [Part five of the story](https://igniting.github.io/the-ai-frontier/#lumen2)
 explains it.

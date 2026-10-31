@@ -19,6 +19,10 @@ function schurCnf(k, n) {
 }
 
 const EXAMPLES = [
+  { id: 'heapsort', name: '★ A pure heapsort, in place and proved', file: 'examples/showcase/heapsort.lm', note: 'Every function returns a new array, yet sorting a million numbers allocates the array once: run it and look at Allocations. Every access is proved in bounds, so not even main has fail (Types tab). Proving takes a few seconds.' },
+  { id: 'search', name: '★ Binary search with no run-time checks', file: 'examples/showcase/search.lm', note: 'The invariant is in the parameter types and every access is proved. Write n - half instead of n - half - 1 and the checker shows a counterexample. Proving takes a few seconds.' },
+  { id: 'plugins', name: '★ Plugins whose safety is a type', file: 'examples/showcase/plugins.lm', note: 'A plugin must be fn(String) -> String: no output, no randomness, no failure. Uncomment spy, coin or first_letter and the compiler refuses it.' },
+  { id: 'intervals', name: '★ A subtle bug, found by a property', file: 'examples/showcase/intervals.lm', note: 'Open Properties and test them: merge loses points when one interval lies inside another, and the counterexample is shrunk to two intervals.' },
   { id: 'tour', name: 'A tour', file: 'examples/tour.lm', note: 'Types and effects are inferred; see the Types tab. The last line overflows on purpose: 64-bit integers never wrap silently.' },
   { id: 'refine', name: 'Proved array accesses', file: 'examples/refine.lm', note: 'Open the Proofs tab. Change < to <= in safe_get and the access can fail again: the checker shows a counterexample.' },
   { id: 'traits', name: 'Traits: Ord, Show and your own', file: 'examples/traits.lm' },
@@ -290,3 +294,5 @@ async function load(id) {
 }
 select.addEventListener('change', () => { history.replaceState(null, '', `#${select.value}`); load(select.value); });
 load(location.hash.slice(1) || 'tour');
+// A link to another example (…/playground.html#search) on an open page.
+addEventListener('hashchange', () => { if (location.hash.slice(1) !== select.value) load(location.hash.slice(1)); });

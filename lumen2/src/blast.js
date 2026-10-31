@@ -55,6 +55,7 @@ export const boolAtom = (id) => ({ k: 'bvar', id });
 function atomsOf(f, out = new Set()) {
   switch (f.k) {
     case 'lt': case 'le': case 'eq': for (const id of f.t.coeffs.keys()) out.add(id); break;
+    case 'divpow2': out.add(f.q); for (const id of f.t.coeffs.keys()) out.add(id); break;
     case 'bvar': out.add(f.id); break;
     case 'and': case 'or': atomsOf(f.a, out); atomsOf(f.b, out); break;
     case 'not': atomsOf(f.a, out); break;
@@ -93,6 +94,7 @@ export function prove(atoms, facts, goal, { mutant = null, maxConflicts = 100000
     switch (f.k) {
       case 'lt': case 'le': case 'eq': return `${f.k}(${[...f.t.coeffs].map(([id, k]) => `${k}*${name(id)}`).join('+')}+${f.t.c})`;
       case 'bvar': return `b${name(f.id)}`;
+      case 'divpow2': return `div${f.s}(${name(f.q)},${[...f.t.coeffs].map(([id, k]) => `${k}*${name(id)}`).join('+')}+${f.t.c})`;
       case 'and': case 'or': return `${f.k}(${ser(f.a)},${ser(f.b)})`;
       case 'not': return `!${ser(f.a)}`;
       default: return f.k;
@@ -121,7 +123,7 @@ export function prove(atoms, facts, goal, { mutant = null, maxConflicts = 100000
   let bound = 1n;
   const visitTerms = (f) => {
     switch (f.k) {
-      case 'lt': case 'le': case 'eq': {
+      case 'lt': case 'le': case 'eq': case 'divpow2': {
         let b = abs(f.t.c);
         for (const [id, k] of f.t.coeffs) b += abs(k) * mag(id);
         if (b > bound) bound = b;
@@ -166,6 +168,16 @@ export function prove(atoms, facts, goal, { mutant = null, maxConflicts = 100000
       case 'le': { const b = termBits(f.t); return enc.or(enc.sign(b), enc.isZero(b)); }
       case 'eq': return enc.isZero(termBits(f.t));
       case 'bvar': return bitsOf(f.id);
+      case 'divpow2': {
+        // q == x / 2^s, truncating: shift |x| right, then restore the sign.
+        // A circuit that computes q, so the solver has nothing to search for.
+        const x = termBits(f.t);
+        const neg = enc.sign(x);
+        const ax = enc.add(x.map((b) => enc.xor(b, neg)), enc.constant(0n), neg);
+        const aq = [...ax.slice(f.s), ...Array(f.s).fill(-enc.T)];
+        const q = enc.add(aq.map((b) => enc.xor(b, neg)), enc.constant(0n), neg);
+        return bitsOf(f.q).reduce((acc, b, i) => enc.and(acc, -enc.xor(b, q[i])), enc.T);
+      }
       case 'and': return enc.and(formula(f.a), formula(f.b));
       case 'or': return enc.or(formula(f.a), formula(f.b));
       case 'not': return -formula(f.a);

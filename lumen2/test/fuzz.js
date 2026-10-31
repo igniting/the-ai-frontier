@@ -267,6 +267,9 @@ export function generate(seed) {
       () => `safe_div(${g(T.int)}, ${pick(['2', '7', '-3', '1'])})`,
       () => `{ let ${a} = ${g(T.arr)}; if array_length(${a}) > 0 { array_get(${a}, clamp_index(${g(T.int)}, array_length(${a}))) } else { 0 } }`,
       () => `array_length(array_make(clamp_index(${g(T.int)}, 5), ${g(T.int)}))`,
+      // Remainders and quotients by constants: the checker knows their range.
+      () => { const c = pick([3, 4, 5]), dv = pick([c, c + 1]); return `{ let ${a} = array_make(${c}, ${g(T.int)}); let ${i} = ${pick([`${c}`, `${2 * c + 1}`, g(T.int)])}; if ${i} >= 0 { array_get(${a}, ${i} % ${dv}) } else { -2 } }`; },
+      () => { const c = pick([3, 4, 5]); return `{ let ${a} = array_make(${c}, ${g(T.int)}); let ${i} = ${g(T.int)}; if ${i} >= 0 && ${i} < ${pick([2 * c, 2 * c + 1])} { array_get(${a}, ${i} / 2) } else { -3 } }`; },
     ])();
   }
 
@@ -404,6 +407,7 @@ export const MUTANTS = [
   'unpack-always-unique', // move the fields out of a cell even when it is shared
   'mul-const-bound', // an off-by-one in the overflow bound for multiplying by a constant
   'superopt-ignore-when', // apply the superoptimizer's rewrite rules without checking their side conditions
+  'refine-div-range', // a remainder range one too narrow in the checker's model of division by a constant
 ];
 
 function main() {

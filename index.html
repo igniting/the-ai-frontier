@@ -1859,6 +1859,13 @@ fn main() {
   If a proof were wrong, the two would disagree on some program, and the fuzzer would see it. Two of the planted
   bugs in chapter 18 test exactly this: a checker that assumes an <code>if</code>'s condition in its
   <code>else</code> branch too, and an adder circuit that drops its carry. The run-time re-check catches both.</p>
+  <p>How far does this go? The playground's
+  <a href="lumen2/playground.html#heapsort">heapsort</a> is a complete program that the checker proves cannot
+  stop with an error. Its types state each index's range and that every function returns an array of the same
+  length, and even <code>main</code> ends up with no <code>fail</code> in its type. It is also pure, and it still
+  sorts a million numbers in place, with 106 allocations in the whole run. Writing it taught the checker two
+  things: the range of a quotient or remainder by a constant, and keeping what a branch learned after the
+  branch ends.</p>
   <p>The checker has clear limits. Its facts are linear arithmetic over integers and array lengths. It knows
   nothing about list lengths or array contents, and it never invents an invariant. In the SAT solver of chapter 19,
   it proves 19 of the 20 divisions safe, and all of the input parser's indexing. It does not prove the 27 accesses

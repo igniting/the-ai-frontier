@@ -36,7 +36,7 @@ function agrees(name, src, input = '') {
 
 test('its modules agree with the interpreter on the examples and the Schur programs', () => {
   const dir = new URL('../examples/', import.meta.url);
-  for (const f of readdirSync(dir)) if (f !== 'properties.lm') agrees(f, readFileSync(new URL(f, dir), 'utf8'));
+  for (const f of readdirSync(dir)) if (f.endsWith('.lm') && f !== 'properties.lm') agrees(f, readFileSync(new URL(f, dir), 'utf8'));
   const f = referenceEncoding(3, 14);
   const cnf = `p cnf ${f.numVars} ${f.clauses.length}\n${f.clauses.map((c) => `${c.join(' ')} 0`).join('\n')}\n`;
   agrees('sat.lm', readFileSync(new URL('../proofs/sat.lm', import.meta.url), 'utf8'), cnf);

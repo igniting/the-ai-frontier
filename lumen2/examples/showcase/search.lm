@@ -1,0 +1,47 @@
+// A binary search with no run-time checks, because each one is proved
+// unnecessary.
+//
+// The loop invariant is written in the parameter types: the search range is
+// [lo, lo + n), inside the array. The checker proves that every array_get is
+// in bounds, that every recursive call keeps the invariant, and that the
+// result is a valid position. So `lower_bound` and `member` have no `fail` in
+// their types (see `lumen2 check`), and each proof is a SAT refutation
+// checked by an independent checker. Proving them takes a few seconds.
+//
+// Try the classic mistakes:
+//   - in the first recursive call, write `n - half` instead of `n - half - 1`:
+//     the range can now run past the end, and the checker answers with a
+//     counterexample;
+//   - change `n == 0` to `n < 0`: an empty range can reach the access;
+//   - the midpoint cannot overflow, but if it could, Lumen 2 would stop the
+//     program instead of wrapping around. That wrap-around was the bug that
+//     sat in Java's library binary search for nine years.
+
+// The first position in [lo, lo + n) of sorted array `a` whose element is >= x.
+fn lower_bound(a: Array<Int>, x: Int, lo: {lo: Int | 0 <= lo}, n: {n: Int | 0 <= n && lo + n <= array_length(a)}) -> {r: Int | 0 <= r && r <= array_length(a)} {
+  if n == 0 { lo }
+  else {
+    let half = n / 2;
+    let mid = lo + half;
+    if array_get(a, mid) < x { lower_bound(a, x, mid + 1, n - half - 1) } else { lower_bound(a, x, lo, half) }
+  }
+}
+
+fn member(a, x) {
+  let i = lower_bound(a, x, 0, array_length(a));
+  i < array_length(a) && array_get(a, i) == x
+}
+
+// The multiples of 3 below 3n, in order.
+fn multiples(n) {
+  fn go(a, i) { if i >= n { a } else { go(array_push(a, 3 * i), i + 1) } }
+  go(array_empty(), 0)
+}
+
+fn main() {
+  let n = 1000000;
+  let a = multiples(n);
+  // Look up every number below 3n: a third of them are there.
+  fn count(x, found) { if x >= 3 * n { found } else { count(x + 1, if member(a, x) { found + 1 } else { found }) } }
+  println("found " ++ show(count(0, 0)) ++ " of " ++ show(3 * n) ++ " numbers among " ++ show(array_length(a)))
+}

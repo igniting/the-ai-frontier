@@ -14,7 +14,7 @@ const here = (p) => new URL(p, import.meta.url);
 // generator emits on its own.
 export function compileCorpus({ fuzz = 60 } = {}) {
   const sources = [];
-  for (const f of readdirSync(here('../examples'))) sources.push({ name: `examples/${f}`, src: readFileSync(here(`../examples/${f}`), 'utf8') });
+  for (const f of readdirSync(here('../examples')).filter((x) => x.endsWith('.lm'))) sources.push({ name: `examples/${f}`, src: readFileSync(here(`../examples/${f}`), 'utf8') });
   for (const f of ['sat.lm', 'schur.lm']) sources.push({ name: `proofs/${f}`, src: readFileSync(here(`../proofs/${f}`), 'utf8') });
   for (let seed = 1; seed <= fuzz; seed++) sources.push({ name: `fuzz:${seed}`, src: generate(seed) });
   const modules = [];

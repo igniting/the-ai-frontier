@@ -50,7 +50,7 @@ counting, property tests and certificates, all in the browser) ·
 
 ```sh
 cd lumen2
-npm test                                         # 39 tests, about 40 s
+npm test                                         # 43 tests, about 50 s
 node bin/lumen2.js check examples/refine.lm      # inferred types, effects, refinements
 node bin/lumen2.js run examples/tour.lm          # compile to wasm and run
 node bin/lumen2.js test examples/properties.lm   # check the properties
@@ -66,6 +66,55 @@ node selfhost/bootstrap.js                       # the self-hosting fixed point 
 ```
 
 Requires Node.js 22 or later. There are no dependencies.
+
+## Showcase
+
+Four programs in [`examples/showcase`](examples/showcase), each making a
+claim that the tests check (`test/showcase.test.js`). All of them are also in
+the [playground](https://igniting.github.io/the-ai-frontier/lumen2/playground.html),
+marked with a star.
+
+- **[`heapsort.lm`](examples/showcase/heapsort.lm): pure, in place, and
+  proved.** Every function returns a new array; no line mutates anything.
+  Yet sorting a million numbers allocates the array once and never copies
+  it: 106 allocations in the whole run, in about 0.4 s. The same heapsort in
+  the original Lumen, which mutates its array, takes 1.0 s (0.44 s with
+  `-O`), and hand-written JavaScript about 0.25 s for the sort alone.
+  Refinement types state each index's range and that every function
+  returns an array of the same length, and the checker proves every access
+  in bounds. No function has `fail` in its type, not even `main`
+  (`fn() -> () ! output`): this program cannot stop with an error, short of
+  running out of memory.
+- **[`search.lm`](examples/showcase/search.lm): a binary search with no
+  run-time checks.** The loop invariant is in the parameter types, and three
+  million lookups in a million-element array take about 0.3 s, with 30
+  allocations. Change `n - half - 1` to `n - half` and the checker refuses
+  the program with a counterexample: `array_length(a) = 16, lo = 13, n = 3`.
+- **[`plugins.lm`](examples/showcase/plugins.lm): plugins whose safety is a
+  type.** The host takes plugins of type `fn(String) -> String`, which has
+  no effects. A plugin that prints, uses randomness, or can fail (reading
+  the first character of a possibly empty string) is a compile error that
+  names the effect. The plugins that are accepted read characters by index,
+  and those reads are proved in bounds.
+- **[`intervals.lm`](examples/showcase/intervals.lm): a subtle bug, found
+  by a property.** An interval merge that looks right fails when one
+  interval lies inside another. `lumen2 test` finds it and shrinks the
+  failure to two intervals, `[(0, -2), (-1, -1)]` with `x = 0`, and the
+  compiled code agrees. The one-word fix passes.
+
+Two larger programs show the same ideas at scale: the
+[SAT solver](proofs/sat.lm) that proves S(4) = 44 without mutation, at the
+speed of Lumen's imperative solver and with the same proof byte for byte,
+and the [self-hosted compiler](selfhost/lumen2c.lm), which reaches a fixed
+point in under a second. Both are described below.
+
+Writing these programs improved the checker. It now knows the range of a
+quotient or remainder by a constant (a power of two is encoded as a shift
+circuit, which made the binary search's proofs about ten times faster),
+and what a branch learned survives the end of an `if` or `match`, so a
+refined result can come from a recursive call in a branch. The compilers
+also make a call that ends `a && f(x)` or `a || f(x)` a tail call; before,
+`is_sorted` on a million elements overflowed the stack.
 
 ## A taste
 
@@ -535,7 +584,9 @@ itself and earlier local functions, but local functions cannot be mutually
 recursive.
 
 Refinement predicates are linear integer arithmetic over variables and
-lengths. The checker does not infer loop invariants: a recursive function
+lengths; the checker also knows division and remainder by constants. Hard
+arithmetic obligations take a few seconds: the binary search showcase takes
+about 4 s to check. The checker does not infer loop invariants: a recursive function
 needs a refined parameter to carry one. It knows nothing about list lengths
 or array contents. A function with refined parameters cannot be passed as a
 value. Proofs run at a width of about 66 bits, and a hard obligation can

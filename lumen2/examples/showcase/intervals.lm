@@ -1,0 +1,41 @@
+// A subtle bug, found and shrunk by a property.
+//
+// `merge` sorts intervals and joins the ones that overlap. It looks right,
+// and it is right on every example you are likely to try by hand. But when
+// one interval lies inside another, it keeps the inner interval's end and
+// loses the rest of the outer one.
+//
+// The property says what merging must preserve: a point is covered before
+// exactly when it is covered after. `lumen2 test` generates inputs, finds a
+// failure, and shrinks it to the smallest one, which here is a single
+// interval nested in another. It also replays every case in compiled code,
+// which must agree with the interpreter. In the playground: Properties, then
+// "Test the properties".
+//
+// The fix is one word: `(cs, e)` should be `(cs, max(ce, e))`.
+
+// An interval from lo to hi, inclusive; written either way round.
+fn ordered(iv) { match iv { (a, b) -> if a <= b { (a, b) } else { (b, a) } } }
+
+fn merge(ivs) {
+  fn go(xs, cur, acc) {
+    match (xs, cur) {
+      ([], None) -> reverse(acc),
+      ([], Some(c)) -> reverse([c, ..acc]),
+      ([(s, e), ..rest], None) -> go(rest, Some((s, e)), acc),
+      ([(s, e), ..rest], Some((cs, ce))) -> if s <= ce { go(rest, Some((cs, e)), acc) } else { go(rest, Some((s, e)), [(cs, ce), ..acc]) },
+    }
+  }
+  go(sort(map(ivs, ordered)), None, [])
+}
+
+fn covered(ivs, x) { any(map(ivs, ordered), |iv| match iv { (a, b) -> a <= x && x <= b }) }
+fn disjoint(ivs) { match ivs { [(_, e1), (s2, e2), ..rest] -> e1 < s2 && disjoint([(s2, e2), ..rest]), _ -> true } }
+
+property merge_keeps_points(ivs: List<(Int, Int)>, x: Int) { covered(ivs, x) == covered(merge(ivs), x) }
+property merge_is_disjoint(ivs: List<(Int, Int)>) { disjoint(merge(ivs)) }
+
+fn main() {
+  let ivs = [(1, 3), (2, 6), (8, 10), (15, 18)];
+  println(show(merge(ivs)))
+}

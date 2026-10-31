@@ -88,6 +88,17 @@ export function verify(program, sources, { mutant = null, keepProofs = false, in
     return r;
   }
 
+  // After a branch, one of the arms ran to its end, so what that arm learned
+  // holds afterwards: its conditions, the refined results of its calls, the
+  // partial operations it passed. (An arm that cannot finish, such as a
+  // panic, learned false.) This stays on the current path, unlike `defs`.
+  function learnFrom(st, arms) {
+    const base = st.facts.length;
+    const learned = arms.map((a) => a.facts.slice(base));
+    if (learned.some((fs) => !fs.length)) return;
+    st.facts.push(learned.map((fs) => fs.reduce((x, y) => and(x, y))).reduce((x, y) => or(x, y)));
+  }
+
   // Records an obligation and tries to prove it. Afterwards the goal holds on this path.
   function oblige(kind, goal, st, info) {
     const o = { kind, scope, ...info };
@@ -203,12 +214,14 @@ export function verify(program, sources, { mutant = null, keepProofs = false, in
         if (c) { yes.facts.push(c); no.facts.push(mutant === 'refine-else-same' ? c : not(c)); }
         const a = sym(e.then, yes);
         const b = e.else ? sym(e.else, no) : null;
-        return merge(e.ty, [{ c, v: a }, { c: c ? not(c) : null, v: b }], 'if');
+        const r = merge(e.ty, [{ c, v: a }, { c: c ? not(c) : null, v: b }], 'if');
+        learnFrom(st, [yes, no]);
+        return r;
       }
       case 'match': {
         const s = sym(e.scrut, st);
         const before = []; // negations of earlier literal arms
-        const alts = [];
+        const alts = [], armStates = [];
         for (const arm of e.arms) {
           const a = { facts: [...st.facts, ...before] };
           let litFact = null;
@@ -218,9 +231,12 @@ export function verify(program, sources, { mutant = null, keepProofs = false, in
           if (arm.pat.k === 'pvar') env.set(arm.pat.id, s);
           if (arm.guard) { const g = boolOf(sym(arm.guard, a)); if (g) a.facts.push(g); }
           alts.push({ c: null, v: sym(arm.body, a) });
+          armStates.push(a);
           if (litFact && !arm.guard) before.push(not(litFact));
         }
-        return merge(e.ty, alts, 'match');
+        const r = merge(e.ty, alts, 'match');
+        learnFrom(st, armStates);
+        return r;
       }
       case 'call': return call(e, st);
       default: return null;
@@ -249,6 +265,26 @@ export function verify(program, sources, { mutant = null, keepProofs = false, in
       case '/': case '%': {
         const d = intOf(r);
         partial(e, d ? not(compare('==', d, konst(0))) : null, st, 'the divisor is not zero');
+        // By a constant c >= 1, division truncates towards zero: x = c*q + rem,
+        // with 0 <= rem <= c-1 when x >= 0 and 1-c <= rem <= 0 when x < 0. For
+        // every x exactly one q satisfies this, and it fits in an Int, so the
+        // definition constrains nothing else and holds everywhere.
+        // For a power of two the quotient is a shift, given to the solver as a circuit.
+        const x = intOf(l);
+        if (x && d && isConst(d) && d.c >= 1n) {
+          const id = newAtom(e.op);
+          const q = { k: 'int', t: atomTerm(id) };
+          const rem = subTerms(x, scaleTerm(q.t, d.c));
+          const shift = d.c.toString(2).length - 1;
+          if (d.c === 1n << BigInt(shift)) defs.push({ k: 'divpow2', q: id, t: x, s: shift });
+          else {
+            const nonneg = compare('>=', x, konst(0));
+            const hi = mutant === 'refine-div-range' ? d.c - 2n : d.c - 1n;
+            defs.push(or(and(nonneg, and(compare('>=', rem, konst(0)), compare('<=', rem, konst(hi)))),
+              and(not(nonneg), and(compare('<=', rem, konst(0)), compare('>=', rem, konst(-hi))))));
+          }
+          return e.op === '/' ? q : { k: 'int', t: rem };
+        }
         return fresh(e.ty, e.op);
       }
       case '++': return lenOf(l) && lenOf(r) ? { k: 'len', t: addTerms(l.t, r.t) } : fresh(e.ty, '++');

@@ -1,0 +1,70 @@
+// A heapsort that is pure, sorts in place, and is proved free of bounds
+// errors.
+//
+// Pure: arrays are values. `array_set(a, i, x)` returns an array and never
+// changes the one it is given, so every function here returns a new array.
+//
+// In place: the compiler counts references, and an array that nothing else
+// refers to is updated in place. Sorting a million numbers allocates the
+// array once and never copies it. In the playground, Allocations shows a
+// handful in total, against a million elements.
+//
+// Proved: the refinement types say what each index is allowed to be, and
+// that every function returns an array of the same length. The checker
+// proves every array access in bounds, so no function here has `fail` in its
+// type, not even `main` (see `lumen2 check`), and each proof is checked by an
+// independent checker. This program cannot stop with an error (short of
+// running out of memory).
+//
+// At the end, `small` is still used after it is sorted, so the first swap
+// copies it once and every later swap updates the copy in place. The
+// original is unchanged, and the source code says nothing about which case
+// is which.
+
+fn swap(a: Array<Int>, i: {i: Int | 0 <= i && i < array_length(a)}, j: {j: Int | 0 <= j && j < array_length(a)}) -> {b: Array<Int> | array_length(b) == array_length(a)} {
+  let x = array_get(a, i);
+  let y = array_get(a, j);
+  array_set(array_set(a, i, y), j, x)
+}
+
+// Moves a[i] down the heap formed by a[0..n) until its children are smaller.
+fn sift(a: Array<Int>, i: {i: Int | 0 <= i}, n: {n: Int | n <= array_length(a)}) -> {b: Array<Int> | array_length(b) == array_length(a)} {
+  let l = 2 * i + 1;
+  if l >= n { a }
+  else {
+    let r = l + 1;
+    let c = if r < n && array_get(a, r) > array_get(a, l) { r } else { l };
+    if array_get(a, c) > array_get(a, i) { sift(swap(a, i, c), c, n) } else { a }
+  }
+}
+
+// Turns the whole array into a max-heap, from the last parent backwards.
+fn heapify(a: Array<Int>, i: {i: Int | i < array_length(a)}) -> {b: Array<Int> | array_length(b) == array_length(a)} {
+  if i < 0 { a } else { heapify(sift(a, i, array_length(a)), i - 1) }
+}
+
+// Moves the largest of a[0..n) to position n - 1, n times.
+fn pop_all(a: Array<Int>, n: {n: Int | n <= array_length(a)}) -> {b: Array<Int> | array_length(b) == array_length(a)} {
+  if n <= 1 { a } else { pop_all(sift(swap(a, 0, n - 1), 0, n - 1), n - 1) }
+}
+
+fn heapsort(a: Array<Int>) -> {b: Array<Int> | array_length(b) == array_length(a)} {
+  pop_all(heapify(a, array_length(a) / 2 - 1), array_length(a))
+}
+
+// Pseudo-random numbers from a small linear congruential generator.
+fn fill(a: Array<Int>, i: {i: Int | 0 <= i}, x: Int) -> {b: Array<Int> | array_length(b) == array_length(a)} {
+  if i >= array_length(a) { a } else { fill(array_set(a, i, x), i + 1, (x * 75 + 74) % 65537) }
+}
+fn is_sorted(a: Array<Int>, i: {i: Int | 0 <= i}) -> Bool {
+  i + 1 >= array_length(a) || (array_get(a, i) <= array_get(a, i + 1) && is_sorted(a, i + 1))
+}
+
+fn main() {
+  let n = 1000000;
+  let a = heapsort(fill(array_make(n, 0), 0, 1));
+  println("sorted " ++ show(array_length(a)) ++ " numbers: " ++ show(is_sorted(a, 0)) ++ ", from " ++ show(array_get(a, 0)) ++ " to " ++ show(array_get(a, n - 1)));
+  let small = fill(array_make(8, 0), 0, 5);
+  let sorted = heapsort(small);
+  println(show(small) ++ " stays as it was; sorted: " ++ show(sorted))
+}
