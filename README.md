@@ -49,7 +49,10 @@ counting with in-place reuse instead of a garbage collector. It is a fresh
 design with its own compiler, interpreter, spec and fuzzer, and shares no
 code with Lumen. A SAT solver written in Lumen 2 proves S(4) = 44 too,
 printing the same 255,663-step refutation as Lumen's solver, byte for
-byte.
+byte. It has its own
+[playground](https://igniting.github.io/the-ai-frontier/lumen2/playground.html),
+and [Part five of the story](https://igniting.github.io/the-ai-frontier/#lumen2)
+explains it.
 
 Claude built this end to end in Claude Code, as a demonstration of
 long-horizon, self-verifying software engineering. The repository also

@@ -1,0 +1,30 @@
+// Memory without a garbage collector. Every object is freed when its last
+// reference goes, and a value nothing else refers to is updated in place.
+// The playground's Run tab counts allocations: build the tree, then insert
+// into it once more, and note that the insert allocates one node.
+
+type Tree { Leaf, Node(Tree, Int, Tree) }
+
+fn insert(t, x) {
+  match t {
+    Leaf -> Node(Leaf, x, Leaf),
+    Node(l, y, r) -> if x < y { Node(insert(l, x), y, r) } else if x > y { Node(l, y, insert(r, x)) } else { t },
+  }
+}
+fn size(t) { match t { Leaf -> 0, Node(l, _, r) -> size(l) + 1 + size(r) } }
+
+fn main() {
+  // 10,000 inserts into a tree held once: each one rebuilds the path in place.
+  let t = fold(range(0, 10000), Leaf, |t, i| insert(t, (i * 7919) % 10007));
+  println("tree of " ++ show(size(t)));
+  // Reversing a list that is not used again reuses its cells.
+  let xs = reverse(range(0, 100000));
+  println("list of " ++ show(length(xs)));
+  // Arrays are values, but a unique one is updated in place.
+  fn fill(a, i) { if i < array_length(a) { fill(array_set(a, i, i * i), i + 1) } else { a } }
+  let a = fill(array_make(100000, 0), 0);
+  println("last square " ++ show(array_get(a, 99999)));
+  // Keep the old version, and the update copies instead: values never change.
+  let b = array_set(a, 0, -1);
+  println(show(array_get(a, 0)) ++ " and " ++ show(array_get(b, 0)))
+}

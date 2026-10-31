@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lumen 2 Playground</title>
+<meta name="description" content="Lumen 2: a functional language whose types track effects, which proves its array accesses safe with checked SAT proofs, and which compiles to WebAssembly with no garbage collector. Everything runs in your browser.">
+<meta property="og:title" content="Lumen 2 Playground">
+<meta property="og:description" content="Effects and capabilities in types, refinement types proved with checked SAT certificates, traits, property tests, and Perceus reference counting instead of a garbage collector, all running in your browser.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b6e6e'/%3E%3Ctext x='16' y='23' font-family='Georgia,serif' font-size='20' font-style='italic' text-anchor='middle' fill='white'%3Ee%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap">
+<style>
+/* A one-screen workbench, like the Lumen playground: header and status strip
+   on top, editor and inspector side by side below. Stacks on phones. */
+:root {
+  --bg: #f3f6f6; --surface: #ffffff; --sunken: #eaf0f0; --ink: #17201f; --muted: #5f6b6a; --line: #d9e3e2;
+  --accent: #0b6e6e; --accent-soft: #dff0ef; --on-accent: #ffffff;
+  --ok: #1d7f55; --ok-soft: #e1f3ea; --err: #c2373a; --err-soft: #fbe6e6; --warn: #9a6a12; --warn-soft: #fbf0d9;
+  --c-kw: #0b6e6e; --c-type: #9a2f83; --c-str: #a24a12; --c-num: #3b5bbf; --c-fn: #1d4f9c; --c-com: #8a9796; --c-op: #56615f;
+  --c-rc: #b4235f;
+  --font-ui: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-code: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --font-display: "Instrument Serif", "Iowan Old Style", Georgia, serif;
+  --code-size: 13px; --code-line: 20px; --radius: 6px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1514; --surface: #161e1d; --sunken: #121918; --ink: #e4eceb; --muted: #95a3a1; --line: #263231;
+    --accent: #5cc8c3; --accent-soft: #163331; --on-accent: #0c1312;
+    --ok: #5fd39c; --ok-soft: #173126; --err: #ff8a85; --err-soft: #3a1c1f; --warn: #f0c060; --warn-soft: #362c14;
+    --c-kw: #6fd5cf; --c-type: #ee93d8; --c-str: #f4a76f; --c-num: #9db4ff; --c-fn: #8cb8ff; --c-com: #6c7b79; --c-op: #a2b0ae; --c-rc: #ff8fb8;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1514; --surface: #161e1d; --sunken: #121918; --ink: #e4eceb; --muted: #95a3a1; --line: #263231;
+  --accent: #5cc8c3; --accent-soft: #163331; --on-accent: #0c1312;
+  --ok: #5fd39c; --ok-soft: #173126; --err: #ff8a85; --err-soft: #3a1c1f; --warn: #f0c060; --warn-soft: #362c14;
+  --c-kw: #6fd5cf; --c-type: #ee93d8; --c-str: #f4a76f; --c-num: #9db4ff; --c-fn: #8cb8ff; --c-com: #6c7b79; --c-op: #a2b0ae; --c-rc: #ff8fb8;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+[hidden] { display: none !important; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font-ui); font-size: 14px; line-height: 1.45;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.app { box-sizing: border-box; height: 100%; display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 10px; padding-block: 12px; max-width: 1680px; margin: 0 auto; }
+button, select, input, textarea { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 20px; }
+.brand { display: flex; align-items: baseline; gap: 12px; min-width: 0; flex-wrap: wrap; }
+.wordmark { font-family: var(--font-display); font-size: 30px; line-height: 1; letter-spacing: -0.01em; }
+.wordmark em { color: var(--accent); }
+.wordmark sup { font-family: var(--font-ui); font-size: 13px; font-weight: 600; color: var(--accent); margin-left: 2px; vertical-align: super; }
+.tagline { color: var(--muted); font-size: 13px; }
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+select {
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 6px 28px 6px 10px; max-width: 240px;
+  appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 15px) 52%, calc(100% - 10px) 52%; background-size: 5px 5px; background-repeat: no-repeat;
+}
+.caps { display: inline-flex; align-items: center; gap: 8px; padding: 3px 8px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.caps .lbl { font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); }
+.check { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 13px; cursor: pointer; user-select: none; }
+.check input { accent-color: var(--accent); margin: 0; }
+.check.fixed { opacity: 0.7; cursor: default; }
+.run { display: inline-flex; align-items: center; gap: 8px; border: 0; border-radius: var(--radius); padding: 7px 14px; background: var(--accent); color: var(--on-accent); font-weight: 600; cursor: pointer; }
+.run:hover { filter: brightness(1.08); }
+.run kbd { font-family: var(--font-code); font-size: 11px; opacity: 0.75; font-weight: 400; }
+.run.stop { background: var(--err); }
+.ghost { border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: var(--radius); padding: 6px 12px; font-size: 13px; cursor: pointer; }
+.ghost:hover { border-color: var(--muted); }
+.run:disabled, .ghost:disabled { opacity: 0.55; cursor: progress; }
+.source-link { color: var(--muted); font-size: 13px; text-decoration: none; padding: 6px 2px; }
+.source-link:hover { color: var(--accent); text-decoration: underline; }
+
+.strip { display: flex; flex-wrap: wrap; gap: 4px; }
+.cell { display: flex; flex-direction: column; gap: 1px; padding: 6px 10px; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--line); min-width: 0; }
+.cell .k { font-size: 10.5px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+.cell .v { font-family: var(--font-code); font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cell.good { border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); }
+.cell.good .v { color: var(--ok); }
+.cell.bad { border-color: var(--err); background: var(--err-soft); }
+.cell.bad .v { color: var(--err); }
+
+.split { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 10px; min-height: 0; }
+.pane { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
+.pane-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 12px; border-bottom: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
+.pane-head .file { font-family: var(--font-code); color: var(--ink); }
+.chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 2px 8px; border-radius: 99px; background: var(--sunken); color: var(--muted); white-space: nowrap; }
+.chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.chip.ok { background: var(--ok-soft); color: var(--ok); }
+.chip.err { background: var(--err-soft); color: var(--err); }
+.chip.warn { background: var(--warn-soft); color: var(--warn); }
+.note { padding: 7px 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12.5px; }
+
+.editor { flex: 1; display: grid; grid-template-columns: auto minmax(0, 1fr); min-height: 0; }
+.gutter { overflow: hidden; padding: 10px 8px 10px 12px; text-align: right; color: var(--c-com); font-family: var(--font-code); font-size: var(--code-size); line-height: var(--code-line); user-select: none; font-variant-numeric: tabular-nums; }
+.gutter div.bad { color: var(--err); font-weight: 500; }
+.code-wrap { position: relative; min-width: 0; min-height: 0; }
+.code-wrap pre, .code-wrap textarea {
+  position: absolute; inset: 0; margin: 0; padding: 10px 14px 10px 6px; border: 0; box-sizing: border-box;
+  font-family: var(--font-code); font-size: var(--code-size); line-height: var(--code-line); tab-size: 2;
+  white-space: pre; overflow-wrap: normal; letter-spacing: 0; font-variant-ligatures: none;
+}
+.code-wrap pre { overflow: hidden; pointer-events: none; color: var(--ink); }
+.code-wrap #marks { color: transparent; }
+.code-wrap textarea { overflow: auto; resize: none; background: transparent; color: transparent; caret-color: var(--ink); outline: none; }
+.code-wrap textarea::selection { background: color-mix(in srgb, var(--accent) 28%, transparent); color: transparent; }
+#marks mark { background: transparent; color: transparent; text-decoration: underline wavy var(--err); text-decoration-skip-ink: none; text-underline-offset: 4px; }
+#marks mark.warning { text-decoration-color: var(--warn); }
+.hk { color: var(--c-kw); font-weight: 500; } .ht { color: var(--c-type); } .hs { color: var(--c-str); } .hn { color: var(--c-num); }
+.hf { color: var(--c-fn); } .hc { color: var(--c-com); font-style: italic; } .ho { color: var(--c-op); } .hrc { color: var(--c-rc); font-weight: 500; }
+
+.tabs { display: flex; gap: 2px; padding: 4px 6px 0; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
+.tab { border: 0; background: none; padding: 7px 10px 8px; color: var(--muted); cursor: pointer; font-size: 13px; white-space: nowrap; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); font-weight: 500; }
+.tab .count { font-family: var(--font-code); font-size: 11px; color: var(--muted); margin-left: 4px; }
+.panels { flex: 1; min-height: 0; position: relative; }
+.panel { position: absolute; inset: 0; overflow: auto; padding: 12px 14px 16px; }
+.hint { color: var(--muted); font-size: 12.5px; margin: 0 0 10px; max-width: 72ch; }
+.section-title { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 14px 0 8px; font-weight: 500; }
+.diag { margin: 0 0 10px; padding: 9px 12px; border-radius: var(--radius); border-left: 3px solid var(--err); background: var(--err-soft); font-family: var(--font-code); font-size: 12px; line-height: 17px; white-space: pre; overflow-x: auto; }
+.diag.warning { border-left-color: var(--warn); background: var(--warn-soft); }
+.out { margin: 0; padding: 10px 12px; border-radius: var(--radius); background: var(--sunken); min-height: 3em; font-family: var(--font-code); font-size: 12.5px; line-height: 18px; white-space: pre; overflow-x: auto; }
+.out:empty::before { content: "(no output)"; color: var(--muted); }
+.runtime-error { margin-top: 8px; color: var(--err); font-family: var(--font-code); font-size: 12.5px; }
+textarea.input { width: 100%; box-sizing: border-box; min-height: 64px; resize: vertical; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); padding: 8px 10px; font-family: var(--font-code); font-size: 12.5px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; margin-top: 12px; }
+.stat { padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius); }
+.stat .k { font-size: 10.5px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); }
+.stat .v { font-family: var(--font-code); font-size: 15px; font-variant-numeric: tabular-nums; margin-top: 2px; }
+.stat.good .v { color: var(--ok); } .stat.bad .v { color: var(--err); }
+.list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.list button { display: grid; grid-template-columns: minmax(0, auto) minmax(0, 1fr); gap: 10px; width: 100%; text-align: left; border: 0; background: none; padding: 6px 8px; border-radius: var(--radius); cursor: pointer; font-family: var(--font-code); font-size: 12.5px; line-height: 18px; }
+.list button:hover { background: var(--sunken); }
+.list .name { color: var(--c-fn); white-space: nowrap; }
+.list .ty { overflow-wrap: anywhere; min-width: 0; }
+.ty .eff { color: var(--accent); font-weight: 500; }
+.ty .ref { color: var(--c-type); }
+.ob { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 10px; padding: 7px 8px; border-bottom: 1px solid var(--line); cursor: pointer; font-size: 13px; }
+.ob:hover { background: var(--sunken); }
+.ob .mark { font-family: var(--font-code); font-weight: 600; }
+.ob.proved .mark { color: var(--ok); } .ob.kept .mark { color: var(--warn); }
+.ob .loc { font-family: var(--font-code); font-size: 12px; color: var(--muted); white-space: nowrap; }
+.ob .cex { grid-column: 2 / 4; font-family: var(--font-code); font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+pre.ir { margin: 0; font-family: var(--font-code); font-size: 12px; line-height: 18px; white-space: pre; tab-size: 2; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; color: var(--muted); margin: 0 0 10px; }
+.legend code { font-family: var(--font-code); color: var(--c-rc); font-weight: 500; }
+.verdict { margin: 10px 0; padding: 10px 12px; border-radius: var(--radius); font-weight: 500; }
+.verdict.ok { background: var(--ok-soft); color: var(--ok); } .verdict.bad { background: var(--err-soft); color: var(--err); }
+table.t { border-collapse: collapse; width: 100%; font-size: 13px; }
+table.t td, table.t th { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+table.t th { font-weight: 500; color: var(--muted); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; }
+table.t td.num { font-family: var(--font-code); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+table.t td.ok { color: var(--ok); font-weight: 500; } table.t td.bad { color: var(--err); font-weight: 500; }
+table.t code { font-family: var(--font-code); font-size: 12px; }
+.about { max-width: 70ch; }
+.about h2 { font-family: var(--font-display); font-weight: 400; font-size: 26px; line-height: 1.15; margin: 4px 0 8px; }
+.about h3 { font-size: 13px; margin: 18px 0 6px; font-weight: 600; }
+.about p, .about li { margin: 0 0 8px; }
+.about code { font-family: var(--font-code); font-size: 12.5px; background: var(--sunken); padding: 1px 4px; border-radius: 3px; }
+.about a { color: var(--accent); }
+@media (max-width: 860px) {
+  html, body { height: auto; }
+  .app { height: auto; grid-template-rows: none; }
+  .split { grid-template-columns: minmax(0, 1fr); }
+  .editor-pane { height: 58vh; min-height: 360px; }
+  .panel-pane { height: 75vh; min-height: 440px; }
+  .tagline { display: none; }
+  .strip { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .strip > * { flex-shrink: 0; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="bar">
+    <div class="brand">
+      <span class="wordmark">Lum<em>e</em>n<sup>2</sup></span>
+      <span class="tagline">Effects in types, proved array accesses, no garbage collector: compiled to WebAssembly in your browser</span>
+    </div>
+    <div class="controls">
+      <select id="example" aria-label="Example program"></select>
+      <span class="caps" title="The capabilities granted to main. Output is always granted; a program that uses one that is not granted is rejected before it runs.">
+        <span class="lbl">Grant</span>
+        <label class="check fixed"><input type="checkbox" checked disabled> output</label>
+        <label class="check"><input type="checkbox" id="cap-input" checked> input</label>
+        <label class="check"><input type="checkbox" id="cap-clock" checked> clock</label>
+        <label class="check"><input type="checkbox" id="cap-random" checked> random</label>
+      </span>
+      <button class="run" id="run" type="button">Run <kbd id="run-key">Ctrl ↵</kbd></button>
+      <a class="source-link" href="../#lumen2">The story</a>
+      <a class="source-link" href="../playground.html">Lumen 1</a>
+      <a class="source-link" href="https://github.com/igniting/the-ai-frontier/tree/main/lumen2" target="_blank" rel="noopener">Source</a>
+    </div>
+  </header>
+
+  <section class="strip" aria-label="What the compiler found">
+    <div class="cell" id="c-check"><span class="k">Check</span><span class="v">–</span></div>
+    <div class="cell" id="c-proofs"><span class="k">Proved safe</span><span class="v">–</span></div>
+    <div class="cell" id="c-kept"><span class="k">Keep fail</span><span class="v">–</span></div>
+    <div class="cell" id="c-compile"><span class="k">Compile</span><span class="v">–</span></div>
+    <div class="cell" id="c-bytes"><span class="k">Binary</span><span class="v">–</span></div>
+    <div class="cell" id="c-run"><span class="k">Run</span><span class="v">–</span></div>
+    <div class="cell" id="c-allocs"><span class="k">Allocations</span><span class="v">–</span></div>
+    <div class="cell" id="c-live"><span class="k">Live at exit</span><span class="v">–</span></div>
+  </section>
+
+  <main class="split">
+    <section class="pane editor-pane" aria-label="Editor">
+      <div class="pane-head"><span class="file" id="file">tour.lm</span><span class="chip" id="state">checking…</span></div>
+      <div class="editor">
+        <div class="gutter" id="gutter" aria-hidden="true"></div>
+        <div class="code-wrap">
+          <pre id="hl" aria-hidden="true"></pre>
+          <pre id="marks" aria-hidden="true"></pre>
+          <textarea id="code" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" aria-label="Lumen 2 program"></textarea>
+        </div>
+      </div>
+      <div class="note" id="note"></div>
+    </section>
+
+    <section class="pane panel-pane" aria-label="Inspector">
+      <div class="tabs" role="tablist">
+        <button class="tab" role="tab" aria-selected="true" data-panel="output">Output</button>
+        <button class="tab" role="tab" aria-selected="false" data-panel="types">Types &amp; effects<span class="count" id="n-types"></span></button>
+        <button class="tab" role="tab" aria-selected="false" data-panel="proofs">Proofs<span class="count" id="n-proofs"></span></button>
+        <button class="tab" role="tab" aria-selected="false" data-panel="props">Properties<span class="count" id="n-props"></span></button>
+        <button class="tab" role="tab" aria-selected="false" data-panel="memory">Memory</button>
+        <button class="tab" role="tab" aria-selected="false" data-panel="certs">Certificates</button>
+        <button class="tab" role="tab" aria-selected="false" data-panel="about">About</button>
+      </div>
+      <div class="panels">
+        <div class="panel" id="p-output" role="tabpanel">
+          <div id="diags"></div>
+          <pre class="out" id="out"></pre>
+          <div class="runtime-error" id="rterr" hidden></div>
+          <div class="stats" id="run-stats" hidden></div>
+          <p class="section-title">Input <span style="text-transform:none;letter-spacing:0">(what <code>read_input()</code> returns)</span></p>
+          <textarea class="input" id="input" spellcheck="false" aria-label="Program input"></textarea>
+          <p class="hint" style="margin-top:8px"><label class="check"><input type="checkbox" id="opt-paranoid"> Paranoid memory: never reuse freed memory, and stop on any use of a freed object</label></p>
+        </div>
+        <div class="panel" id="p-types" role="tabpanel" hidden>
+          <p class="hint">Every type and effect here is inferred. An effect after <code>!</code> is something the function can do: <code>output</code>, <code>input</code>, <code>clock</code>, <code>random</code>, or <code>fail</code> (stop with an error). A function without one cannot do any of them. <code>where a: Ord</code> means the function needs a type it can compare.</p>
+          <ul class="list" id="sigs"></ul>
+        </div>
+        <div class="panel" id="p-proofs" role="tabpanel" hidden>
+          <p class="hint">Each array access, division and refinement is a proof obligation. <b>✓</b> means a SAT solver refuted the negation and an independent checker accepted its proof, so the operation cannot fail and adds no <code>fail</code> effect. <b>○</b> means it could not be proved (often with a counterexample), so the operation keeps <code>fail</code>. A refinement that cannot be proved is a compile error instead.</p>
+          <div id="obs"></div>
+        </div>
+        <div class="panel" id="p-props" role="tabpanel" hidden>
+          <p class="hint">A <code>property</code> is a law about the program. Testing generates inputs from its parameter types, shrinks any failure to a small counterexample, and replays every case in compiled code, which must agree with the interpreter.</p>
+          <p><button class="ghost" id="test-run" type="button">Test the properties</button></p>
+          <div id="props"></div>
+        </div>
+        <div class="panel" id="p-memory" role="tabpanel" hidden>
+          <p class="hint">The compiled code after reference counting. There is no garbage collector: the compiler inserts these operations itself, and a value nothing else refers to is updated in place.</p>
+          <div class="legend"><span><code>dup</code> one more reference</span><span><code>drop</code> one fewer (free at zero)</span><span><code>drop-reuse</code> keep the cell if it was the last reference</span><span><code>ctor@ru</code> build in that cell</span><span><code>unpack</code> move the fields out of a unique cell</span><span><code>peek</code> read without a reference</span></div>
+          <p><select id="ir-fn" aria-label="Function"></select></p>
+          <pre class="ir" id="ir"></pre>
+        </div>
+        <div class="panel" id="p-certs" role="tabpanel" hidden>
+          <p class="hint">Every compile checks the compiler's own output with independent checkers and refuses to produce code if one rejects it. This runs them again and reports what they checked, including the prelude's proofs.</p>
+          <p><button class="ghost" id="cert-run" type="button">Check the certificates</button></p>
+          <div id="certs"></div>
+        </div>
+        <div class="panel about" id="p-about" role="tabpanel" hidden>
+          <h2>Lumen 2</h2>
+          <p>A pure functional language, designed and built in one Claude Code session after <a href="../">Lumen</a>. The compiler, the reference interpreter, the SAT solver and the proof checker all run here, in a Web Worker, with no server.</p>
+          <h3>What is different from Lumen</h3>
+          <ul>
+            <li><b>Effects in types.</b> Printing, reading input, the clock and randomness are capabilities that <code>main</code> must be granted (the checkboxes above).</li>
+            <li><b>Proved, not checked.</b> An array access or division has <code>fail</code> only when the compiler cannot prove it safe. Refinement types such as <code>{i: Int | 0 &lt;= i}</code> state the rest, and every proof is a checked SAT certificate.</li>
+            <li><b>Traits</b>, with a user <code>Ord</code> that replaces structural ordering, and a derived <code>Show</code>.</li>
+            <li><b>Properties</b> in the language, tested with generated, shrunk inputs.</li>
+            <li><b>No garbage collector.</b> Perceus reference counting with reuse, borrowing and drop specialization.</li>
+            <li><b>Certified passes.</b> The IR's types and reference counting are re-checked on every compile.</li>
+          </ul>
+          <p>The <a href="https://github.com/igniting/the-ai-frontier/blob/main/lumen2/SPEC.md">language definition</a> and the <a href="https://github.com/igniting/the-ai-frontier/blob/main/lumen2/README.md">README</a> have the details; the <a href="../#lumen2">story</a> explains how it was built.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+<script type="module" src="playground/app.js"></script>
+</body>
+</html>

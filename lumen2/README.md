@@ -37,6 +37,12 @@ no garbage collector.** Lumen 2 is a fresh design, not an extension of
   for byte, as the original Lumen's imperative solver, at about the same
   speed.
 
+**[Open the Lumen 2 playground →](https://igniting.github.io/the-ai-frontier/lumen2/playground.html)**
+(types and effects, every proof obligation, the code after reference
+counting, property tests and certificates, all in the browser) ·
+**[Read how it was built →](https://igniting.github.io/the-ai-frontier/#lumen2)**
+(Part five of the story, with live demos)
+
 ```sh
 cd lumen2
 npm test                                         # 31 tests, about 25 s

@@ -93,7 +93,7 @@ button.run { border: 0; border-radius: var(--radius); padding: 7px 16px; backgro
 button.run:hover { filter: brightness(1.08); }
 button.run:disabled { opacity: 0.55; cursor: progress; }
 label.check { display: inline-flex; align-items: center; gap: 6px; font-size: 16px; color: var(--ink-2); cursor: pointer; }
-select { font: 16px var(--font-ui); padding: 7px 10px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+select { max-width: 100%; font: 16px var(--font-ui); padding: 7px 10px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
 textarea.code {
   width: 100%; min-height: 300px; resize: vertical; font: 14.5px/1.5 var(--font-code); color: var(--ink); background: var(--sunken);
   border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; tab-size: 2; white-space: pre; overflow: auto;
@@ -230,6 +230,7 @@ table.t.trace td code { white-space: nowrap; }
 <nav class="top" aria-label="Site">
   <a class="wordmark" href="./">Lum<em>e</em>n</a>
   <a class="link here" href="#brief">The story</a>
+  <a class="link" href="lumen2/playground.html">Lumen 2</a>
   <a class="link" href="https://github.com/igniting/the-ai-frontier" target="_blank" rel="noopener">Source</a>
   <a class="cta" href="playground.html">Open the playground</a>
 </nav>
@@ -242,11 +243,14 @@ table.t.trace td code { white-space: nowrap; }
   turns it into WebAssembly, garbage collector included. On top of it I built three things a machine can check. The
   compiler, rewritten in Lumen, reproduces itself byte for byte. Its 40 instruction-level rewrite rules each have a
   machine-checked proof. A performance campaign kept a change only if every check still passed. Finally, I used the
-  whole stack to prove a theorem in combinatorics: the Schur number S(4) = 44.</p>
+  whole stack to prove a theorem in combinatorics: the Schur number S(4) = 44. Then I started again with a second
+  language, <b>Lumen 2</b>, whose types say what a function can do. It proves its own array accesses safe, manages
+  memory without a garbage collector, and proved the same theorem.</p>
   <p class="lede">This page explains it all from the ground up, for engineers who don't work on compilers or provers
   every day. You'll see how a type checker infers types, how a garbage collector moves memory under a running
   program, and how to test something as intricate as a compiler. You'll also see what a SAT solver does, and what it
-  means for a computer to prove that something is impossible. Boxes marked <i>Background</i> cover standard ideas;
+  means for a computer to prove that something is impossible, and how a compiler can prove parts of a program safe
+  and check its own output. Boxes marked <i>Background</i> cover standard ideas;
   skip them if you know the material. Every demo runs in your browser.</p>
   <div class="stats" role="list">
     <div class="stat" role="listitem"><div class="v">~4,000</div><div class="k">lines of compiler, no dependencies</div></div>
@@ -255,8 +259,11 @@ table.t.trace td code { white-space: nowrap; }
     <div class="stat" role="listitem"><div class="v">34 / 34</div><div class="k">planted bugs caught</div></div>
     <div class="stat" role="listitem"><div class="v">S(4) = 44</div><div class="k">proved in Lumen, 255,663 proof steps checked</div></div>
     <div class="stat" role="listitem"><div class="v">−31%</div><div class="k">instructions executed with <code>-O</code> (geometric mean, 11 programs)</div></div>
+    <div class="stat" role="listitem"><div class="v">~6,000</div><div class="k">lines of a second language, Lumen 2, with no garbage collector</div></div>
+    <div class="stat" role="listitem"><div class="v">19 / 19</div><div class="k">planted bugs caught in Lumen 2, 7 before any program runs</div></div>
+    <div class="stat" role="listitem"><div class="v">22 MB</div><div class="k">of proof, byte for byte the same from the Lumen and Lumen 2 solvers</div></div>
   </div>
-  <p class="readtime">About an hour to read, longer with the demos. The chapters build on each other, and each part opens with a short summary.</p>
+  <p class="readtime">About an hour and a half to read, longer with the demos. The chapters build on each other, and each part opens with a short summary.</p>
   <ol class="toc">
     <li><a href="#brief"><span class="n">01</span>Prologue: the brief, and why a compiler</a></li>
     <li class="toc-part">Part one · The language and its compiler</li>
@@ -276,9 +283,15 @@ table.t.trace td code { white-space: nowrap; }
     <li><a href="#solver"><span class="n">12</span>How a SAT solver searches</a></li>
     <li><a href="#certificate"><span class="n">13</span>Checking the proof without trusting the solver</a></li>
     <li><a href="#payoff"><span class="n">14</span>Two optimizations the solver led to</a></li>
-    <li class="toc-part">Part five · Mistakes and limits</li>
-    <li><a href="#caught"><span class="n">15</span>What the checks caught, including my mistakes</a></li>
-    <li><a href="#limits"><span class="n">16</span>What this shows, and what it doesn't</a></li>
+    <li class="toc-part">Part five · A second language</li>
+    <li><a href="#lumen2"><span class="n">15</span>Starting again: Lumen 2</a></li>
+    <li><a href="#refinements"><span class="n">16</span>Proving array accesses safe</a></li>
+    <li><a href="#perceus"><span class="n">17</span>Memory without a garbage collector</a></li>
+    <li><a href="#certified"><span class="n">18</span>A compiler that checks its own output</a></li>
+    <li><a href="#lumen2-schur"><span class="n">19</span>The same theorem, without mutation</a></li>
+    <li class="toc-part">Part six · Mistakes and limits</li>
+    <li><a href="#caught"><span class="n">20</span>What the checks caught, including my mistakes</a></li>
+    <li><a href="#limits"><span class="n">21</span>What this shows, and what it doesn't</a></li>
   </ol>
 </header>
 
@@ -296,12 +309,14 @@ table.t.trace td code { white-space: nowrap; }
   <p>I added one constraint: no dependencies. There is no parser generator, no LLVM, no WebAssembly toolkit and no
   SAT library. Every layer on this page was written in the session, so every layer had to be checked in the session
   too.</p>
-  <p>The page has five parts. <b>Part one</b> explains the language and how the compiler turns it into WebAssembly,
+  <p>The page has six parts. <b>Part one</b> explains the language and how the compiler turns it into WebAssembly,
   down to the bits of a value and the garbage collector. <b>Part two</b> covers testing: how to find bugs in a
   compiler you just wrote. <b>Part three</b> describes three projects built so that a machine can check them: a
   compiler that compiles itself, rewrite rules with proofs, and a measured performance campaign. <b>Part four</b>
-  uses all of it to prove a theorem, and explains SAT solving and proof checking on the way. <b>Part five</b> lists
-  what went wrong and what this does and doesn't show.</p>
+  uses all of it to prove a theorem, and explains SAT solving and proof checking on the way. <b>Part five</b> starts
+  again: a second language, designed with what the first one taught me, that proves its own array accesses safe,
+  needs no garbage collector, and proves the same theorem. <b>Part six</b> lists what went wrong and what this does
+  and doesn't show.</p>
 </section>
 
 <div class="part">
@@ -717,7 +732,7 @@ fn main() {
   <p>New frames need clearing. A frame occupies memory that an earlier call used, so its slots start out holding
   that call's old pointers. If a collection happened before a slot was written, the collector would treat a stale
   address as a live object. Every function therefore clears its frame on entry with <code>memory.fill</code>.
-  Chapter 9 makes that cheaper, and chapter 15 shows the checks catching me getting it wrong.</p>
+  Chapter 9 makes that cheaper, and chapter 20 shows the checks catching me getting it wrong.</p>
   <p>Root handling is the most error-prone part of any compiler with a moving collector. Forget to put one pointer
   in a slot before one call that allocates, and the program works until a collection happens at that moment,
   perhaps ten thousand allocations later. Bugs like that are why part two exists.</p>
@@ -1627,13 +1642,495 @@ match array_get(a, 0) {      <span class="c">// read it back as a list of String
 
 <div class="part">
   <p class="part-n">Part five · <a href="#top">contents</a></p>
+  <p class="part-title">A second language</p>
+  <p class="part-intro">After everything above was finished, I was asked what language I would design if I could
+  start again, and then to build it. This part is about that language, Lumen 2. It covers what I changed and why,
+  how it proves its own array accesses safe, how it manages memory with no garbage collector, how it checks its
+  compiler's output on every compile, and how it proved the same theorem without mutation.</p>
+</div>
+
+<section class="chapter" id="lumen2">
+  <p class="chapter-label">15 · Part five</p>
+  <h2>Starting again: Lumen 2</h2>
+  <p>The question was: “If you had to come up with an even better language spec, what language would you create
+  and why?” My answer started from what building Lumen had taught me. Three things about it bothered me.</p>
+  <ul class="plain">
+    <li><b>Its types don't say what a function does.</b> <code>fn(List&lt;Int&gt;) -&gt; Int</code> could print,
+    read input, or stop with an error on an empty list. The type says nothing about any of that, and the reader has
+    to look inside.</li>
+    <li><b>Its safety checks happen at run time.</b> Every array access and every division is checked as the
+    program runs. The SAT solver in Part four performs millions of bounds checks that can never fail. I knew that,
+    but the language gave me no way to say it, and the compiler no way to use it.</li>
+    <li><b>Its memory model fought the problem.</b> The garbage collector in chapter 4 was the hardest part of the
+    compiler to get right. A copying collector also can't update anything in place, so the SAT solver needed
+    mutable arrays, a language change (chapter 12) that gave up some of Lumen's purity.</li>
+  </ul>
+  <p>Testing had taught me two more lessons. Properties like “reversing a list twice gives it back” lived in
+  external tools rather than in the language. And the compiler's output was trusted except where tests happened to
+  look.</p>
+  <p>So Lumen 2 is a pure functional language like Lumen, with the same kind of type inference, compiled to
+  WebAssembly with no dependencies, and checked against a reference interpreter. Beyond that it is a fresh design.
+  It shares no code with Lumen, and Lumen is unchanged. The new parts, one sentence each:</p>
+  <ul class="plain">
+    <li><b>Effects in types.</b> A function's type lists what it can do: print, read input, read the clock, use
+    random numbers, or fail. All of it is inferred.</li>
+    <li><b>Capabilities.</b> Whoever runs a program decides which of those <code>main</code> may use.</li>
+    <li><b>Proved operations.</b> An array access or a division can fail only where the compiler cannot prove it
+    safe. Refinement types such as <code>{i: Int | 0 &lt;= i}</code> state the facts a proof needs.</li>
+    <li><b>No garbage collector.</b> The compiler inserts reference counting itself, and a value nothing else refers
+    to is updated in place.</li>
+    <li><b>Certified passes.</b> On every compile, independent checkers re-check the compiler's own output.</li>
+    <li><b>Traits and properties</b>, and 64-bit integers that stop with an error on overflow instead of
+    silently wrapping around.</li>
+  </ul>
+  <p>The compiler is about 6,000 lines of JavaScript in
+  <a href="https://github.com/igniting/the-ai-frontier/tree/main/lumen2"><code>lumen2/</code></a>, and the
+  language is defined in its own <a href="https://github.com/igniting/the-ai-frontier/blob/main/lumen2/SPEC.md">spec</a>.
+  It has its own <a href="lumen2/playground.html">playground</a>, with every view this part describes.</p>
+
+  <h3>Types that say what a function can do</h3>
+  <p>Here is what the checker infers for five small functions. Nothing in the source mentions an effect:</p>
+  <div class="demo">
+    <div class="demo-head"><span class="live">Live</span><span class="title">What can each function do?</span></div>
+    <p class="hint">Press “Infer”. Then untick “grant random”: the program is rejected before it runs, at the call responsible. Try adding <code>println</code> inside <code>area</code> and watch its type change.</p>
+    <textarea class="code" id="fx-code" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" aria-label="Lumen 2 program" rows="11">fn area(r) { 3 * r * r }
+fn average(xs) { sum(xs) / length(xs) }
+fn shout(s) { println(s ++ "!") }
+fn twice(f, x) { f(f(x)) }
+fn roll() { random_int(1, 6) }
+
+fn main() {
+  shout("hello");
+  println(show(twice(area, 2)));
+  println(show(roll() + roll()))
+}</textarea>
+    <div class="controls">
+      <button class="run" id="fx-run" type="button">Infer</button>
+      <label class="check"><input type="checkbox" id="fx-grant" checked> grant <code>random</code> to <code>main</code></label>
+    </div>
+    <pre class="out" id="fx-out" aria-live="polite">Press “Infer”.</pre>
+  </div>
+  <p>The part after <code>!</code> is the function's <i>effect</i>. <code>area</code> has none, so it is pure: calling it
+  can do nothing except return a number. <code>average</code> has <code>fail</code>, because the list may be empty
+  and the division may then stop the program. <code>shout</code> has <code>output</code>, <code>roll</code> has
+  <code>random</code>, and <code>main</code> has the union of everything it calls.</p>
+  <p><code>twice</code> is the interesting one: <code>fn(fn(a) -&gt; a ! e, a) -&gt; a ! e</code>. Just as
+  <code>a</code> stands for any type, <code>e</code> stands for any set of effects. The type says that
+  <code>twice</code> does exactly what its argument does and nothing more. So <code>twice(area, 2)</code> is pure,
+  while <code>twice</code> applied to a function that prints, prints. The prelude's <code>map</code>, <code>fold</code> and
+  <code>filter</code> have types of the same shape, so a pipeline of pure functions stays pure.</p>
+
+  <div class="bg">
+    <p class="bg-label">Background · Effect types</p>
+    <p>The checker extends the unification of chapter 3 to sets of effects. An effect set is written as a list of
+    labels, optionally followed by a variable that stands for “and possibly more”, so <code>{output | e}</code>
+    means “output, and whatever <code>e</code> turns out to be”. Unifying two such <i>rows</i> matches the labels
+    they share and lets each variable absorb the labels only the other side has. Inference stays fully automatic,
+    and every function still gets its most general type. The technique is called row polymorphism. Lumen 2's
+    version follows Koka, a research language from Microsoft Research.</p>
+  </div>
+
+  <p>Three runtime errors are deliberately not effects: integer overflow, running out of memory, and a string too
+  long. Any arithmetic can overflow, so tracking it would put <code>fail</code> on nearly every function and make
+  the effect meaningless. Overflow still never produces a wrong answer, because integers are 64 bits wide and
+  every operation checks.</p>
+
+  <h3>Capabilities</h3>
+  <p>An effect in a type is a statement about the code. A <i>capability</i> is a decision about running it:
+  whoever runs a program grants <code>main</code> the effects it may use. The command line grants
+  <code>output</code> by default, and <code>--allow random</code> adds randomness. A program that would use an
+  effect it was not granted is rejected before it runs, with the error placed on the call responsible. The
+  ungranted program in the demo is refused at <code>roll()</code>, not at some library function three calls
+  deeper.</p>
+  <p>The clock and random numbers come from a <i>host</i> that the interpreter and the compiled code share, so a
+  seeded run is reproducible. That matters for testing. The fuzzer can generate programs that read the clock and
+  roll dice, and still demand that the interpreter and the compiled code print the same thing.</p>
+
+  <h3>Traits and properties</h3>
+  <p>Lumen compared values structurally, field by field. Lumen 2 adds traits. A user's <code>impl Ord</code>
+  replaces structural ordering wherever its type is compared, including inside lists and options, and
+  <code>show</code> is derived for every type without functions in it. Methods are resolved at compile time, so a
+  trait costs nothing at run time. The checker infers trait requirements too. A tree insert gets
+  <code>fn(Tree&lt;a&gt;, a) -&gt; Tree&lt;a&gt; where a: Ord</code>, and sorting a list of functions is a compile
+  error, where in Lumen it was a runtime error.</p>
+  <p>Properties are part of the language:</p>
+  <figure>
+    <pre class="listing">property reverse_twice(xs: List&lt;Int&gt;) { reverse(reverse(xs)) == xs }
+property sort_is_sorted(xs: List&lt;Int&gt;) { sorted(sort(xs)) }</pre>
+  </figure>
+  <p><code>lumen2 test</code> generates inputs from the parameter types, small ones first, plus integer edge cases.
+  It shrinks any failure to a minimal counterexample and prints it as Lumen source. Every case runs in the
+  interpreter and is then replayed in compiled code, which must agree, so each property is also a test of the
+  compiler. The playground's Properties tab runs them, including two that are false on purpose.</p>
+</section>
+
+<section class="chapter" id="refinements">
+  <p class="chapter-label">16 · Part five</p>
+  <h2>Proving array accesses safe</h2>
+  <p><code>array_get(a, i)</code> fails when <code>i</code> is out of range. In Lumen, every call checks, and a
+  function that reads an array looks the same as one that might crash. In Lumen 2, <code>array_get</code> has the
+  type <code>fn(Array&lt;a&gt;, Int) -&gt; a ! fail</code>, but the <code>fail</code> applies only at calls the
+  checker cannot prove safe. This function has no <code>fail</code> in its inferred type:</p>
+  <figure>
+    <pre class="listing">fn safe_get(a, i) { if 0 &lt;= i &amp;&amp; i &lt; array_length(a) { Some(array_get(a, i)) } else { None } }
+
+<span class="c">safe_get : fn(Array&lt;a&gt;, Int) -&gt; Option&lt;a&gt;</span></pre>
+  </figure>
+  <p>Inside the <code>if</code>, the condition holds, and the condition is exactly what the access needs. The
+  checker turns that observation into a proof that a machine checks.</p>
+
+  <h3>Facts along a path</h3>
+  <p>The checker walks each function and keeps a list of <i>facts</i> that hold at each point. Facts come from the
+  conditions of the <code>if</code>s on the current path, from refined parameters, from the results of refined
+  functions, and from operations that have already succeeded: after <code>array_get(a, i)</code> returns, the
+  index was in bounds. It also knows that an array's length is never negative. Each partial operation becomes a
+  <i>proof obligation</i>: do the facts imply that the operation is safe? For the access in
+  <code>safe_get</code>, with <i>n</i> standing for <code>array_length(a)</code>, the obligation is</p>
+  <figure>
+    <pre class="listing">0 ≤ n,  0 ≤ i,  i &lt; n    ⟹    0 ≤ i  and  i &lt; n</pre>
+  </figure>
+
+  <h3>From an obligation to a SAT problem</h3>
+  <p>An implication holds when its premises and the negation of its conclusion can't all be true at once. So the
+  checker asks a SAT solver, the kind of program Part four explained, whether there are integers that satisfy
+  the facts and violate the goal. Here that means <code>0 ≤ n</code>, <code>0 ≤ i</code>, <code>i &lt; n</code>,
+  and also <code>i &lt; 0</code> or <code>i ≥ n</code>. If the solver proves that unsatisfiable, the access is
+  safe.</p>
+  <p>A SAT solver knows only true and false, so the integers have to become booleans. This is called
+  <b>bit-blasting</b>. Each integer variable becomes a vector of boolean variables, one per bit, in two's
+  complement. Each operation becomes a circuit written as clauses, in the style of chapter 11. An addition is a
+  chain of full adders, where each output bit and carry is a few clauses over the input bits. A comparison
+  <code>a &lt; b</code> becomes <code>a − b &lt; 0</code>: a subtraction, then a look at the sign bit. The vectors are about 66 bits wide, wide enough that no sum of
+  64-bit values in an obligation can overflow, so the bit-level arithmetic agrees with real integer arithmetic.
+  Even this small obligation comes to 2,801 clauses.</p>
+  <p>Then everything from Part four applies again, with new code. A CDCL solver,
+  <a href="https://github.com/igniting/the-ai-frontier/blob/main/lumen2/src/sat.js"><code>lumen2/src/sat.js</code></a>, refutes
+  the formula and writes a DRUP proof. A separate 102-line RUP checker,
+  <a href="https://github.com/igniting/the-ai-frontier/blob/main/lumen2/src/rup.js"><code>lumen2/src/rup.js</code></a>, checks
+  that proof before the operation is treated as safe. The two share no code with each other or with Lumen's
+  solver and checker. For <code>safe_get</code>, the proof is the one-line proof <code>0</code> from chapter 13:
+  unit propagation alone reaches the contradiction, so the solver learns nothing (zero lemmas).</p>
+  <p>When the formula is satisfiable, the solver's assignment is a counterexample. The checker then tries again
+  with the numbers restricted to small values, so the counterexample it reports is easy to read.</p>
+
+  <h3>Refinement types carry facts across calls</h3>
+  <p>The checker does not infer facts about a function's callers or loop invariants. A recursive function that
+  walks an array needs to say what it relies on, and a <i>refinement type</i> says it:</p>
+  <figure>
+    <pre class="listing">fn sum_from(a: Array&lt;Int&gt;, i: {i: Int | 0 &lt;= i}, acc: Int) -&gt; Int {
+  if i &lt; array_length(a) { sum_from(a, i + 1, acc + array_get(a, i)) } else { acc }
+}</pre>
+  </figure>
+  <p><code>{i: Int | 0 &lt;= i}</code> is an <code>Int</code> that is known to be non-negative. Inside the
+  function it is a fact, so the access is safe: <code>0 ≤ i</code> comes from the type, and
+  <code>i &lt; array_length(a)</code> from the <code>if</code>. At every call, it is an obligation. The recursive
+  call passes <code>i + 1</code>, and <code>0 ≤ i</code> implies <code>0 ≤ i + 1</code>. A caller that passes
+  <code>0</code> is fine, and a caller that passes <code>-1</code> gets a compile error. A result can be refined
+  too: <code>-&gt; {r: Int | 0 &lt;= r &amp;&amp; r &lt; n}</code> is proved at the end of the function's body and
+  assumed by every caller. A refinement that cannot be proved is always an error. An access that cannot be
+  proved just keeps <code>fail</code> in its function's type.</p>
+
+  <div class="demo">
+    <div class="demo-head"><span class="live">Live</span><span class="title">Watch the checker prove each operation</span></div>
+    <p class="hint">Press “Check”. Every obligation is a SAT refutation, checked by the separate checker. Then break something: change <code>&lt;</code> to <code>&lt;=</code> in <code>safe_get</code>, call <code>sum_from(a, -1, 0)</code>, or change <code>n == 0</code> to <code>n == 1</code> in <code>average</code>.</p>
+    <textarea class="code" id="rf-code" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" aria-label="Lumen 2 program" rows="15">// No annotation: the checker proves the access is in bounds.
+fn safe_get(a, i) { if 0 &lt;= i &amp;&amp; i &lt; array_length(a) { Some(array_get(a, i)) } else { None } }
+
+// A refined parameter: assumed in the body, proved at every call.
+fn sum_from(a: Array&lt;Int&gt;, i: {i: Int | 0 &lt;= i}, acc: Int) -&gt; Int {
+  if i &lt; array_length(a) { sum_from(a, i + 1, acc + array_get(a, i)) } else { acc }
+}
+
+fn average(xs) { let n = length(xs); if n == 0 { 0 } else { sum(xs) / n } }
+
+fn main() {
+  let a = array_from_list([3, 1, 4, 1, 5]);
+  println(show(safe_get(a, 2)) ++ " " ++ show(safe_get(a, 9)));
+  println(show(sum_from(a, 0, 0)) ++ " " ++ show(average([1, 2, 3])))
+}</textarea>
+    <div class="controls"><button class="run" id="rf-run" type="button">Check</button></div>
+    <pre class="out" id="rf-out" aria-live="polite">Press “Check”.</pre>
+  </div>
+
+  <h3>Not trusting the prover</h3>
+  <p>A wrong proof would be worse than no proof, because the compiler drops the run-time check for a proved
+  access. So the proofs are checked twice. Each refutation passes the RUP checker before the compiler uses it.
+  And the reference interpreter re-checks every proved fact as the program runs, while the compiled code does not.
+  If a proof were wrong, the two would disagree on some program, and the fuzzer would see it. Two of the planted
+  bugs in chapter 18 test exactly this: a checker that assumes an <code>if</code>'s condition in its
+  <code>else</code> branch too, and an adder circuit that drops its carry. The run-time re-check catches both.</p>
+  <p>The checker has clear limits. Its facts are linear arithmetic over integers and array lengths. It knows
+  nothing about list lengths or array contents, and it never invents an invariant. In the SAT solver of chapter 19,
+  it proves 19 of the 20 divisions safe, and all of the input parser's indexing. It does not prove the 27 accesses
+  to the solver's state arrays, because those depend on facts about array contents, such as every literal in every
+  clause being smaller than the array it indexes, and a refinement cannot state them. Those accesses keep their
+  run-time checks, and the solver's functions have <code>fail</code> in their types.</p>
+</section>
+
+<section class="chapter" id="perceus">
+  <p class="chapter-label">17 · Part five</p>
+  <h2>Memory without a garbage collector</h2>
+  <p>Lumen's copying collector, from chapter 4, finds live objects by following pointers from the roots, and it
+  needs the shadow stack to know where the roots are. Lumen 2 has no collector. Every heap object carries a count
+  of the references to it, and it is freed the moment the count reaches zero.</p>
+
+  <div class="bg">
+    <p class="bg-label">Background · Reference counting</p>
+    <p>With reference counting, copying a pointer increments the count of the object it points to, and discarding
+    one decrements it. At zero, the object is freed, and the counts of everything it points to are decremented in
+    turn. Memory is reclaimed promptly and without pauses. It has two classic costs. The counting itself is work
+    on every copy, and objects that point to each other in a cycle keep each other's counts above zero forever. In
+    Lumen 2 the second can't happen: values are immutable, so a value can only point to values that existed before
+    it, and no cycle can form.</p>
+  </div>
+
+  <p>The first cost is where the compiler comes in. Lumen 2 follows Perceus, an algorithm published in 2021 by
+  Microsoft Research for the Koka language. The compiler, not a runtime library, decides exactly where each count
+  changes. The rule is ownership. Each variable holds one reference. The last use of a variable hands that
+  reference on, for example to the function it is passed to, at no cost. Any earlier use that hands a reference
+  on must first make a new one, with <code>dup</code>. A variable that is dead releases its reference with
+  <code>drop</code> immediately after its last use, not at the end of its scope, so memory is freed at the
+  earliest possible moment.</p>
+
+  <h3>Reuse: updating in place without mutation</h3>
+  <p>The real payoff comes from knowing when a count is about to hit zero. Here is a tree insert after reference
+  counting, slightly simplified from what <code>lumen2 ir</code> prints:</p>
+  <figure>
+    <pre class="listing">fn insert&lt;Int&gt;(t, x) {
+  if is Leaf(t) {
+    drop t
+    ret Node(Leaf, x, Leaf)
+  } else {
+    let l = field t.0                  <span class="c">// read the fields, taking a reference to each</span>
+    let y = field t.1
+    let r = field t.2
+    if x &lt; y {
+      let ru = drop-reuse t            <span class="c">// release t; if that was the last reference,</span>
+      let l2 = insert&lt;Int&gt;(l, x)       <span class="c">//   keep its cell instead of freeing it</span>
+      ret Node@ru(l2, y, r)            <span class="c">// build the new node in that cell</span>
+    } else if x &gt; y { ... } else {
+      drop l
+      drop r
+      ret t
+    }
+  }
+}</pre>
+    <figcaption>The real output names variables <code>t_101</code>, <code>b_109</code> and so on, and binds every
+    test and constant to a variable of its own.</figcaption>
+  </figure>
+  <p>After <code>t</code> is taken apart, the code releases it and then builds a node of the same size. The
+  compiler pairs the two. <code>drop-reuse</code> decrements the count, and if <code>t</code> was the only
+  reference, it keeps the cell instead of freeing it. <code>Node@ru</code> then writes the new node into that
+  cell. When the tree is not shared, inserting into it allocates exactly one new node, the leaf, and rebuilds
+  the path to it in place. When the tree is shared, for example because the program also keeps the old version,
+  <code>drop-reuse</code> just decrements, and the path is copied, which is what keeps the old version intact.
+  The source code is the same in both cases. The decision happens at run time and costs one comparison.</p>
+  <p>The same rule applies to arrays. <code>array_set</code> on an array that nothing else refers to writes in
+  place, and on a shared array it copies first. Values never change from the program's point of view, yet a
+  program that holds its data uniquely pays the cost of mutation, not of copying. Nothing visible decides this:
+  it follows from whether the program uses the old value again.</p>
+
+  <div class="demo">
+    <div class="demo-head"><span class="live">Live</span><span class="title">Count the allocations</span></div>
+    <p class="hint">Run it. Building the list allocates 100,000 cells, and <code>reverse</code> allocates none: <code>xs</code> is not used again, so each cell is reused for the reversed list. Then change the last line to <code>println(show(length(ys) + length(xs)))</code> and run again. Now <code>xs</code> is still needed after the reverse, so the reverse must copy.</p>
+    <textarea class="code" id="mm-code" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" aria-label="Lumen 2 program" rows="5">fn main() {
+  let xs = range(0, 100000);
+  let ys = reverse(xs);
+  println(show(length(ys)))
+}</textarea>
+    <div class="controls"><button class="run" id="mm-run" type="button">Compile and run</button></div>
+    <pre class="out" id="mm-out" aria-live="polite">Press “Compile and run”.</pre>
+    <div class="meta" id="mm-meta"></div>
+  </div>
+
+  <h3>Borrowing and moving</h3>
+  <p>Two further optimizations matter for speed. A parameter that a function only reads, never stores or
+  passes on, is <i>borrowed</i>. The caller keeps its reference for the duration of the call, so neither side
+  counts anything. The compiler infers which parameters qualify. And when a function takes apart a cell that
+  nothing else refers to, it can <i>move</i> the fields out (<code>unpack</code>) instead of taking a new reference
+  to each field and then releasing the cell. Chapter 19 shows how much each of these was worth.</p>
+
+  <h3>Checking it</h3>
+  <p>Reference counting fails quietly. Freeing too early usually works anyway, because freed memory still holds
+  its old contents until something else is allocated there. Freeing too late is just a leak. So the test harness
+  makes both loud. Every compiled run that finishes must report zero live objects, which catches leaks. And a
+  <i>paranoid</i> mode never reuses freed memory and stops the program on any access to a freed object. The
+  fuzzer runs every program four ways: interpreted, compiled, compiled in paranoid mode, and compiled without
+  reuse. All four must print the same output.</p>
+</section>
+
+<section class="chapter" id="certified">
+  <p class="chapter-label">18 · Part five</p>
+  <h2>A compiler that checks its own output</h2>
+  <p>Part two tested Lumen's compiler on random programs, and Lumen 2 is tested the same way. But a test
+  can only cover the programs it tries. Lumen 2 adds a second kind of check that runs on every compile, for every
+  program. The compiler's output is re-checked by independent code before it is used, and the compile fails if a
+  check fails. This is a light form of an idea called <i>translation validation</i>: instead of proving the
+  compiler correct for all programs, check its result for this one.</p>
+  <p>There are two checkers, in
+  <a href="https://github.com/igniting/the-ai-frontier/blob/main/lumen2/src/certify.js"><code>lumen2/src/certify.js</code></a>,
+  plus the proof checker and the engine's own validation of the final WebAssembly:</p>
+  <ul class="plain">
+    <li><b>The IR type checker</b> re-types every instruction after monomorphization, inlining and simplification,
+    from scratch. A field read must have the type of that field, and a call must match the signature of the
+    function it calls. A pass that confuses two variables or two types is caught here.</li>
+    <li><b>The ownership checker</b> follows every path through every function. It tracks how many references each
+    variable holds, which values are borrowed and from what, and which cells are waiting to be reused. It rejects
+    a program that gives away a reference it does not hold, or reads a value after its last reference was
+    released. It also rejects returning while still holding references (a leak), two branches that end holding
+    different references, and a reuse cell that is neither used nor freed. It encodes the rules of the previous
+    chapter, but it is written separately from the pass that applies them, and it shares no code with it.</li>
+  </ul>
+  <p>These checkers earned their place while I was still writing the compiler. One optimization lets a function
+  read a field without taking a reference to it, as long as the cell it came from stays alive. My first two
+  versions got the liveness wrong: they released the cell just before the field was read, once in the middle
+  of an instruction and once at the field read itself. On most programs, nothing visible would have happened,
+  because freed memory still holds its old contents. The ownership checker rejected both versions on the first
+  compile. One of the two mistakes is now a planted bug.</p>
+  <p>As in Part two, planted bugs check the checks. There are 19, spread across the compiler, the refinement
+  checker and the SAT solver, and every one is caught. Seven are caught at compile time by a certificate checker,
+  before any program runs. Pick one and compile:</p>
+
+  <div class="demo">
+    <div class="demo-head"><span class="live">Live</span><span class="title">Plant a bug in the compiler</span></div>
+    <p class="hint">Each choice compiles this program with one deliberate bug in the compiler. The certificate checkers reject every one of them before the program runs. Edit the program too, if you like.</p>
+    <textarea class="code" id="pb-code" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" aria-label="Lumen 2 program" rows="16">type Shape { Circle(Int), Rect(Int, Int) }
+
+fn area(s) { match s { Circle(r) -&gt; 3 * r * r, Rect(w, h) -&gt; w * h } }
+
+// Keep the positive numbers, adding one to each.
+fn bump(xs) {
+  match xs {
+    [] -&gt; [],
+    [x, ..rest] -&gt; if x &gt; 0 { [x + 1, ..bump(rest)] } else { bump(rest) },
+  }
+}
+
+// The length of the first name in a list of pairs.
+fn first_len(people) { match people { [(name, _), .._] -&gt; string_length(name), [] -&gt; 0 } }
+
+fn main() {
+  println(show(sum(map([Circle(2), Rect(3, 4)], area))));
+  println(show(bump([3, -1, 4, -1, 5])));
+  println(show(first_len([("ada", 1815), ("grace", 1906)])))
+}</textarea>
+    <div class="controls">
+      <select id="pb-bug" aria-label="Planted bug">
+        <option value="">No bug: the real compiler</option>
+        <option value="perceus-transfer-live">Hand over a reference that is still needed</option>
+        <option value="perceus-no-post-drop">Forget the drop after a read</option>
+        <option value="perceus-drop-borrowed">Drop a value before it is read</option>
+        <option value="reuse-no-free">Forget to free an unused reuse cell</option>
+        <option value="peek-source-early">Release a cell while its field is about to be read</option>
+        <option value="lower-bind-type">Give a pattern variable the wrong type</option>
+        <option value="sat-claims-unsat">A SAT solver that claims everything is impossible</option>
+      </select>
+      <button class="run" id="pb-run" type="button">Compile</button>
+    </div>
+    <div class="verdict" id="pb-verdict" hidden></div>
+    <pre class="out" id="pb-out" hidden></pre>
+  </div>
+
+  <p>The other twelve planted bugs produce code that passes every certificate, so they need the dynamic checks
+  to catch them. They include reusing a cell that is shared, updating a shared array in place, dropping the
+  overflow check on addition, and an off-by-one in the overflow bound for multiplication by a constant. The
+  differential runs catch them, as do the leak check and the interpreter's run-time re-check of proofs. Each is
+  caught by one of the first 47 generated programs. With every feature in place, 3,000 generated programs ran with
+  no disagreement, and CI runs 1,000 fresh ones on every push.</p>
+</section>
+
+<section class="chapter" id="lumen2-schur">
+  <p class="chapter-label">19 · Part five</p>
+  <h2>The same theorem, without mutation</h2>
+  <p>The last test of the new language was to prove S(4) = 44 again. Lumen's solver from chapter 12 keeps its
+  state in arrays and changes them in place. Lumen 2 has no mutation at all. So how do you write a SAT solver,
+  which updates its assignment, watch lists and activity scores constantly?</p>
+  <p>You thread the state. The solver's whole state is one record of arrays and counters. Every function takes
+  the record and returns a new one, and the code reads like a chain of updates:
+  <code>let s = assign(s, lit, reason)</code>. Semantically, each step builds a new record. But the record is
+  never shared: each version is used once, to make the next. So every <code>array_set</code> writes in place, and
+  every new record reuses the cell of the old one. The code is pure, and it runs with the cost of mutation. The
+  compiler decides this, the ownership checker confirms it on every compile, and the program itself says nothing
+  about memory.</p>
+
+  <h3>The same proof, byte for byte</h3>
+  <p>I ported Lumen's solver decision for decision. It uses the same order for visiting watch lists, the same
+  heap of variables, the same integer activity scores, the same restarts and the same learning. The watch lists
+  became linked lists inside one flat array, with new entries appended at the tail, so their order matches
+  Lumen's exactly. The result is two programs, in two languages, compiled by two different compilers, that make
+  the same choices. On S(4) they print the same output byte for byte: 27,684 conflicts for the split of 1 to 44,
+  and the same 255,663-step refutation of 1 to 45, about 22 MB. A difference anywhere in those 22 MB would have
+  pointed to a bug in one of the two compilers. The proof was then checked again, by Lumen 2's own checker.</p>
+
+  <div class="demo">
+    <div class="demo-head"><span class="live">Live</span><span class="title">Prove it again in Lumen 2</span></div>
+    <p class="hint">The encoder and the solver are Lumen 2 programs, compiled here. The refutation is checked by <code>lumen2/src/rup.js</code>. Then Lumen's imperative solver runs on the same formulas, and the outputs are compared byte for byte. S(3) takes a second or two. The split of 1 to 44 takes a few seconds per solver; the full S(4) refutation, about five minutes, is left to <code>node lumen2/proofs/prove-schur.js 4 44</code> and to CI.</p>
+    <div class="controls">
+      <button class="run" id="l2-s3" type="button">Prove S(3) = 13</button>
+      <button class="run" id="l2-s44" type="button">Split 1 to 44 into four groups</button>
+    </div>
+    <div class="table-wrap">
+      <table class="t" id="l2-steps">
+        <tbody>
+          <tr data-step="encode"><td>Write both formulas with the Lumen 2 encoder; compare with a second encoder</td><td class="verdict-cell">–</td></tr>
+          <tr data-step="witness"><td>Find a split of 1 to n with the Lumen 2 solver; check every group is sum-free</td><td class="verdict-cell">–</td></tr>
+          <tr data-step="refute"><td>Refute 1 to n+1 with the Lumen 2 solver</td><td class="verdict-cell">–</td></tr>
+          <tr data-step="check"><td>Check every step of the refutation independently</td><td class="verdict-cell">–</td></tr>
+          <tr data-step="same"><td>Run Lumen's solver on the same formulas; compare the outputs</td><td class="verdict-cell">–</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <pre class="program" id="l2-groups" hidden></pre>
+    <div class="verdict" id="l2-verdict" hidden></div>
+  </div>
+
+  <h3>What it took to make it fast</h3>
+  <p>The first compiled version took 19.0 seconds to find the split of 1 to 44. Lumen took 2.6. Five compiler
+  optimizations closed the gap. Each was checked by the certificate checkers and the fuzzer, and each came with a
+  new planted bug:</p>
+  <div class="table-wrap">
+    <table class="t">
+      <thead><tr><th>Optimization</th><th class="num">Split of 1 to 44</th></tr></thead>
+      <tbody>
+        <tr><td>none</td><td class="num">19.0 s</td></tr>
+        <tr><td>borrowed parameters: a parameter that is only read costs no reference counting</td><td class="num">12.8 s</td></tr>
+        <tr><td>moving fields: taking apart a unique record moves its fields out</td><td class="num">5.1 s</td></tr>
+        <tr><td>inlining small functions</td><td class="num">4.5 s</td></tr>
+        <tr><td>checked arithmetic and array reads inline in the wasm</td><td class="num">2.9 s</td></tr>
+        <tr><td>simplification: a chain of record updates becomes one unpack and one constructor</td><td class="num">2.8 s</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>That run shared the machine with the test suite. On a quiet machine the split takes 2.2 seconds. Here are
+  both solvers side by side, single runs in Node on the same machine:</p>
+  <div class="table-wrap">
+    <table class="t">
+      <thead><tr><th></th><th class="num">Lumen 2</th><th class="num">Lumen, <code>-O</code></th></tr></thead>
+      <tbody>
+        <tr><td>split of 1 to 44</td><td class="num">2.2 s</td><td class="num">2.6 s</td></tr>
+        <tr><td>refutation of 1 to 45</td><td class="num">108.8 s</td><td class="num">93.1 s</td></tr>
+        <tr><td>proof check</td><td class="num">170 s</td><td class="num">158 s</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>So a pure solver, with every update written as a new value, is faster than the imperative one on the split
+  and 17% slower on the refutation. That depends entirely on the compiler seeing that the state is never shared. One bug showed how much: my first
+  borrow inference marked the record parameter of a setter as borrowed, because the setter never consumes the
+  record itself, only its fields. A borrowed record can't be updated in place, so every update copied all its
+  arrays, and the split ran for more than ten minutes instead of 19 seconds. Nothing was wrong except the speed.
+  Consuming a field now counts as consuming the record. CI re-runs the whole Lumen 2 proof of S(4) = 44 on every
+  push, next to Lumen's.</p>
+</section>
+
+<div class="part">
+  <p class="part-n">Part six · <a href="#top">contents</a></p>
   <p class="part-title">Mistakes and limits</p>
   <p class="part-intro">All this checking existed to find problems I didn't know I had. This part lists what it
   found, including my own mistakes, and then what the project does and does not show.</p>
 </div>
 
 <section class="chapter" id="caught">
-  <p class="chapter-label">15 · Part five</p>
+  <p class="chapter-label">20 · Part six</p>
   <h2>What the checks caught, including my mistakes</h2>
   <ul class="plain">
     <li><b>A real bug in the reference interpreter.</b> A random program grew a string eightfold per step.
@@ -1659,6 +2156,27 @@ match array_get(a, 0) {      <span class="c">// read it back as a list of String
     entry point, and two of my hand-written test expectations were wrong while the code was right.</li>
   </ul>
 
+  <h3>And in Lumen 2</h3>
+  <ul class="plain">
+    <li><b>The oracle was wrong again.</b> Lumen 2's interpreter compared values by plain recursion, so comparing
+    two lists of 200,000 elements overflowed the JavaScript stack. The compiled code compares the last field
+    with a tail call and did not overflow. The interpreter now loops on the last field too.</li>
+    <li><b>Counterexamples that were not real.</b> The first refinement checker recorded the facts that define an
+    <code>if</code>'s value only inside the branch that computed it, so a nested <code>if</code> lost them, and the
+    checker reported counterexamples that could not happen. Those facts define a fresh value and constrain
+    nothing else, so they now hold everywhere.</li>
+    <li><b>Two liveness bugs in my own optimization</b>, caught by the ownership checker before anything ran
+    (chapter 18).</li>
+    <li><b>A correct optimization that made everything slower.</b> Borrow inference copied the solver's arrays
+    on every update until I changed one rule (chapter 19).</li>
+    <li><b>A proof checker too slow to use.</b> The first RUP checker re-propagated every clause for every lemma,
+    and took 22 seconds on a 3,665-lemma proof. With watched literals it takes 0.35 seconds. Keeping what the
+    clauses alone imply between lemmas brought the S(4) check from 275 to 170 seconds.</li>
+    <li><b>An encoder that could not handle large functions.</b> The wasm encoder appended bytes with
+    JavaScript's spread syntax, which overflows the stack once a function body reaches a few hundred kilobytes.
+    Replaying 200 property cases as one compiled program found it.</li>
+  </ul>
+
   <h3>How the session went</h3>
   <ol class="timeline">
     <li><span class="when">first five commits</span>The compiler, examples, fuzzer, mutation testing, the playground and the published site. <a href="https://github.com/igniting/the-ai-frontier/commit/9051ef6">9051ef6</a></li>
@@ -1669,6 +2187,10 @@ match array_get(a, 0) {      <span class="c">// read it back as a list of String
     <li><span class="when">publishing</span>The campaign log, charts, playground tabs, CI, and this page.</li>
     <li><span class="when">a theorem</span>Arrays and the value restriction, a SAT solver in Lumen, two more optimizations, and S(4) = 44, re-proved by CI on every push. <a href="https://github.com/igniting/the-ai-frontier/commit/79814ae">79814ae</a>, <a href="https://github.com/igniting/the-ai-frontier/tree/main/proofs">proofs/</a></li>
     <li><span class="when">this page</span>Rewritten at the request of the person I worked with to explain every idea, then reviewed for accuracy and edited for style.</li>
+    <li><span class="when">a second language</span>“If you had to come up with an even better language spec, what language would you create?” Then: “Let's create that language now.” The front end with effect inference, the interpreter, and the back end with reference counting. <a href="https://github.com/igniting/the-ai-frontier/commit/f40c559">f40c559</a>, <a href="https://github.com/igniting/the-ai-frontier/commit/b235f59">b235f59</a></li>
+    <li><span class="when">its features</span>Capabilities, traits, properties, refinement types with checked proofs, and certified passes. <a href="https://github.com/igniting/the-ai-frontier/commit/b7dc86e">b7dc86e</a> → <a href="https://github.com/igniting/the-ai-frontier/commit/6b43553">6b43553</a></li>
+    <li><span class="when">the theorem again</span>S(4) = 44 in Lumen 2, the same proof as Lumen's byte for byte, and the five optimizations it took. <a href="https://github.com/igniting/the-ai-frontier/commit/a8c2f10">a8c2f10</a></li>
+    <li><span class="when">Part five</span>The <a href="lumen2/playground.html">Lumen 2 playground</a> and the chapters above.</li>
   </ol>
   <p class="aside">The conversation outgrew my working memory and had to be summarized partway through, more than
   once, and the machine I ran on restarted once during a five-minute check. What made it safe to pick up the
@@ -1677,20 +2199,24 @@ match array_get(a, 0) {      <span class="c">// read it back as a list of String
 </section>
 
 <section class="chapter" id="limits">
-  <p class="chapter-label">16 · Part five</p>
+  <p class="chapter-label">21 · Part six</p>
   <h2>What this shows, and what it doesn't</h2>
   <p>It shows one long session of sustained engineering in which each layer was checked by the one below it. The
   work is a compiler, an independent re-implementation of it, a prover with a proof checker, an optimizer gated by
-  all of them, and a theorem whose proof doesn't depend on trusting any of them. Every claim on this page can be
+  all of them, and a theorem whose proof doesn't depend on trusting any of them. Then it is a second language,
+  designed from what the first one taught, whose compiler proves parts of each program safe and checks its own
+  output on every compile, and which reproduced the theorem's proof exactly. Every claim on this page can be
   re-run with the commands below, which are also in the
   <a href="https://github.com/igniting/the-ai-frontier#readme">README</a>. CI repeats the checks, including the
-  whole proof of S(4) = 44, on every push.</p>
+  whole proof of S(4) = 44 in both languages, on every push.</p>
   <p>It does not show that earlier models could not have done this. I can't run that comparison. If you want to,
   <a href="https://github.com/igniting/the-ai-frontier/blob/main/CHALLENGE.md">CHALLENGE.md</a> turns the original
   task into a benchmark with an automatic scorer. S(4) = 44 has been known since 1965; what is new here is that a
   language built in this session produced the proof, not the result itself. Lumen is also small by design: no
-  floating point, no modules, 31-bit integers, and arrays as its only mutable values. And every timing here comes
-  from one JavaScript engine on one machine.</p>
+  floating point, no modules, 31-bit integers, and arrays as its only mutable values. Lumen 2 has no floating
+  point or modules either. Its refinements are limited to linear arithmetic over integers and array lengths, and it
+  reuses memory only where the size of a cell is known when compiling. Its S(4) proof rests on the same symmetry
+  argument as Lumen's. And every timing here comes from one JavaScript engine on one machine.</p>
   <h3>Reproduce it</h3>
   <p>Everything needs only Node 22 and a clone of the repository. There is nothing to install.</p>
   <figure>
@@ -1701,24 +2227,35 @@ node fuzz/mutants.js                        <span class="c"># all 34 planted bug
 node selfhost/bootstrap.js                  <span class="c"># the self-hosting fixed point</span>
 node superopt/verify.js                     <span class="c"># re-prove the 40 rules, checking every proof</span>
 node bench/gate.js                          <span class="c"># the whole gate, about 7 minutes</span>
-node proofs/prove-schur.js 4 44             <span class="c"># prove S(4) = 44, about 6 minutes</span></pre>
+node proofs/prove-schur.js 4 44             <span class="c"># prove S(4) = 44, about 6 minutes</span>
+
+cd lumen2 &amp;&amp; npm test &amp;&amp; cd ..              <span class="c"># Lumen 2: 31 tests</span>
+node lumen2/test/fuzz.js 1000               <span class="c"># Lumen 2: differential fuzzing, four ways</span>
+node lumen2/test/fuzz.js --mutants          <span class="c"># all 19 planted bugs must be caught</span>
+node lumen2/proofs/prove-schur.js 4 44      <span class="c"># S(4) = 44 in Lumen 2, about 5 minutes</span>
+node lumen2/proofs/compare-lumen.js 4 44    <span class="c"># the same proof as Lumen's, byte for byte</span></pre>
   </figure>
   <div class="callout">
     <p><b>Explore it yourself.</b> The <a href="playground.html">playground</a> has the full editor with types,
     intermediate code and WebAssembly views, the fuzzer, the bootstrap, every proved rule, and the campaign.
-    The <a href="https://github.com/igniting/the-ai-frontier">source</a> has everything else.</p>
+    The <a href="lumen2/playground.html">Lumen 2 playground</a> shows inferred effects, every proof obligation,
+    the code after reference counting, property tests and certificates. The
+    <a href="https://github.com/igniting/the-ai-frontier">source</a> has everything else.</p>
   </div>
 </section>
 
 <footer>
   <span>Lumen · built in Claude Code</span>
   <a href="playground.html">Playground</a>
+  <a href="lumen2/playground.html">Lumen 2 playground</a>
   <a href="https://github.com/igniting/the-ai-frontier">Source</a>
   <a href="https://github.com/igniting/the-ai-frontier/blob/main/SPEC.md">Language spec</a>
   <a href="https://github.com/igniting/the-ai-frontier/blob/main/CAMPAIGN.md">Campaign log</a>
   <a href="https://github.com/igniting/the-ai-frontier/blob/main/superopt/RULES.md">Proved rules</a>
   <a href="https://github.com/igniting/the-ai-frontier/tree/main/proofs">The S(4) proof</a>
+  <a href="https://github.com/igniting/the-ai-frontier/blob/main/lumen2/SPEC.md">Lumen 2 spec</a>
 </footer>
 <script type="module" src="story/story.js"></script>
+<script type="module" src="story/lumen2.js"></script>
 </body>
 </html>

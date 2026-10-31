@@ -1,0 +1,13 @@
+// Capabilities: printing, reading input, the clock and random numbers are
+// effects, and main may only use the ones it is granted. In the playground,
+// untick "random" and run this: the checker names the call that needs it.
+
+fn roll() { random_int(1, 6) }
+fn rolls(n) { map(range(0, n), |_| roll()) }
+
+fn main() {
+  let start = clock_ms();
+  let rs = rolls(10);
+  println("rolled " ++ show(rs) ++ ", total " ++ show(sum(rs)));
+  println("that took " ++ show(clock_ms() - start) ++ " ms")
+}
