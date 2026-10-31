@@ -260,7 +260,7 @@ table.t.trace td code { white-space: nowrap; }
     <div class="stat" role="listitem"><div class="v">S(4) = 44</div><div class="k">proved in Lumen, 255,663 proof steps checked</div></div>
     <div class="stat" role="listitem"><div class="v">−31%</div><div class="k">instructions executed with <code>-O</code> (geometric mean, 11 programs)</div></div>
     <div class="stat" role="listitem"><div class="v">~6,000</div><div class="k">lines of a second language, Lumen 2, with no garbage collector</div></div>
-    <div class="stat" role="listitem"><div class="v">20 / 20</div><div class="k">planted bugs caught in Lumen 2, 7 before any program runs</div></div>
+    <div class="stat" role="listitem"><div class="v">21 / 21</div><div class="k">planted bugs caught in Lumen 2, 7 before any program runs</div></div>
     <div class="stat" role="listitem"><div class="v">22 MB</div><div class="k">of proof, byte for byte the same from the Lumen and Lumen 2 solvers</div></div>
   </div>
   <p class="readtime">About an hour and a half to read, longer with the demos. The chapters build on each other, and each part opens with a short summary.</p>
@@ -1994,7 +1994,7 @@ fn main() {
   of an instruction and once at the field read itself. On most programs, nothing visible would have happened,
   because freed memory still holds its old contents. The ownership checker rejected both versions on the first
   compile. One of the two mistakes is now a planted bug.</p>
-  <p>As in Part two, planted bugs check the checks. There are 20, spread across the compiler, the refinement
+  <p>As in Part two, planted bugs check the checks. There are 21, spread across the compiler, the refinement
   checker and the SAT solver, and every one is caught. Seven are caught at compile time by a certificate checker,
   before any program runs. Pick one and compile:</p>
 
@@ -2038,7 +2038,7 @@ fn main() {
     <pre class="out" id="pb-out" hidden></pre>
   </div>
 
-  <p>The other thirteen planted bugs produce code that passes every certificate, so they need the dynamic checks
+  <p>The other fourteen planted bugs produce code that passes every certificate, so they need the dynamic checks
   to catch them. They include reusing a cell that is shared, updating a shared array in place, dropping the
   overflow check on addition, an off-by-one in the overflow bound for multiplication by a constant, and
   applying a rewrite rule from chapter 19 without checking its side condition. The
@@ -2283,7 +2283,7 @@ node proofs/prove-schur.js 4 44             <span class="c"># prove S(4) = 44, a
 
 cd lumen2 &amp;&amp; npm test &amp;&amp; cd ..              <span class="c"># Lumen 2: 31 tests</span>
 node lumen2/test/fuzz.js 1000               <span class="c"># Lumen 2: differential fuzzing, four ways</span>
-node lumen2/test/fuzz.js --mutants          <span class="c"># all 20 planted bugs must be caught</span>
+node lumen2/test/fuzz.js --mutants          <span class="c"># all 21 planted bugs must be caught</span>
 node lumen2/superopt/verify.js              <span class="c"># re-prove the 19 rewrite rules</span>
 node lumen2/selfhost/bootstrap.js           <span class="c"># Lumen 2's self-hosting fixed point</span>
 node lumen2/proofs/prove-schur.js 4 44      <span class="c"># S(4) = 44 in Lumen 2, about 5 minutes</span>

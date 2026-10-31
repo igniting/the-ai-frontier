@@ -509,7 +509,7 @@ after type checking.
   proof therefore shows up as a disagreement with the compiled code.
 - **Certificates on every compile**: IR types, reference counting, every
   DRUP proof, and the engine's validation of the module.
-- **Planted bugs.** Twenty deliberate bugs in the compiler, the verifier
+- **Planted bugs.** Twenty-one deliberate bugs in the compiler, the verifier
   and the SAT solver check that all of this catches what it should. Seven
   are caught at compile time by a certificate checker, before any program
   runs:
@@ -531,6 +531,7 @@ after type checking.
   | drop the overflow check on `+` | differential run | 28 |
   | an off-by-one in the overflow bound for multiplying by a constant | differential run | 37 |
   | apply a rewrite rule without checking its side condition | differential run | 8 |
+  | a remainder range one too narrow in the model of division by a constant | run-time re-check of proofs | 106 |
   | compare constructors by their fields only | differential run | 9 |
   | an off-by-one at the end of `substring` | differential run | 47 |
   | compare a type structurally despite its `impl Ord` | differential run | 23 |
