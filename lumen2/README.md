@@ -32,10 +32,14 @@ no garbage collector.** Lumen 2 is a fresh design, not an extension of
   balances on every path.
 - **64-bit integers that never wrap silently.** Overflow is a runtime error,
   not a wrong answer.
+- **A theorem, proved in it.** A SAT solver written in Lumen 2 proves the
+  Schur number S(4) = 44. It prints the same 255,663-step refutation, byte
+  for byte, as the original Lumen's imperative solver, at about the same
+  speed.
 
 ```sh
 cd lumen2
-npm test                                         # 28 tests, about 20 s
+npm test                                         # 31 tests, about 25 s
 node bin/lumen2.js check examples/refine.lm      # inferred types, effects, refinements
 node bin/lumen2.js run examples/tour.lm          # compile to wasm and run
 node bin/lumen2.js test examples/properties.lm   # check the properties
@@ -43,6 +47,8 @@ node bin/lumen2.js certify examples/refine.lm --out cert   # every certificate, 
 node bin/lumen2.js ir examples/tour.lm insert    # the IR, with reference counting
 node test/fuzz.js 1000                           # differential fuzzing
 node test/fuzz.js --mutants                      # are planted bugs caught?
+node proofs/prove-schur.js 4 44                  # prove S(4) = 44 (about 5 minutes)
+node proofs/compare-lumen.js 4 44                # the same proof as the Lumen solver's?
 ```
 
 Requires Node.js 22 or later. There are no dependencies.
@@ -194,6 +200,72 @@ annotation means all four. `run` grants `output`. The clock and random
 numbers come from a host that the interpreter and the compiled code share,
 so a seeded run is reproducible.
 
+## A theorem: S(4) = 44
+
+The Schur number S(4) is the largest n for which 1..n can be split into
+four groups, none containing x, y and x + y. That it is 44 has been known
+since a computer search in 1965. [`proofs/sat.lm`](proofs/sat.lm) is a
+CDCL SAT solver written in Lumen 2, and [`proofs/schur.lm`](proofs/schur.lm)
+writes the problem as CNF. `node proofs/prove-schur.js 4 44` checks each
+step with something independent of it:
+
+```
+encodings: 1982 and 2071 clauses from proofs/schur.lm; identical to the reference encoder
+1..44: split found in 2.7 s (27684 conflicts); checked: every group is sum-free
+  group 1: 1 4 9 12 19 26 33 36 39 41 44
+  group 2: 2 3 10 11 15 16 29 34 35 42 43
+  group 3: 5 6 7 8 17 18 27 28 37 38 40
+  group 4: 13 14 20 21 22 23 24 25 30 31 32
+1..45: refuted in 119.1 s (255663 conflicts, 255663 proof lines)
+refutation CHECKED by src/rup.js in 274.7 s
+PROVED: S(4) = 44  (398.3 s in total)
+```
+
+(That run shared the machine with the test suite. On its own, the
+refutation takes 109 s, and the checker, since rewritten to keep its
+top-level assignment between lemmas, takes 170 s.) The one step taken on
+trust is the symmetry breaking in `schur.lm`: 1 goes in group 1, so 2 goes
+in group 2, since the groups are interchangeable.
+
+**The same proof as the original Lumen's.** The solver is a port of
+[Lumen's solver](../proofs/sat.lm), decision for decision: the same watch
+order, heap, integer activities, restarts and learning. Lumen's version
+mutates its arrays; Lumen 2 has none to mutate, so the solver threads its
+state through every function as a value, and the compiler updates it in
+place because it is never shared. `node proofs/compare-lumen.js 4 44` runs
+both on the same formulas, and they print the same thing, byte for byte:
+the 27,684 conflicts of the split and the 255,663-lemma refutation. Two
+programs in two languages, with two compilers, agree on 22 MB of output.
+
+| | Lumen 2 | Lumen (`-O`) |
+| --- | --- | --- |
+| split of 1..44 | 2.2 s | 2.6 s |
+| refutation of 1..45 | 108.8 s | 93.1 s |
+| proof check | 170 s (`src/rup.js`) | 158 s (`superopt/rup.js`) |
+
+**What it took.** The first compiled version took 19.0 s for the split.
+Five compiler optimizations brought it to 2.8 s on a busy machine (2.2 s
+on its own), each one checked by the certificate checkers, the fuzzer and a
+new planted bug:
+
+| Optimization | Split of 1..44 |
+| --- | --- |
+| none | 19.0 s |
+| borrowed parameters: a parameter that is only read costs no reference counting | 12.8 s |
+| drop specialization: taking apart a unique record moves its fields | 5.1 s |
+| inlining small functions | 4.5 s |
+| checked arithmetic and array reads inline in the wasm | 2.9 s |
+| simplification: a chain of record updates becomes one unpack and one constructor | 2.8 s |
+
+**What refinements prove here, and what they do not.** The checker proves
+19 of the solver's 20 divisions and the input parser's string indexing safe,
+so those carry no `fail`. It does not prove the solver's 27 accesses to its
+state arrays: their lengths live inside the `Solver` record, and the facts
+that would make them safe (every literal in every clause is below 2n + 2)
+are about array contents, which refinements cannot state. The solver's
+functions therefore have `! fail` in their types, and the bounds checks stay
+in the compiled code.
+
 ## Memory without a garbage collector
 
 `lumen2 ir` shows what the compiler does with memory. Here is the `insert`
@@ -242,10 +314,12 @@ is not used again allocates nothing.
 | Interpreter | `src/interp.js` | The reference semantics: BigInt arithmetic checked against 64 bits, trampolined tail calls, and a run-time re-check of everything the checker proved |
 | Properties | `src/props.js` | Type-directed generation and shrinking; compiled replay |
 | Lowering | `src/lower.js` | Monomorphization (an `Int` is never boxed, trait methods become direct calls); A-normal form; closures lifted; matches compiled to tests that borrow |
-| Perceus | `src/perceus.js` | Ownership: dup where a value is needed twice, drop as soon as it is dead |
+| Inlining | `src/inline.js`, `src/simplify.js` | Small functions inlined; known-constructor field reads, flattening and dead-code removal |
+| Perceus | `src/perceus.js` | Ownership: dup where a value is needed twice, drop as soon as it is dead; borrowed parameters and projections, inferred |
 | Reuse | `src/reuse.js` | `drop` followed by a same-size allocation becomes `drop-reuse` and an in-place constructor |
+| Drop specialization | `src/specialize.js` | Taking apart a unique cell moves its fields instead of dup-ing and releasing them |
 | Certificates | `src/certify.js` | Independent checkers for the IR's types and its reference counting |
-| Code generator | `src/codegen.js` | WebAssembly with i64, tail calls and bulk memory; a size-class allocator; per-type drop and compare functions that free and compare long lists in constant stack |
+| Code generator | `src/codegen.js` | WebAssembly with i64, tail calls and bulk memory; checked arithmetic and array reads inline; a size-class allocator; per-type drop and compare functions that free and compare long lists in constant stack |
 | Encoder | `src/wasm.js` | A binary encoder; no external toolchain |
 
 The language is defined in [SPEC.md](SPEC.md).
@@ -272,9 +346,10 @@ after type checking.
   proof therefore shows up as a disagreement with the compiled code.
 - **Certificates on every compile**: IR types, reference counting, every
   DRUP proof, and the engine's validation of the module.
-- **Planted bugs.** Sixteen deliberate bugs in the compiler, the verifier
-  and the SAT solver check that all of this catches what it should. Six are
-  caught at compile time by a certificate checker, before any program runs:
+- **Planted bugs.** Nineteen deliberate bugs in the compiler, the verifier
+  and the SAT solver check that all of this catches what it should. Seven
+  are caught at compile time by a certificate checker, before any program
+  runs:
 
   | Planted bug | Caught by | First seed |
   | --- | --- | --- |
@@ -282,18 +357,21 @@ after type checking.
   | forget to drop a variable last used by a borrowing instruction | ownership checker | 1 |
   | drop a variable before the instruction that borrows it | ownership checker | 1 |
   | forget to free a reuse token on a path that does not use it | ownership checker | 2 |
+  | release a value while a borrowed projection of it is about to be read | ownership checker | 6 |
   | give a pattern variable the type of the pattern's first variable | IR type checker | 1 |
   | a SAT solver that claims every formula is unsatisfiable | RUP proof checker | 1 |
   | read a closure's captured value without taking a reference | differential run | 1 |
-  | reuse a cell even when it is shared | differential run | 11 |
+  | reuse a cell even when it is shared | differential run | 4 |
+  | move the fields out of a cell even when it is shared | differential run | 19 |
   | update a shared array in place | differential run | 6 |
   | free an object without releasing its last field | leak check | 1 |
-  | drop the overflow check on `+` | differential run | 12 |
+  | drop the overflow check on `+` | differential run | 28 |
+  | an off-by-one in the overflow bound for multiplying by a constant | differential run | 37 |
   | compare constructors by their fields only | differential run | 9 |
   | an off-by-one at the end of `substring` | differential run | 47 |
-  | compare a type structurally despite its `impl Ord` | differential run | 13 |
+  | compare a type structurally despite its `impl Ord` | differential run | 23 |
   | assume an `if`'s condition in its `else` branch too | run-time re-check of proofs | 1 |
-  | a bit-blasted adder that drops the carry | run-time re-check of proofs | 10 |
+  | a bit-blasted adder that drops the carry | run-time re-check of proofs | 21 |
 
   An earlier planted bug, letting a borrowed projection outlive the value it
   was read from, was never caught. It turned out to be unobservable, because
@@ -319,6 +397,20 @@ Problems the checks found during development:
 - The first proof checker re-propagated every clause for every lemma and
   took 22 seconds on a 3,665-lemma proof. With watched literals it takes
   0.35 seconds.
+- The first borrow inference made a setter's record parameter borrowed,
+  since the setter never consumes the record itself, only its fields. Every
+  update then copied the arrays, and the split ran for more than ten
+  minutes instead of 19 seconds; nothing was wrong, only slow. Consuming a
+  field now counts as consuming the record.
+- The ownership checker rejected two of the new optimizations while they
+  were being written: a borrowed projection whose source was released just
+  before it was read, once inside an instruction and once at the
+  projection's own definition. Both were liveness bugs in `perceus.js`. One
+  is now a planted bug.
+- The interpreter, the compiled code and the Lumen solver agree on every
+  small Schur instance in the tests, and on S(4) the two solvers agree byte
+  for byte; a difference anywhere in the 22 MB would have shown a bug in
+  one of the two compilers.
 
 ## Limitations
 
@@ -339,16 +431,20 @@ the program can have their own `Ord` or `Show`. Equality is `Ord`'s
 `compare(a, b) == 0`.
 
 Reuse needs the size of the cell being dropped to be known statically,
-which is the case inside a match arm. The Perceus paper's further
-optimizations (drop specialization, borrowed parameters) are not
-implemented. Deep non-tail recursion is limited by the wasm stack.
+which is the case inside a match arm. Drop specialization applies to
+tuples and types with one constructor that has fields, when the fields are
+read right before the drop, so a tree insert that compares before it
+rebuilds is not specialized. Deep non-tail recursion is limited by the
+wasm stack.
 
 ## Layout
 
 ```
 src/        lexer, parser, checker, exhaustiveness, refinements, SAT solver,
-            proof checker, interpreter, properties, lowering, Perceus, reuse,
-            certificate checkers, code generator, wasm encoder
+            proof checker, interpreter, properties, lowering, inlining,
+            Perceus, reuse, drop specialization, certificate checkers,
+            code generator, wasm encoder
+proofs/     a SAT solver and a Schur encoder written in Lumen 2; S(4) = 44
 bin/        the lumen2 command
 test/       node:test suites and the differential fuzzer with planted bugs
 examples/   example programs

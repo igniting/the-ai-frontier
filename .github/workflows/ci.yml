@@ -51,6 +51,27 @@ jobs:
       - name: Lumen 2 certificates (IR types, ownership, DRUP proofs checked again)
         run: node bin/lumen2.js certify examples/refine.lm --out lumen2-certificates
 
+  lumen2-schur:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: lumen2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Prove S(4) = 44 with the Lumen 2 SAT solver (checked by the independent RUP checker)
+        run: node proofs/prove-schur.js 4 44 --out lumen2-schur-proof
+      - name: The Lumen 2 and Lumen solvers print the same proof, byte for byte
+        run: node proofs/compare-lumen.js 4 44
+      - name: Upload the formulas and the refutation (DIMACS + DRUP)
+        uses: actions/upload-artifact@v4
+        with:
+          name: lumen2-schur-proof
+          path: lumen2/lumen2-schur-proof/
+
   schur:
     runs-on: ubuntu-latest
     timeout-minutes: 30
