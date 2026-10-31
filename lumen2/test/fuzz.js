@@ -176,7 +176,7 @@ export function generate(seed) {
         () => `length(tree_list(${g(T.tree)}))`,
         () => `random_int(${g(T.int)}, ${g(T.int)})`, () => `(clock_ms() - clock_ms())`,
         () => `size(${g(pick([T.shape, T.tree, T.ints, T.int]))})`,
-        () => refined(d, env), () => refined(d, env),
+        () => refined(d, env), () => refined(d, env), () => edge(),
         () => { const u = cmpTy(); return `compare(${g(u)}, ${g(u)})`; },
       ])();
       case T.bool: return pick([
@@ -234,6 +234,19 @@ export function generate(seed) {
       ])();
       default: throw new Error(t);
     }
+  }
+
+  // Arithmetic with a constant, on the exact edge of overflowing (or just past it).
+  function edge() {
+    const MAX = (1n << 63n) - 1n, MIN = -(1n << 63n);
+    const c = BigInt(pick(['2', '3', '-3', '10', '-1', '7']));
+    if (chance(0.5)) {
+      const lo = MIN / c < MAX / c ? MIN / c : MAX / c, hi = MIN / c < MAX / c ? MAX / c : MIN / c;
+      const x = pick([lo, lo - 1n, hi, hi + 1n]);
+      return x < MIN || x > MAX ? '0' : `(${x} * ${c})`;
+    }
+    const x = c > 0n ? pick([MAX - c, MAX - c + 1n]) : pick([MIN - c, MIN - c - 1n]);
+    return x < MIN || x > MAX ? '0' : `(${x} + ${c})`;
   }
 
   // Partial operations whose safety the checker can prove, or (the else
@@ -387,6 +400,9 @@ export const MUTANTS = [
   'blast-carry', // a bit-blasted adder that drops the carry
   'sat-claims-unsat', // a SAT solver that claims every formula is unsatisfiable
   'lower-bind-type', // give a pattern variable the type of the pattern's first variable
+  'peek-source-early', // release a value while a borrowed projection of it is about to be read
+  'unpack-always-unique', // move the fields out of a cell even when it is shared
+  'mul-const-bound', // an off-by-one in the overflow bound for multiplying by a constant
 ];
 
 function main() {

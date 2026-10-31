@@ -176,6 +176,13 @@ export class Module {
       o2.push(0x00, 0x41); sleb(d.offset, o2); o2.push(0x0b);
       uleb(d.bytes.length, o2); append(o2, d.bytes);
     }, o));
+    // The custom "name" section: function names, for profilers and stack traces.
+    section(0, (o) => {
+      str('name', o);
+      const names = [];
+      vec([...this.imports.map((im) => im.fname), ...this.funcs.map((f) => f.name)].map((n, k) => [k, n]), ([k, n], o2) => { uleb(k, o2); str(n, o2); }, names);
+      o.push(1); uleb(names.length, o); append(o, names);
+    });
     return new Uint8Array(out);
   }
 

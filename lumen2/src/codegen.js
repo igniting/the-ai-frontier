@@ -26,8 +26,11 @@
 
 import { Module } from './wasm.js';
 import { lowerProgram, tkey, valtype } from './lower.js';
-import { perceus, makeHeapTest } from './perceus.js';
+import { perceus, makeHeapTest, inferBorrowing } from './perceus.js';
 import { insertReuse } from './reuse.js';
+import { specializeDrops } from './specialize.js';
+import { inlineSmall } from './inline.js';
+import { simplify } from './simplify.js';
 import { checkTypes, checkOwnership, CertificateError } from './certify.js';
 import { substParams } from './types.js';
 import { makeHost } from './host.js';
@@ -54,15 +57,21 @@ const fail = (code) => [i32(code), call('rt_fail'), ['unreachable']];
 const flat = (x) => (Array.isArray(x) && typeof x[0] === 'string' ? [x] : x.flatMap(flat));
 
 // Options: paranoid (never reuse freed memory), reuse (Perceus reuse, on by
-// default) and mutant (plant a known bug; see test/fuzz.js).
-export function compileProgram(program, { paranoid = false, reuse = true, mutant = null } = {}) {
+// default), borrow (borrowed parameters and projections, on by default),
+// specialize (drop specialization, on by default), inline (inline small
+// functions, on by default) and mutant (plant a known bug; see test/fuzz.js).
+export function compileProgram(program, { paranoid = false, reuse = true, borrow = true, specialize = true, inline = true, mutant = null } = {}) {
+  const noInline = !inline;
   const ir = lowerProgram(program, { mutant });
+  if (inline) { inlineSmall(ir); for (const f of ir.fns) simplify(f); }
   const isHeap = makeHeapTest(program.adts);
   // Each pass's output is checked by an independent certificate checker (certify.js).
   const types = checkTypes(ir, program.adts);
+  const byName = borrow ? inferBorrowing(ir.fns, isHeap) : new Map();
   for (const f of ir.fns) {
-    perceus(f, isHeap, mutant);
+    perceus(f, isHeap, mutant, byName);
     if (reuse) insertReuse(f, program.adts, mutant);
+    if (specialize) specializeDrops(f, program.adts, isHeap);
   }
   const ownership = checkOwnership(ir, isHeap);
 
@@ -502,7 +511,7 @@ export function compileProgram(program, { paranoid = false, reuse = true, mutant
   function genFn(f) {
     const paramNames = new Set(f.params.map((p) => p.v));
     const locals = [...f.vars].filter(([v]) => !paramNames.has(v)).map(([v, t]) => [v, valtype(t)]);
-    locals.push(['$p', 'i32']);
+    locals.push(['$p', 'i32'], ['$r', 'i64']);
     const body = [];
     const emit = (...xs) => body.push(...flat(xs));
     let labels = 0;
@@ -539,6 +548,7 @@ export function compileProgram(program, { paranoid = false, reuse = true, mutant
       switch (r.k) {
         case 'atom': return atom(r.a);
         case 'prim': {
+          if (PRIMS[r.op] && !noInline) { const inl = arith(r.op, r.args[0], r.args[1]); if (inl) return inl; }
           if (PRIMS[r.op]) return [atoms(r.args), call(PRIMS[r.op])];
           if (r.op === 'neg') return [atom(r.args[0]), call('int_neg')];
           if (r.op === 'not') return [atom(r.args[0]), ['i32.eqz']];
@@ -580,6 +590,65 @@ export function compileProgram(program, { paranoid = false, reuse = true, mutant
       }
     }
 
+    // Checked arithmetic, inline. Operands are atoms, so they can be read twice.
+    const MAX = (1n << 63n) - 1n, MIN = -(1n << 63n);
+    const konst = (a) => (a.k === 'int' ? BigInt(a.n) : null);
+    const trap = (code) => [['if'], fail(code), ['end']];
+    function arith(op, a, b) {
+      const [ca, cb] = [konst(a), konst(b)];
+      switch (op) {
+        case 'add': case 'sub': {
+          const w = op === 'add' ? 'i64.add' : 'i64.sub';
+          if (cb !== null) {
+            // x + c overflows exactly when x passes a bound that depends on c.
+            const c = op === 'add' ? cb : -cb;
+            if (c === 0n) return atom(a);
+            if (c > MAX || c < MIN) return null;
+            const test = c > 0n ? [atom(a), i64(MAX - c), ['i64.gt_s']] : [atom(a), i64(MIN - c), ['i64.lt_s']];
+            if (mutant === 'add-no-overflow' && op === 'add') return [atom(a), i64(cb), [w]];
+            return [test, trap(OVERFLOW), atom(a), i64(cb), [w]];
+          }
+          // Signs: for a + b, overflow when a and b agree and the result does not;
+          // for a - b, when a and b differ and the result differs from a.
+          const sign = op === 'add'
+            ? [atom(a), get('$r'), ['i64.xor'], atom(b), get('$r'), ['i64.xor'], ['i64.and']]
+            : [atom(a), atom(b), ['i64.xor'], atom(a), get('$r'), ['i64.xor'], ['i64.and']];
+          if (mutant === 'add-no-overflow' && op === 'add') return [atom(a), atom(b), [w]];
+          return [atom(a), atom(b), [w], set('$r'), sign, i64(0), ['i64.lt_s'], trap(OVERFLOW), get('$r')];
+        }
+        case 'mul': {
+          const [x, c] = cb !== null ? [a, cb] : ca !== null ? [b, ca] : [null, null];
+          if (x === null) return null;
+          if (c === 0n) return i64(0);
+          if (c === 1n) return atom(x);
+          if (c === -1n) return null;
+          // x * c fits exactly when x lies between MIN / c and MAX / c (rounded inwards).
+          const div = (p, q) => p / q; // BigInt division truncates towards zero
+          let lo = c > 0n ? div(MIN, c) : div(MAX, c), hi = c > 0n ? div(MAX, c) : div(MIN, c);
+          if (lo * c < MIN || lo * c > MAX) lo += 1n;
+          if (hi * c < MIN || hi * c > MAX) hi -= 1n;
+          if (mutant === 'mul-const-bound') hi += 1n;
+          return [atom(x), i64(lo), ['i64.lt_s'], atom(x), i64(hi), ['i64.gt_s'], ['i32.or'], trap(OVERFLOW), atom(x), i64(c), ['i64.mul']];
+        }
+        case 'div': case 'rem':
+          // A constant divisor other than 0 and -1 cannot fail.
+          if (cb === null || cb === 0n || cb === -1n) return null;
+          return [atom(a), i64(cb), [op === 'div' ? 'i64.div_s' : 'i64.rem_s']];
+        default: return null;
+      }
+    }
+
+    // array_get and array_length, inline: a bounds check and a load.
+    function arrayGet(r) {
+      const [a, i] = r.args;
+      const T = r.argTys[0].args[0];
+      const idx = konst(i) !== null ? [i32(Number(konst(i)))] : [atom(i), ['i32.wrap_i64']];
+      return [
+        atom(i), atom(a), chk(), ['i32.load', 4], ['i64.extend_i32_u'], ['i64.ge_u'], trap(BOUNDS),
+        atom(a), idx, i32(3), ['i32.shl'], ['i32.add'], load(T, 16), isHeap(T) ? call('rt_dup') : [],
+      ];
+    }
+
     function builtin(r) {
       const args = atoms(r.args);
       const elem = () => arrayFns(r.argTys[0].args[0]);
@@ -599,10 +668,10 @@ export function compileProgram(program, { paranoid = false, reuse = true, mutant
         case 'panic': return [args, call('str_panic'), ['unreachable']];
         case 'array_make': return [args, call(arrayFns(r.argTys[1])('make'))];
         case 'array_empty': return [i32(0), i32(0), call('arr_new')];
-        case 'array_get': return [args, call(elem()('get'))];
+        case 'array_get': return noInline ? [args, call(elem()('get'))] : arrayGet(r);
         case 'array_set': return [args, call(elem()('set'))];
         case 'array_push': return [args, call(elem()('push'))];
-        case 'array_length': return [args, call('arr_length')];
+        case 'array_length': return noInline ? [args, call('arr_length')] : [atom(r.args[0]), chk(), ['i32.load', 4], ['i64.extend_i32_u']];
         default: throw new Error(`codegen: builtin ${r.name}`);
       }
     }
@@ -636,6 +705,21 @@ export function compileProgram(program, { paranoid = false, reuse = true, mutant
         case 'drop': emit(get(e.v), call(dropFn(f.vars.get(e.v)))); return expr(e.body, label);
         case 'dropreuse': emit(get(e.v), call(reuseFn(f.vars.get(e.v))), set(e.r)); return expr(e.body, label);
         case 'freetoken': emit(get(e.v), ['if'], get(e.v), i32(e.size), call('rt_free'), ['end']); return expr(e.body, label);
+        case 'unpack': {
+          // Unique: the extracted fields move out, the others are released, and
+          // the cell is kept for reuse (or freed). Shared: dup what was extracted.
+          const taken = new Set(e.xs.map((x) => x.i));
+          const vt = f.vars.get(e.v);
+          emit(get(e.v), ['i32.load', 0], i32(1), [mutant === 'unpack-always-unique' ? 'i32.ge_s' : 'i32.eq'], ['if']);
+          e.fields.forEach((ft, j) => { if (isHeap(ft) && !taken.has(j)) emit(get(e.v), load(ft, 8 + 8 * j), call(dropFn(ft))); });
+          if (e.r) emit(get(e.v), set(e.r)); else emit(get(e.v), i32(8 + 8 * e.fields.length), call('rt_free'));
+          emit(['else']);
+          for (const x of e.xs) emit(get(x.x), call('rt_dup'), ['drop']);
+          emit(get(e.v), call(dropFn(vt)));
+          if (e.r) emit(i32(0), set(e.r));
+          emit(['end']);
+          return expr(e.body, label);
+        }
         case 'unreachable': return emit(['unreachable']);
         default: throw new Error(`codegen: ${e.k}`);
       }

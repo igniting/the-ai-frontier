@@ -149,6 +149,9 @@ export function checkTypes(ir, adts) {
         case 'if': expect(e.c, BOOL, 'condition'); expr(e.t, resultTy); return expr(e.e, resultTy);
         case 'unreachable': return undefined;
         case 'dup': case 'drop': case 'dropreuse': case 'freetoken': varTy(e.v); return expr(e.body, resultTy);
+        case 'unpack':
+          for (const x of e.xs) if (!same(varTy(x.x), e.fields[x.i])) bad(`unpack: ${x.x} is not field ${x.i} of ${e.v}`);
+          return expr(e.body, resultTy);
         default: return bad(`expression ${e.k}`);
       }
     }
@@ -161,11 +164,18 @@ export function checkTypes(ir, adts) {
 // ------------------------------------------------------------ ownership --
 // Which operands an instruction takes ownership of; the rest it only reads.
 const CONSUMING_BUILTIN_ARGS = { array_make: [1], array_set: [0, 2], array_push: [0, 1] };
-function operands(r) {
+// A call takes the arguments at its callee's owned parameters, and only reads
+// the ones at borrowed parameters.
+function operands(r, modeOf) {
   const vars = (as) => as.filter((a) => a.k === 'var').map((a) => a.v);
   switch (r.k) {
     case 'atom': return { takes: vars([r.a]), reads: [] };
-    case 'call': case 'ctor': case 'tuple': return { takes: vars(r.args), reads: [] };
+    case 'call': {
+      const takes = [], reads = [];
+      r.args.forEach((a, i) => { if (a.k === 'var') (modeOf(r.fn, i) === 'owned' ? takes : reads).push(a.v); });
+      return { takes, reads };
+    }
+    case 'ctor': case 'tuple': return { takes: vars(r.args), reads: [] };
     case 'callc': return { takes: vars([r.f, ...r.args]), reads: [] };
     case 'closure': return { takes: vars(r.captures), reads: [] };
     case 'prim': case 'cmp': return { takes: [], reads: vars(r.args) };
@@ -183,7 +193,9 @@ function operands(r) {
 }
 
 export function checkOwnership(ir, isHeap) {
-  const stats = { functions: 0, dups: 0, drops: 0, reuses: 0 };
+  const stats = { functions: 0, dups: 0, drops: 0, reuses: 0, borrowed: 0 };
+  const byName = new Map(ir.fns.map((f) => [f.name, f]));
+  const modeOf = (name, i) => byName.get(name)?.modes?.[i] ?? 'owned';
   for (const f of ir.fns) {
     stats.functions++;
     const bad = (msg) => { throw new CertificateError(`ownership in ${f.name}: ${msg}`); };
@@ -192,7 +204,8 @@ export function checkOwnership(ir, isHeap) {
 
     // State: owned reference counts, borrowed projections, reuse tokens.
     const copy = (s) => ({ owned: new Map(s.owned), borrowed: new Set(s.borrowed), tokens: new Set(s.tokens) });
-    const live = (s, v) => (s.owned.get(v) ?? 0) > 0 || (s.borrowed.has(v) && live(s, source.get(v)));
+    // A borrowed parameter stays alive for the whole call; a projection, while what it reads is alive.
+    const live = (s, v) => (s.owned.get(v) ?? 0) > 0 || (s.borrowed.has(v) && (!source.has(v) || live(s, source.get(v))));
     const take = (s, v) => {
       const n = s.owned.get(v) ?? 0;
       if (n === 0) bad(`${v} is given away, but no reference to it is held${s.borrowed.has(v) ? ' (it is only borrowed)' : ''}`);
@@ -201,7 +214,7 @@ export function checkOwnership(ir, isHeap) {
     const key = (s) => [...[...s.owned].filter(([, n]) => n > 0).map(([v, n]) => `${v}:${n}`).sort(), '|', ...[...s.tokens].sort()].join(',');
 
     function step(s, r) {
-      const { takes, reads } = operands(r);
+      const { takes, reads } = operands(r, modeOf);
       for (const v of reads) if (heap(v) && !live(s, v)) bad(`${v} is read after its last reference was released`);
       for (const v of takes) if (heap(v)) take(s, v);
       // A value that is both read and given away must stay alive through the instruction.
@@ -247,10 +260,28 @@ export function checkOwnership(ir, isHeap) {
           if (!s.tokens.has(e.v)) bad(`frees reuse token ${e.v}, which is not held`);
           s.tokens.delete(e.v);
           return expr(e.body, s, top, ends);
+        case 'unpack':
+          // v is given up; each extracted projection of it becomes an owned reference.
+          for (const x of e.xs) {
+            if (!s.borrowed.has(x.x) || source.get(x.x) !== e.v) bad(`unpack of ${e.v} takes ${x.x}, which is not a projection of it`);
+          }
+          if (new Set(e.xs.map((x) => x.i)).size !== e.xs.length) bad(`unpack of ${e.v} takes a field twice`);
+          take(s, e.v);
+          for (const x of e.xs) { s.borrowed.delete(x.x); s.owned.set(x.x, (s.owned.get(x.x) ?? 0) + 1); }
+          if (e.r) { s.tokens.add(e.r); stats.reuses; }
+          stats.drops++;
+          return expr(e.body, s, top, ends);
         default: return bad(`expression ${e.k}`);
       }
     }
-    const start = { owned: new Map(f.params.filter((p) => heap(p.v)).map((p) => [p.v, 1])), borrowed: new Set(), tokens: new Set() };
+    const mode = (i) => f.modes?.[i] ?? 'owned';
+    if (f.env && f.params.some((p, i) => mode(i) !== 'owned')) bad('closure code cannot borrow its parameters');
+    const start = {
+      owned: new Map(f.params.filter((p, i) => heap(p.v) && mode(i) === 'owned').map((p) => [p.v, 1])),
+      borrowed: new Set(f.params.filter((p, i) => mode(i) === 'borrowed').map((p) => p.v)),
+      tokens: new Set(),
+    };
+    stats.borrowed += start.borrowed.size;
     expr(f.body, start, true, []);
   }
   return stats;

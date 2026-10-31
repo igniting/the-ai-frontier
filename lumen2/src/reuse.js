@@ -40,6 +40,11 @@ export function insertReuse(fn, adts, mutant = null) {
     switch (e.k) {
       case 'let': {
         if (allocClass(e.rhs) === cls) return { e: { ...e, rhs: { ...e.rhs, reuse: r } }, used: true };
+        // A nested expression can use the token too; then it is used or freed on each of its paths.
+        if (e.rhs.k === 'expr') {
+          const inner = place(e.rhs.e, r, cls);
+          if (inner.used) return { e: { ...e, rhs: { k: 'expr', e: inner.e } }, used: true };
+        }
         const b = place(e.body, r, cls);
         return { e: { ...e, body: b.e }, used: b.used };
       }

@@ -7,6 +7,9 @@
 // when the empty clause is reached this way. The checker is written
 // separately from the solver and shares no code with it, so a bug in the
 // solver cannot make it accept a wrong answer.
+//
+// What unit propagation derives from the clauses alone (the top level) is
+// kept between lemmas, so each check only propagates its own assumptions.
 
 export function checkRefutation(nvars, clauses, proof, { mutant = null } = {}) {
   if (mutant === 'rup-accept-all') return { ok: true, lemmas: proof.length };
@@ -16,32 +19,20 @@ export function checkRefutation(nvars, clauses, proof, { mutant = null } = {}) {
   const trail = new Int32Array(nvars + 1);
   const watch = Array.from({ length: 2 * nvars + 2 }, () => []); // clauses watching a literal, visited when it becomes false
   const db = [];
-  const units = [];
-  let hasEmpty = false;
+  let top = 0; // trail length
+  let base = 0; // the top-level part of the trail, kept between checks
+  let head = 0; // the next trail position to propagate
+  let refuted = false; // the top level itself is contradictory
 
-  const add = (c) => {
-    const lits = [...new Set(c)];
-    if (!lits.length) { hasEmpty = true; return; }
-    if (lits.length === 1) { units.push(lits[0]); return; }
-    const ci = db.length;
-    db.push(Int32Array.from(lits));
-    watch[slot(lits[0])].push(ci);
-    watch[slot(lits[1])].push(ci);
+  const make = (l) => {
+    const v = value(l);
+    if (v === -1) return false;
+    if (v === 0) { val[Math.abs(l)] = l > 0 ? 1 : -1; trail[top++] = l; }
+    return true;
   };
-
-  // Makes the literals true and propagates; reports whether a conflict follows.
-  // The assignment is undone afterwards; the watches stay valid.
-  const conflicts = (assumed) => {
-    let top = 0, head = 0, conflict = false;
-    const make = (l) => {
-      const v = value(l);
-      if (v === -1) return false;
-      if (v === 0) { val[Math.abs(l)] = l > 0 ? 1 : -1; trail[top++] = l; }
-      return true;
-    };
-    for (const l of units) if (!make(l)) { conflict = true; break; }
-    if (!conflict) for (const l of assumed) if (!make(l)) { conflict = true; break; }
-    while (!conflict && head < top) {
+  // Propagates from the trail position `head`; returns true on a conflict.
+  const propagate = () => {
+    while (head < top) {
       const f = -trail[head++]; // this literal is now false
       const ws = watch[slot(f)];
       for (let i = 0; i < ws.length;) {
@@ -59,23 +50,53 @@ export function checkRefutation(nvars, clauses, proof, { mutant = null } = {}) {
           }
         }
         if (moved) continue;
-        if (value(c[0]) === -1) { conflict = true; break; }
+        if (value(c[0]) === -1) return true;
         make(c[0]);
         i++;
       }
     }
-    for (let i = 0; i < top; i++) val[Math.abs(trail[i])] = 0;
-    return conflict;
+    return false;
+  };
+  const undoTo = (n) => { while (top > n) val[Math.abs(trail[--top])] = 0; head = n; };
+
+  // Adds a clause at the top level, watching two literals that are not false
+  // there if it has them; a clause that is unit or false there is propagated.
+  const add = (c) => {
+    const lits = [...new Set(c)];
+    if (lits.some((l) => lits.includes(-l))) return; // a tautology
+    lits.sort((x, y) => (value(y) !== -1) - (value(x) !== -1)); // non-false literals first
+    const open = lits.filter((l) => value(l) !== -1).length;
+    if (lits.length >= 2) {
+      const ci = db.length;
+      db.push(Int32Array.from(lits));
+      watch[slot(lits[0])].push(ci);
+      watch[slot(lits[1])].push(ci);
+    }
+    if (open === 0) { refuted = true; return; }
+    if (open === 1 && value(lits[0]) === 0) {
+      make(lits[0]);
+      if (propagate()) refuted = true;
+      base = top;
+    }
   };
 
-  for (const c of clauses) add(c);
-  if (hasEmpty) return { ok: true, lemmas: 0 };
+  for (const c of clauses) {
+    if (!c.length) return { ok: true, lemmas: 0 };
+    add(c);
+    if (refuted) return { ok: true, lemmas: 0 };
+  }
   for (let i = 0; i < proof.length; i++) {
     const lemma = proof[i];
     if (lemma.some((l) => !Number.isInteger(l) || l === 0 || Math.abs(l) > nvars)) return { ok: false, reason: `lemma ${i + 1} mentions an unknown variable` };
-    if (!conflicts(lemma.map((l) => -l))) return { ok: false, reason: `lemma ${i + 1} does not follow by unit propagation` };
+    // Assume the lemma false and propagate; then return to the top level.
+    let conflict = false;
+    for (const l of lemma) if (!make(-l)) { conflict = true; break; }
+    if (!conflict) conflict = propagate();
+    undoTo(base);
+    if (!conflict) return { ok: false, reason: `lemma ${i + 1} does not follow by unit propagation` };
     if (!lemma.length) return { ok: true, lemmas: i + 1 };
     add(lemma);
+    if (refuted) return { ok: true, lemmas: i + 1 };
   }
   return { ok: false, reason: 'the proof does not derive the empty clause' };
 }

@@ -35,10 +35,80 @@ const BUILTIN_CONSUMES = {
   array_push: [true, true],
 };
 
+// Borrowed parameters (as in Lean 4 and Koka). A parameter that a function
+// only reads, never consumes, is *borrowed*: the caller passes it without
+// a reference-count increment and keeps ownership, and the callee does not
+// drop it. So `get(s, k)`, which reads one field of s, costs no reference
+// counting at all. The modes are a fixed point over all functions, starting
+// from "borrowed" for every heap parameter of a named function (closure code
+// is called indirectly, so its parameters stay owned).
+//
+// Consuming a field of a parameter counts as consuming the parameter: a
+// function that takes a value apart to build a new one (a setter, an insert)
+// needs to own it, so that the parts are unique and the cell can be reused.
+// Otherwise every update of a borrowed record would copy it.
+//
+// One exception keeps tail calls in constant stack: if a function passes a
+// value it owns to a borrowed parameter in a tail call, it would have to drop
+// the value after the call returns, so that parameter is made owned.
+export function inferBorrowing(fns, isHeap) {
+  const byName = new Map(fns.map((f) => [f.name, f]));
+  for (const f of fns) f.modes = f.params.map((p) => (!f.env && isHeap(p.ty) ? 'borrowed' : 'owned'));
+  const modeOf = (name, i) => byName.get(name)?.modes[i] ?? 'owned';
+  const vars = (as) => as.filter((a) => a.k === 'var').map((a) => a.v);
+  for (let changed = true; changed;) {
+    changed = false;
+    const demote = (g, i) => { if (g && g.modes[i] === 'borrowed') { g.modes[i] = 'owned'; changed = true; } };
+    for (const f of fns) {
+      const index = new Map(f.params.map((p, i) => [p.v, i]));
+      const borrowed = new Set(f.params.filter((p, i) => f.modes[i] === 'borrowed').map((p) => p.v));
+      const root = new Map(); // a projection -> the variable it was read from
+      const consume = (v) => {
+        for (let x = v; x !== undefined; x = root.get(x)) if (index.has(x)) demote(f, index.get(x));
+      };
+      const rhs = (r, tail) => {
+        switch (r.k) {
+          case 'atom': vars([r.a]).forEach(consume); break;
+          case 'call':
+            r.args.forEach((a, i) => {
+              if (a.k !== 'var') return;
+              if (modeOf(r.fn, i) === 'owned') consume(a.v);
+              else if (tail && !borrowed.has(a.v) && isHeap(f.vars.get(a.v))) demote(byName.get(r.fn), i);
+            });
+            break;
+          case 'callc': vars([r.f, ...r.args]).forEach(consume); break;
+          case 'ctor': case 'tuple': vars(r.args).forEach(consume); break;
+          case 'closure': vars(r.captures).forEach(consume); break;
+          case 'builtin': r.args.forEach((a, i) => { if (a.k === 'var' && BUILTIN_CONSUMES[r.name]?.[i]) consume(a.v); }); break;
+          case 'expr': walk(r.e, false); break;
+          default: break;
+        }
+      };
+      const walk = (e, tail) => {
+        switch (e.k) {
+          case 'let':
+            if (e.rhs.k === 'peek') borrowed.add(e.v);
+            if ((e.rhs.k === 'field' || e.rhs.k === 'peek') && e.rhs.x.k === 'var') root.set(e.v, e.rhs.x.v);
+            rhs(e.rhs, false);
+            return walk(e.body, tail);
+          case 'ret': return rhs(e.rhs, tail);
+          case 'if': walk(e.t, tail); return walk(e.e, tail);
+          default: return undefined;
+        }
+      };
+      walk(f.body, true);
+    }
+  }
+  return byName;
+}
+
 // `mutant` plants a known bug, to check that the test harness catches it.
-export function perceus(fn, isHeap, mutant = null) {
+// `byName` gives the other functions' parameter modes (see inferBorrowing).
+export function perceus(fn, isHeap, mutant = null, byName = new Map()) {
   const fvCache = new WeakMap();
   const heapVar = (v) => isHeap(fn.vars.get(v));
+  const modeOf = (name, i) => byName.get(name)?.modes?.[i] ?? 'owned';
+  fn.modes ??= fn.params.map(() => 'owned');
   // A borrowed projection keeps the value it was read from alive. (Lowering
   // already guarantees this, since a match arm re-reads its fields from the
   // matched value after the guard; the rule keeps the pass correct on its own.)
@@ -53,7 +123,11 @@ export function perceus(fn, isHeap, mutant = null) {
       case 'atom': return { consume: atomVars([rhs.a]), borrow: [] };
       case 'prim': return { consume: [], borrow: atomVars(rhs.args) };
       case 'cmp': return { consume: [], borrow: atomVars(rhs.args) };
-      case 'call': return { consume: atomVars(rhs.args), borrow: [] };
+      case 'call': {
+        const consume = [], borrow = [];
+        rhs.args.forEach((a, i) => { if (a.k === 'var') (modeOf(rhs.fn, i) === 'owned' ? consume : borrow).push(a.v); });
+        return { consume, borrow };
+      }
       case 'callc': return { consume: atomVars([rhs.f, ...rhs.args]), borrow: [] };
       case 'ctor': case 'tuple': return { consume: atomVars(rhs.args), borrow: [] };
       case 'closure': return { consume: atomVars(rhs.captures), borrow: [] };
@@ -112,7 +186,8 @@ export function perceus(fn, isHeap, mutant = null) {
       for (let i = 0; i < nDups; i++) dups.push(v);
       if (canTransfer) remaining.delete(v);
     }
-    const mentioned = new Set(mutant === 'perceus-drop-borrowed' ? consume : [...consume, ...borrow]);
+    // What the instruction reads must stay alive through it, and so must what those projections read.
+    const mentioned = live(mutant === 'perceus-drop-borrowed' ? consume : [...consume, ...borrow]);
     const pre = [...remaining].filter((v) => !mentioned.has(v) && !liveAfter.has(v));
     pre.forEach((v) => remaining.delete(v));
     const post = [...remaining].filter((v) => !liveAfter.has(v));
@@ -143,9 +218,11 @@ export function perceus(fn, isHeap, mutant = null) {
       }
       case 'let': {
         if (e.rhs.k === 'peek' && e.rhs.x.k === 'var') peekSource.set(e.v, e.rhs.x.v);
-        const bodyFv = new Set(fv(e.body));
-        bodyFv.delete(e.v);
-        const liveAfter = live(bodyFv);
+        // Live afterwards: what the body uses, and what the projections it uses read
+        // (including the one bound here, if the body uses it).
+        let liveAfter = live(fv(e.body));
+        liveAfter.delete(e.v);
+        if (mutant === 'peek-source-early') { const b = new Set(fv(e.body)); b.delete(e.v); liveAfter = live(b); }
         if (e.rhs.k === 'expr') {
           const inner = new Set([...owned].filter((v) => !liveAfter.has(v)));
           const lent = new Set([...borrowed, ...[...owned].filter((v) => liveAfter.has(v))]);
@@ -166,8 +243,36 @@ export function perceus(fn, isHeap, mutant = null) {
     }
   }
 
-  const owned = new Set(fn.params.map((p) => p.v).filter(heapVar));
-  fn.body = go(fn.body, owned, new Set(), fn.ret);
+  // A field that is only ever read becomes a borrowed projection (`peek`):
+  // no dup when it is loaded, no drop when it dies. Liveness keeps the value
+  // it was read from alive for as long as the projection is used.
+  const consumers = new Map();
+  const count = (e) => {
+    switch (e.k) {
+      case 'let': if (e.rhs.k === 'expr') count(e.rhs.e); else for (const v of uses(e.rhs).consume) consumers.set(v, (consumers.get(v) ?? 0) + 1); return count(e.body);
+      case 'ret': if (e.rhs.k === 'expr') return count(e.rhs.e); for (const v of uses(e.rhs).consume) consumers.set(v, (consumers.get(v) ?? 0) + 1); return undefined;
+      case 'if': count(e.t); return count(e.e);
+      default: return undefined;
+    }
+  };
+  count(fn.body);
+  fn.borrowed ??= new Set();
+  const toPeek = (e) => {
+    switch (e.k) {
+      case 'let':
+        if (e.rhs.k === 'field' && heapVar(e.v) && !consumers.get(e.v)) { e.rhs = { ...e.rhs, k: 'peek' }; fn.borrowed.add(e.v); }
+        if (e.rhs.k === 'expr') toPeek(e.rhs.e);
+        return toPeek(e.body);
+      case 'ret': if (e.rhs.k === 'expr') toPeek(e.rhs.e); return undefined;
+      case 'if': toPeek(e.t); return toPeek(e.e);
+      default: return undefined;
+    }
+  };
+  if (mutant !== 'no-borrow') toPeek(fn.body);
+
+  const owned = new Set(fn.params.filter((p, i) => fn.modes[i] === 'owned').map((p) => p.v).filter(heapVar));
+  const lent = new Set(fn.params.filter((p, i) => fn.modes[i] === 'borrowed').map((p) => p.v));
+  fn.body = go(fn.body, owned, lent, fn.ret);
   return fn;
 }
 
@@ -206,6 +311,7 @@ export function showIR(fn) {
       case 'drop': return `${p}drop ${e.v}\n${expr(e.body, ind)}`;
       case 'dropreuse': return `${p}let ${e.r} = drop-reuse ${e.v}\n${expr(e.body, ind)}`;
       case 'freetoken': return `${p}free ${e.v}\n${expr(e.body, ind)}`;
+      case 'unpack': return `${p}${e.r ? `let ${e.r} = ` : ''}unpack ${e.v} [${e.xs.map((x) => x.x).join(', ')}]${e.r ? ' for reuse' : ''}\n${expr(e.body, ind)}`;
       case 'if': return `${p}if ${a(e.c)} {\n${expr(e.t, ind + 1)}\n${p}} else {\n${expr(e.e, ind + 1)}\n${p}}`;
       case 'unreachable': return `${p}unreachable`;
       default: return `${p}${e.k}`;
