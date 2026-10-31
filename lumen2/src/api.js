@@ -42,8 +42,8 @@ export function compileSource(source, options = {}) {
 }
 
 // Compiles and runs: { ok, output, error, live, allocs } or { ok: false, errors }.
-export function runSource(source, { input = '', paranoid = false, grants = null, host } = {}) {
-  const c = compileSource(source, { paranoid, grants });
+export function runSource(source, { input = '', host, ...options } = {}) {
+  const c = compileSource(source, { grants: null, ...options });
   if (!c.ok) return c;
   return { ok: true, ...runWasm(c.bytes, { input, host }) };
 }

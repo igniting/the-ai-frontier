@@ -403,6 +403,7 @@ export const MUTANTS = [
   'peek-source-early', // release a value while a borrowed projection of it is about to be read
   'unpack-always-unique', // move the fields out of a cell even when it is shared
   'mul-const-bound', // an off-by-one in the overflow bound for multiplying by a constant
+  'superopt-ignore-when', // apply the superoptimizer's rewrite rules without checking their side conditions
 ];
 
 function main() {

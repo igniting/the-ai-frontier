@@ -22,9 +22,9 @@ const OPS = {
   'i64.eqz': [0x50], 'i64.eq': [0x51], 'i64.ne': [0x52], 'i64.lt_s': [0x53], 'i64.lt_u': [0x54], 'i64.gt_s': [0x55], 'i64.gt_u': [0x56],
   'i64.le_s': [0x57], 'i64.le_u': [0x58], 'i64.ge_s': [0x59], 'i64.ge_u': [0x5a],
   'i32.clz': [0x67], 'i32.add': [0x6a], 'i32.sub': [0x6b], 'i32.mul': [0x6c], 'i32.div_s': [0x6d], 'i32.div_u': [0x6e], 'i32.rem_s': [0x6f], 'i32.rem_u': [0x70],
-  'i32.and': [0x71], 'i32.or': [0x72], 'i32.xor': [0x73], 'i32.shl': [0x74], 'i32.shr_s': [0x75], 'i32.shr_u': [0x76],
+  'i32.and': [0x71], 'i32.or': [0x72], 'i32.xor': [0x73], 'i32.shl': [0x74], 'i32.shr_s': [0x75], 'i32.shr_u': [0x76], 'i32.rotl': [0x77], 'i32.rotr': [0x78],
   'i64.add': [0x7c], 'i64.sub': [0x7d], 'i64.mul': [0x7e], 'i64.div_s': [0x7f], 'i64.div_u': [0x80], 'i64.rem_s': [0x81], 'i64.rem_u': [0x82],
-  'i64.and': [0x83], 'i64.or': [0x84], 'i64.xor': [0x85], 'i64.shl': [0x86], 'i64.shr_s': [0x87], 'i64.shr_u': [0x88],
+  'i64.and': [0x83], 'i64.or': [0x84], 'i64.xor': [0x85], 'i64.shl': [0x86], 'i64.shr_s': [0x87], 'i64.shr_u': [0x88], 'i64.rotl': [0x89], 'i64.rotr': [0x8a],
   'i32.wrap_i64': [0xa7], 'i64.extend_i32_s': [0xac], 'i64.extend_i32_u': [0xad],
   'memory.copy': [0xfc, 'u:10', 'zero', 'zero'], 'memory.fill': [0xfc, 'u:11', 'zero'],
 };

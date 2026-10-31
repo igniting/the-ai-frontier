@@ -449,6 +449,10 @@ the compiler checks them, and so does the test suite.
   object is freed as soon as it becomes unreachable, at the latest when the
   variable that holds the last reference is last used. Values are immutable,
   so there are no cycles. A program that finishes has freed every object.
+- **Proved rewrite rules.** The code generator's output is rewritten with
+  peephole rules found by a superoptimizer. Each rule is proved, for all
+  inputs that satisfy its side conditions, by a SAT refutation that an
+  independent checker validates; `superopt/verify.js` re-proves them.
 - **In-place updates of unique values.** `array_set` and `array_push` write
   in place when the array is not shared. When a match arm takes apart a
   constructor that nothing else refers to and builds one of the same size,

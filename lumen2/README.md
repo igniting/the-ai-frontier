@@ -30,6 +30,9 @@ no garbage collector.** Lumen 2 is a fresh design, not an extension of
 - **Certified passes.** On every compile, independent checkers validate
   that the compiler's IR is well typed and that its reference counting
   balances on every path.
+- **Proved rewrite rules.** A superoptimizer searched the compiler's
+  WebAssembly for cheaper equivalent code; every rule it found is proved
+  with a checked SAT refutation, including side conditions on constants.
 - **64-bit integers that never wrap silently.** Overflow is a runtime error,
   not a wrong answer.
 - **A theorem, proved in it.** A SAT solver written in Lumen 2 proves the
@@ -55,6 +58,8 @@ node test/fuzz.js 1000                           # differential fuzzing
 node test/fuzz.js --mutants                      # are planted bugs caught?
 node proofs/prove-schur.js 4 44                  # prove S(4) = 44 (about 5 minutes)
 node proofs/compare-lumen.js 4 44                # the same proof as the Lumen solver's?
+node superopt/search.js                          # search for rewrite rules (about 30 s)
+node superopt/verify.js                          # re-prove every rule the compiler applies
 ```
 
 Requires Node.js 22 or later. There are no dependencies.
@@ -308,6 +313,55 @@ copied. The source code is the same in both cases. Likewise `array_set` on
 an array nothing else refers to writes in place, and reversing a list that
 is not used again allocates nothing.
 
+## A superoptimizer
+
+`superopt/` searches the WebAssembly that Lumen 2 emits for straight-line
+code with a cheaper equivalent, and proves each equivalence before the
+compiler may use it. It compiles a corpus (the examples, the Schur proof's
+programs and 60 generated programs) and collects every window of up to
+seven pure instructions that occurs at least twice. For each window it
+enumerates candidate sequences, shortest first, evaluating them on test
+vectors and keeping only one of any set of partial sequences that leave the
+same values on the stack. A candidate that matches on every vector is proved
+equal for all inputs: both sequences become circuits over the bits of their
+inputs, and `src/sat.js` refutes their difference, with the proof checked by
+`src/rup.js`. A counterexample becomes a new test vector.
+
+Rules are then generalized. The window's constants become symbolic (`K0`,
+`K1`), and the candidate's constants become expressions over them. When the
+general rule needs a side condition, the weakest one that makes it
+provable is kept, and the compiler checks it before rewriting. The most
+interesting rule came out of this step. The overflow check for multiplying
+by a constant tests whether the other operand is outside a range:
+
+```
+x < K0 || x > K1      =>      (x - K0) >u (K1 - K0)        when K0 <= K1
+
+local.get x  i64.const K0  i64.lt_s  local.get x  i64.const K1  i64.gt_s  i32.or
+=>  local.get x  i64.const K0  i64.sub  i64.const K1-K0  i64.gt_u
+```
+
+That is the classic unsigned range-check trick, found by search and proved
+with 17,195 checked lemmas. With concrete constants the search first found
+a different sequence that works only for the bounds of `x * 2`; looking
+for one that holds for constants with the same signs and order found the
+general form.
+
+[`superopt/RULES.md`](superopt/RULES.md) lists all 19 rules. The rest are
+simpler: `i32.const 0; i32.eq` is `i32.eqz`, `0 xor x` is `x` (from `0 - x`),
+and folds of constant comparisons and arithmetic that inlining leaves
+behind. `src/peephole.js` applies them on every compile (`superopt: false`
+turns them off). `node superopt/verify.js` re-proves all of them, and the
+test suite does too.
+
+The result is modest, and the reason is instructive. On the corpus, the
+rules remove 1.2% of the instructions. On the SAT solver they remove 229 of
+18,609 instructions (1.2%) and 338 bytes, and the time for the split of 1..44
+does not change measurably. Lumen's superoptimizer found 40 rules, most of
+them cleaning up after its tagged 31-bit integers. Lumen 2's integers are
+untagged i64 values, so its code generator leaves much less behind, and the
+engine's own optimizing compiler already performs rewrites like these.
+
 ## How it works
 
 | Stage | File | What it does |
@@ -326,6 +380,7 @@ is not used again allocates nothing.
 | Drop specialization | `src/specialize.js` | Taking apart a unique cell moves its fields instead of dup-ing and releasing them |
 | Certificates | `src/certify.js` | Independent checkers for the IR's types and its reference counting |
 | Code generator | `src/codegen.js` | WebAssembly with i64, tail calls and bulk memory; checked arithmetic and array reads inline; a size-class allocator; per-type drop and compare functions that free and compare long lists in constant stack |
+| Peephole | `src/peephole.js`, `src/rules.js` | The superoptimizer's proved rewrite rules, with their side conditions |
 | Encoder | `src/wasm.js` | A binary encoder; no external toolchain |
 
 The language is defined in [SPEC.md](SPEC.md).
@@ -352,7 +407,7 @@ after type checking.
   proof therefore shows up as a disagreement with the compiled code.
 - **Certificates on every compile**: IR types, reference counting, every
   DRUP proof, and the engine's validation of the module.
-- **Planted bugs.** Nineteen deliberate bugs in the compiler, the verifier
+- **Planted bugs.** Twenty deliberate bugs in the compiler, the verifier
   and the SAT solver check that all of this catches what it should. Seven
   are caught at compile time by a certificate checker, before any program
   runs:
@@ -373,6 +428,7 @@ after type checking.
   | free an object without releasing its last field | leak check | 1 |
   | drop the overflow check on `+` | differential run | 28 |
   | an off-by-one in the overflow bound for multiplying by a constant | differential run | 37 |
+  | apply a rewrite rule without checking its side condition | differential run | 8 |
   | compare constructors by their fields only | differential run | 9 |
   | an off-by-one at the end of `substring` | differential run | 47 |
   | compare a type structurally despite its `impl Ord` | differential run | 23 |
@@ -451,6 +507,7 @@ src/        lexer, parser, checker, exhaustiveness, refinements, SAT solver,
             Perceus, reuse, drop specialization, certificate checkers,
             code generator, wasm encoder
 proofs/     a SAT solver and a Schur encoder written in Lumen 2; S(4) = 44
+superopt/   the superoptimizer: corpus, synthesis, proofs, RULES.md
 bin/        the lumen2 command
 test/       node:test suites and the differential fuzzer with planted bugs
 examples/   example programs

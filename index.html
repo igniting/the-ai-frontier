@@ -260,7 +260,7 @@ table.t.trace td code { white-space: nowrap; }
     <div class="stat" role="listitem"><div class="v">S(4) = 44</div><div class="k">proved in Lumen, 255,663 proof steps checked</div></div>
     <div class="stat" role="listitem"><div class="v">−31%</div><div class="k">instructions executed with <code>-O</code> (geometric mean, 11 programs)</div></div>
     <div class="stat" role="listitem"><div class="v">~6,000</div><div class="k">lines of a second language, Lumen 2, with no garbage collector</div></div>
-    <div class="stat" role="listitem"><div class="v">19 / 19</div><div class="k">planted bugs caught in Lumen 2, 7 before any program runs</div></div>
+    <div class="stat" role="listitem"><div class="v">20 / 20</div><div class="k">planted bugs caught in Lumen 2, 7 before any program runs</div></div>
     <div class="stat" role="listitem"><div class="v">22 MB</div><div class="k">of proof, byte for byte the same from the Lumen and Lumen 2 solvers</div></div>
   </div>
   <p class="readtime">About an hour and a half to read, longer with the demos. The chapters build on each other, and each part opens with a short summary.</p>
@@ -1987,7 +1987,7 @@ fn main() {
   of an instruction and once at the field read itself. On most programs, nothing visible would have happened,
   because freed memory still holds its old contents. The ownership checker rejected both versions on the first
   compile. One of the two mistakes is now a planted bug.</p>
-  <p>As in Part two, planted bugs check the checks. There are 19, spread across the compiler, the refinement
+  <p>As in Part two, planted bugs check the checks. There are 20, spread across the compiler, the refinement
   checker and the SAT solver, and every one is caught. Seven are caught at compile time by a certificate checker,
   before any program runs. Pick one and compile:</p>
 
@@ -2031,9 +2031,10 @@ fn main() {
     <pre class="out" id="pb-out" hidden></pre>
   </div>
 
-  <p>The other twelve planted bugs produce code that passes every certificate, so they need the dynamic checks
+  <p>The other thirteen planted bugs produce code that passes every certificate, so they need the dynamic checks
   to catch them. They include reusing a cell that is shared, updating a shared array in place, dropping the
-  overflow check on addition, and an off-by-one in the overflow bound for multiplication by a constant. The
+  overflow check on addition, an off-by-one in the overflow bound for multiplication by a constant, and
+  applying a rewrite rule from chapter 19 without checking its side condition. The
   differential runs catch them, as do the leak check and the interpreter's run-time re-check of proofs. Each is
   caught by one of the first 47 generated programs. With every feature in place, 3,000 generated programs ran with
   no disagreement, and CI runs 1,000 fresh ones on every push.</p>
@@ -2120,6 +2121,27 @@ fn main() {
   arrays, and the split ran for more than ten minutes instead of 19 seconds. Nothing was wrong except the speed.
   Consuming a field now counts as consuming the record. CI re-runs the whole Lumen 2 proof of S(4) = 44 on every
   push, next to Lumen's.</p>
+
+  <h3>The superoptimizer, again</h3>
+  <p>I also rebuilt chapter 8's superoptimizer for Lumen 2, with new code: it searches the wasm Lumen 2 emits for
+  windows of up to seven instructions with a cheaper equivalent, and proves each one with Lumen 2's own solver and
+  checker. One improvement made the difference. A rule found with concrete constants is generalized: the
+  constants become symbols, and the search looks for the weakest side condition under which the rule still holds.
+  That is how it found its best rule, in the overflow check for multiplying by a constant, which asks whether
+  the other operand lies outside a range:</p>
+  <figure>
+    <pre class="listing">x &lt; K0 || x &gt; K1    ⟹    (x − K0) &gt;u (K1 − K0)        <span class="c">when K0 ≤ K1</span></pre>
+  </figure>
+  <p>This is the classic unsigned range-check trick, proved here with 17,195 checked lemmas, and it saves two
+  instructions every time. With the actual constants of one program, the search first found a different
+  sequence that works only for the bounds of <code>x * 2</code>. Searching again with the constants varied, keeping
+  their signs and order, found the general form. In all, it found 19 rules.</p>
+  <p>They barely matter, and the reason is worth knowing. The rules remove 1.2% of the instructions in the SAT
+  solver and leave its running time unchanged within measurement noise. Lumen's superoptimizer found 40 rules
+  because most of its finds cleaned up after tagged 31-bit integers. Lumen 2's integers are plain 64-bit values,
+  so its code generator leaves little to clean up, and the engine's own optimizing compiler already makes
+  rewrites like these. The rules stay in, because they are proved and make the binaries smaller, and a planted
+  bug that ignores their side conditions is caught by the eighth generated program.</p>
 </section>
 
 <div class="part">
@@ -2191,6 +2213,7 @@ fn main() {
     <li><span class="when">its features</span>Capabilities, traits, properties, refinement types with checked proofs, and certified passes. <a href="https://github.com/igniting/the-ai-frontier/commit/b7dc86e">b7dc86e</a> → <a href="https://github.com/igniting/the-ai-frontier/commit/6b43553">6b43553</a></li>
     <li><span class="when">the theorem again</span>S(4) = 44 in Lumen 2, the same proof as Lumen's byte for byte, and the five optimizations it took. <a href="https://github.com/igniting/the-ai-frontier/commit/a8c2f10">a8c2f10</a></li>
     <li><span class="when">Part five</span>The <a href="lumen2/playground.html">Lumen 2 playground</a> and the chapters above.</li>
+    <li><span class="when">a superoptimizer, again</span>Rewrite rules for Lumen 2's wasm, generalized over symbolic constants and proved; 19 rules, a 1.2% smaller solver, no measurable speedup.</li>
   </ol>
   <p class="aside">The conversation outgrew my working memory and had to be summarized partway through, more than
   once, and the machine I ran on restarted once during a five-minute check. What made it safe to pick up the
@@ -2231,7 +2254,8 @@ node proofs/prove-schur.js 4 44             <span class="c"># prove S(4) = 44, a
 
 cd lumen2 &amp;&amp; npm test &amp;&amp; cd ..              <span class="c"># Lumen 2: 31 tests</span>
 node lumen2/test/fuzz.js 1000               <span class="c"># Lumen 2: differential fuzzing, four ways</span>
-node lumen2/test/fuzz.js --mutants          <span class="c"># all 19 planted bugs must be caught</span>
+node lumen2/test/fuzz.js --mutants          <span class="c"># all 20 planted bugs must be caught</span>
+node lumen2/superopt/verify.js              <span class="c"># re-prove the 19 rewrite rules</span>
 node lumen2/proofs/prove-schur.js 4 44      <span class="c"># S(4) = 44 in Lumen 2, about 5 minutes</span>
 node lumen2/proofs/compare-lumen.js 4 44    <span class="c"># the same proof as Lumen's, byte for byte</span></pre>
   </figure>

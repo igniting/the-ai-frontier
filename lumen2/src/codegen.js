@@ -24,6 +24,7 @@
 // The `live` global counts allocated objects; a program that has finished must
 // have freed everything, so `live` must be 0 (the test harness checks this).
 
+import { peephole } from './peephole.js';
 import { Module } from './wasm.js';
 import { lowerProgram, tkey, valtype } from './lower.js';
 import { perceus, makeHeapTest, inferBorrowing } from './perceus.js';
@@ -60,7 +61,7 @@ const flat = (x) => (Array.isArray(x) && typeof x[0] === 'string' ? [x] : x.flat
 // default), borrow (borrowed parameters and projections, on by default),
 // specialize (drop specialization, on by default), inline (inline small
 // functions, on by default) and mutant (plant a known bug; see test/fuzz.js).
-export function compileProgram(program, { paranoid = false, reuse = true, borrow = true, specialize = true, inline = true, mutant = null } = {}) {
+export function compileProgram(program, { paranoid = false, reuse = true, borrow = true, specialize = true, inline = true, superopt = true, mutant = null } = {}) {
   const noInline = !inline;
   const ir = lowerProgram(program, { mutant });
   if (inline) { inlineSmall(ir); for (const f of ir.fns) simplify(f); }
@@ -766,9 +767,12 @@ export function compileProgram(program, { paranoid = false, reuse = true, borrow
   const heapStart = (DATA + data.length + 15) & ~15;
   m.globals.find((g) => g.name === 'hp').init = heapStart;
   m.memory = { min: Math.ceil((heapStart + 65536) / 65536), max: MAX_PAGES };
+  // The superoptimizer's proved rewrite rules, applied to straight-line code.
+  const rewrites = new Map();
+  if (superopt) for (const f of m.funcs) f.body = peephole(f.body, { stats: rewrites, mutant });
   const bytes = m.encode();
   if (!WebAssembly.validate(bytes)) throw new CertificateError('wasm: the engine rejected the module');
-  return { bytes, module: m, ir, certificates: { types, ownership } };
+  return { bytes, module: m, ir, rewrites, certificates: { types, ownership } };
 }
 
 // ------------------------------------------------------------------ host --

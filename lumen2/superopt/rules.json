@@ -1,0 +1,860 @@
+{
+ "generated": "node superopt/search.js",
+ "corpus": {
+  "modules": 67,
+  "fuzz": 60
+ },
+ "rounds": 2,
+ "windows": 822,
+ "searches": 474,
+ "seconds": 28.5,
+ "instructions": {
+  "before": 374490,
+  "after": 370054
+ },
+ "rules": [
+  {
+   "id": 0,
+   "lhs": [
+    [
+     "i32.const",
+     "0"
+    ],
+    [
+     "i32.eq"
+    ]
+   ],
+   "rhs": [
+    [
+     "i32.eqz"
+    ]
+   ],
+   "ks": {},
+   "when": [],
+   "proof": {
+    "ok": true,
+    "structural": true,
+    "lemmas": 0,
+    "vars": 64,
+    "clauses": 95
+   },
+   "inputs": [
+    "i32"
+   ],
+   "locals": {},
+   "seen": 1760,
+   "round": 1,
+   "saves": {
+    "instructions": 1,
+    "bytes": 2
+   },
+   "fires": 1760
+  },
+  {
+   "id": 1,
+   "lhs": [
+    [
+     "i64.const",
+     "0"
+    ],
+    [
+     "local.get",
+     "x0"
+    ],
+    [
+     "i64.xor"
+    ]
+   ],
+   "rhs": [
+    [
+     "local.get",
+     "x0"
+    ]
+   ],
+   "ks": {},
+   "when": [],
+   "proof": {
+    "ok": true,
+    "structural": true,
+    "lemmas": 0,
+    "vars": 65,
+    "clauses": 2
+   },
+   "inputs": [],
+   "locals": {
+    "x0": "i64"
+   },
+   "seen": 618,
+   "round": 1,
+   "saves": {
+    "instructions": 2,
+    "bytes": 3
+   },
+   "fires": 618
+  },
+  {
+   "id": 2,
+   "lhs": [
+    [
+     "i64.const",
+     "0"
+    ],
+    [
+     "i64.eq"
+    ]
+   ],
+   "rhs": [
+    [
+     "i64.eqz"
+    ]
+   ],
+   "ks": {},
+   "when": [],
+   "proof": {
+    "ok": true,
+    "structural": true,
+    "lemmas": 0,
+    "vars": 128,
+    "clauses": 191
+   },
+   "inputs": [
+    "i64"
+   ],
+   "locals": {},
+   "seen": 94,
+   "round": 1,
+   "saves": {
+    "instructions": 1,
+    "bytes": 2
+   },
+   "fires": 81
+  },
+  {
+   "id": 3,
+   "lhs": [
+    [
+     "local.get",
+     "x0"
+    ],
+    [
+     "i64.const",
+     "K0"
+    ],
+    [
+     "i64.lt_s",
+     null
+    ],
+    [
+     "local.get",
+     "x0"
+    ],
+    [
+     "i64.const",
+     "K1"
+    ],
+    [
+     "i64.gt_s",
+     null
+    ],
+    [
+     "i32.or",
+     null
+    ]
+   ],
+   "rhs": [
+    [
+     "local.get",
+     "x0"
+    ],
+    [
+     "i64.const",
+     "K0"
+    ],
+    [
+     "i64.sub"
+    ],
+    [
+     "i64.const",
+     "K1-K0"
+    ],
+    [
+     "i64.gt_u"
+    ]
+   ],
+   "ks": {
+    "K0": "i64",
+    "K1": "i64"
+   },
+   "when": [
+    "K0 <= K1"
+   ],
+   "proof": {
+    "ok": true,
+    "structural": false,
+    "lemmas": 17195,
+    "vars": 1727,
+    "clauses": 5114
+   },
+   "inputs": [],
+   "locals": {
+    "x0": "i64"
+   },
+   "seen": 60,
+   "round": 1,
+   "saves": {
+    "instructions": 2,
+    "bytes": 11
+   },
+   "fires": 224
+  },
+  {
+   "id": 4,
+   "lhs": [
+    [
+     "i64.const",
+     "K0"
+    ],
+    [
+     "i64.const",
+     "K1"
+    ],
+    [
+     "i64.lt_s",
+     null
+    ]
+   ],
+   "rhs": [
+    [
+     "i32.const",
+     "0"
+    ]
+   ],
+   "ks": {
+    "K0": "i64",
+    "K1": "i64"
+   },
+   "when": [
+    "K1 <= K0"
+   ],
+   "proof": {
+    "ok": true,
+    "structural": false,
+    "lemmas": 0,
+    "vars": 511,
+    "clauses": 1276
+   },
+   "inputs": [],
+   "locals": {},
+   "seen": 38,
+   "round": 1,
+   "saves": {
+    "instructions": 2,
+    "bytes": 13
+   },
+   "fires": 168
+  },
+  {
+   "id": 5,
+   "lhs": [
+    [
+     "i64.const",
+     "K0"
+    ],
+    [
+     "i64.const",
+     "1"
+    ],
+    [
+     "i64.sub",
+     null
+    ]
+   ],
+   "rhs": [
+    [
+     "i64.const",
+     "K0-1"
+    ]
+   ],
+   "ks": {
+    "K0": "i64"
+   },
+   "when": [],
+   "proof": {
+    "ok": true,
+    "structural": true,
+    "lemmas": 0,
+    "vars": 191,
+    "clauses": 443
+   },
+   "inputs": [],
+   "locals": {},
+   "seen": 38,
+   "round": 1,
+   "saves": {
+    "instructions": 2,
+    "bytes": 3
+   },
+   "fires": 135
+  },
+  {
+   "id": 6,
+   "lhs": [
+    [
+     "local.get",
+     "x0"
+    ],
+    [
+     "i32.const",
+     "0"
+    ],
+    [
+     "i32.const",
+     "K0"
+    ],
+    [
+     "i32.shl",
+     null
+    ],
+    [
+     "i32.add",
+     null
+    ]
+   ],
+   "rhs": [
+    [
+     "local.get",
+     "x0"
+    ]
+   ],
+   "ks": {
+    "K0": "i32"
+   },
+   "when": [],
+   "proof": {
+    "ok": true,
+    "structural": true,
+    "lemmas": 0,
+    "vars": 65,
+    "clauses": 2
+   },
+   "inputs": [],
+   "locals": {
+    "x0": "i32"
+   },
+   "seen": 21,
+   "round": 1,
+   "saves": {
+    "instructions": 4,
+    "bytes": 6
+   },
+   "fires": 21
+  },
+  {
+   "id": 7,
+   "lhs": [
+    [
+     "i32.const",
+     "0"
+    ],
+    [
+     "i32.const",
+     "K0"
+    ],
+    [
+     "i32.shl",
+     null
+    ]
+   ],
+   "rhs": [
+    [
+     "i32.const",
+     "0"
+    ]
+   ],
+   "ks": {
+    "K0": "i32"
+   },
+   "when": [],
+   "proof": {
+    "ok": true,
+    "structural": true,
+    "lemmas": 0,
+    "vars": 33,
+    "clauses": 2
+   },
+   "inputs": [],
+   "locals": {},
+   "seen": 21,
+   "round": 1,
+   "saves": {
+    "instructions": 2,
+    "bytes": 3
+   },
+   "fires": 0
+  },
+  {
+   "id": 8,
+   "lhs": [
+    [
+     "i32.const",
+     "K0"
+    ],
+    [
+     "i32.eqz",
+     null
+    ]
+   ],
+   "rhs": [
+    [
+     "i32.const",
+     "0"
+    ]
+   ],
+   "ks": {
+    "K0": "i32"
+   },
+   "when": [
+    "K0 != 0"
+   ],
+   "proof": {
+    "ok": true,
+    "structural": false,
+    "lemmas": 0,
+    "vars": 64,
+    "clauses": 96
+   },
+   "inputs": [],
+   "locals": {},
+   "seen": 7,
+   "round": 1,
+   "saves": {
+    "instructions": 1,
+    "bytes": 1
+   },
+   "fires": 7
+  },
+  {
+   "id": 9,
+   "lhs": [
+    [
+     "i64.const",
+     "K0"
+    ],
+    [
+     "i64.const",
+     "K1"
+    ],
+    [
+     "i64.gt_s",
+     null
+    ]
+   ],
+   "rhs": [
+    [
+     "i32.const",
+     "1"
+    ]
+   ],
+   "ks": {
+    "K0": "i64",
+    "K1": "i64"
+   },
+   "when": [
+    "K1 < K0"
+   ],
+   "proof": {
+    "ok": true,
+    "structural": false,
+    "lemmas": 0,
+    "vars": 511,
+    "clauses": 1276
+   },
+   "inputs": [],
+   "locals": {},
+   "seen": 6,
+   "round": 1,
+   "saves": {
+    "instructions": 2,
+    "bytes": 3
+   },
+   "fires": 11
+  },
+  {
+   "id": 10,
+   "lhs": [
+    [
+     "i64.const",
+     "K0"
+    ],
+    [
+     "i64.const",
+     "K1"
+    ],
+    [
+     "i64.gt_s",
+     null
+    ]
+   ],
+   "rhs": [
+    [
+     "i32.const",
+     "0"
+    ]
+   ],
+   "ks": {
+    "K0": "i64",
+    "K1": "i64"
+   },
+   "when": [
+    "K0 <= K1"
+   ],
+   "proof": {
+    "ok": true,
+    "structural": false,
+    "lemmas": 0,
+    "vars": 511,
+    "clauses": 1276
+   },
+   "inputs": [],
+   "locals": {},
+   "seen": 4,
+   "round": 1,
+   "saves": {
+    "instructions": 2,
+    "bytes": 12
+   },
+   "fires": 23
+  },
+  {
+   "id": 11,
+   "lhs": [
+    [
+     "i64.const",
+     "K0"
+    ],
+    [
+     "i64.const",
+     "K1"
+    ],
+    [
+     "i64.add",
+     null
+    ]
+   ],
+   "rhs": [
+    [
+     "i64.const",
+     "K0+K1"
+    ]
+   ],
+   "ks": {
+    "K0": "i64",
+    "K1": "i64"
+   },
+   "when": [],
+   "proof": {
+    "ok": true,
+    "structural": true,
+    "lemmas": 0,
+    "vars": 510,
+    "clauses": 1272
+   },
+   "inputs": [],
+   "locals": {},
+   "seen": 4,
+   "round": 1,
+   "saves": {
+    "instructions": 2,
+    "bytes": 3
+   },
+   "fires": 23
+  },
+  {
+   "id": 12,
+   "lhs": [
+    [
+     "i32.const",
+     "0"
+    ],
+    [
+     "i32.eqz"
+    ]
+   ],
+   "rhs": [
+    [
+     "i32.const",
+     "1"
+    ]
+   ],
+   "ks": {},
+   "when": [],
+   "proof": {
+    "ok": true,
+    "structural": true,
+    "lemmas": 0,
+    "vars": 1,
+    "clauses": 2
+   },
+   "inputs": [],
+   "locals": {},
+   "seen": 4,
+   "round": 1,
+   "saves": {
+    "instructions": 1,
+    "bytes": 1
+   },
+   "fires": 4
+  },
+  {
+   "id": 13,
+   "lhs": [
+    [
+     "i64.const",
+     "K0"
+    ],
+    [
+     "i64.const",
+     "K1"
+    ],
+    [
+     "i64.eq",
+     null
+    ]
+   ],
+   "rhs": [
+    [
+     "i32.const",
+     "0"
+    ]
+   ],
+   "ks": {
+    "K0": "i64",
+    "K1": "i64"
+   },
+   "when": [
+    "K0 != K1"
+   ],
+   "proof": {
+    "ok": true,
+    "structural": false,
+    "lemmas": 0,
+    "vars": 256,
+    "clauses": 448
+   },
+   "inputs": [],
+   "locals": {},
+   "seen": 3,
+   "round": 1,
+   "saves": {
+    "instructions": 2,
+    "bytes": 3
+   },
+   "fires": 27
+  },
+  {
+   "id": 14,
+   "lhs": [
+    [
+     "i64.const",
+     "0"
+    ],
+    [
+     "i64.const",
+     "K0"
+    ],
+    [
+     "i64.sub",
+     null
+    ]
+   ],
+   "rhs": [
+    [
+     "i64.const",
+     "-K0"
+    ]
+   ],
+   "ks": {
+    "K0": "i64"
+   },
+   "when": [],
+   "proof": {
+    "ok": true,
+    "structural": true,
+    "lemmas": 0,
+    "vars": 191,
+    "clauses": 443
+   },
+   "inputs": [],
+   "locals": {},
+   "seen": 3,
+   "round": 1,
+   "saves": {
+    "instructions": 2,
+    "bytes": 3
+   },
+   "fires": 9
+  },
+  {
+   "id": 15,
+   "lhs": [
+    [
+     "i64.const",
+     "-1"
+    ],
+    [
+     "i64.const",
+     "K0"
+    ],
+    [
+     "i64.mul",
+     null
+    ]
+   ],
+   "rhs": [
+    [
+     "i64.const",
+     "-K0"
+    ]
+   ],
+   "ks": {
+    "K0": "i64"
+   },
+   "when": [],
+   "proof": {
+    "ok": true,
+    "structural": false,
+    "lemmas": 4499,
+    "vars": 12033,
+    "clauses": 39937
+   },
+   "inputs": [],
+   "locals": {},
+   "seen": 2,
+   "round": 1,
+   "saves": {
+    "instructions": 2,
+    "bytes": 3
+   },
+   "fires": 2
+  },
+  {
+   "id": 16,
+   "lhs": [
+    [
+     "i32.const",
+     "0"
+    ],
+    [
+     "i32.const",
+     "1"
+    ],
+    [
+     "i32.or"
+    ]
+   ],
+   "rhs": [
+    [
+     "i32.const",
+     "1"
+    ]
+   ],
+   "ks": {},
+   "when": [],
+   "proof": {
+    "ok": true,
+    "structural": true,
+    "lemmas": 0,
+    "vars": 1,
+    "clauses": 2
+   },
+   "inputs": [],
+   "locals": {},
+   "seen": 4,
+   "round": 2,
+   "saves": {
+    "instructions": 2,
+    "bytes": 3
+   },
+   "fires": 4
+  },
+  {
+   "id": 17,
+   "lhs": [
+    [
+     "i64.const",
+     "0"
+    ],
+    [
+     "i64.eqz"
+    ]
+   ],
+   "rhs": [
+    [
+     "i32.const",
+     "1"
+    ]
+   ],
+   "ks": {},
+   "when": [],
+   "proof": {
+    "ok": true,
+    "structural": true,
+    "lemmas": 0,
+    "vars": 1,
+    "clauses": 2
+   },
+   "inputs": [],
+   "locals": {},
+   "seen": 4,
+   "round": 2,
+   "saves": {
+    "instructions": 1,
+    "bytes": 1
+   },
+   "fires": 4
+  },
+  {
+   "id": 18,
+   "lhs": [
+    [
+     "i32.const",
+     "K0"
+    ],
+    [
+     "i32.const",
+     "K0"
+    ],
+    [
+     "i32.or",
+     null
+    ]
+   ],
+   "rhs": [
+    [
+     "i32.const",
+     "K0"
+    ]
+   ],
+   "ks": {
+    "K0": "i32"
+   },
+   "when": [],
+   "proof": {
+    "ok": true,
+    "structural": true,
+    "lemmas": 0,
+    "vars": 33,
+    "clauses": 2
+   },
+   "inputs": [],
+   "locals": {},
+   "seen": 4,
+   "round": 2,
+   "saves": {
+    "instructions": 2,
+    "bytes": 3
+   },
+   "fires": 4
+  }
+ ]
+}
