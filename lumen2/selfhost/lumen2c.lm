@@ -1,0 +1,2839 @@
+// lumen2c: a Lumen 2 compiler, written in Lumen 2.
+//
+// It reads a program on standard input and writes a WebAssembly module on
+// standard output. Compiled by the reference compiler (src/), it compiles
+// itself; the module it then produces compiles itself again to the same
+// bytes (selfhost/bootstrap.js checks this fixed point).
+//
+// It implements the whole language that programs and the prelude use:
+// algebraic types, pattern matching, closures and local functions, traits
+// (Ord, Show, user traits, derived Show), strings, arrays, the capabilities'
+// builtins, and 64-bit integers that stop on overflow. Like the reference
+// compiler, it manages memory with Perceus reference counting and no garbage
+// collector, and it emits the same runtime conventions, so its modules run
+// on the same host and pass the same leak check.
+//
+// What it leaves to the reference compiler: it checks types but not effects,
+// capabilities, exhaustiveness or refinements (a refinement type is read as
+// its base type, and every partial operation keeps its run-time check). It
+// assumes the program is valid; on an invalid one it stops with a message.
+// It makes none of the reference compiler's optimizations except tail calls.
+//
+// Sections:
+//   1. utilities            5. lowering to an intermediate language
+//   2. lexer                6. reference counting (Perceus)
+//   3. syntax and parser    7. WebAssembly code generation
+//   4. types and inference  8. the binary encoder, and main
+
+// ================================================================ 1. utilities
+
+// A map from strings to values: an AVL tree.
+type Map<v> { MEmpty, MNode(Map<v>, String, v, Map<v>, Int) }
+
+fn m_height(m) { match m { MEmpty -> 0, MNode(_, _, _, _, h) -> h } }
+fn m_make(l, k, v, r) { MNode(l, k, v, r, max(m_height(l), m_height(r)) + 1) }
+fn m_rotate_right(l, k, v, r) {
+  match l { MNode(ll, lk, lv, lr, _) -> m_make(ll, lk, lv, m_make(lr, k, v, r)), MEmpty -> m_make(l, k, v, r) }
+}
+fn m_rotate_left(l, k, v, r) {
+  match r { MNode(rl, rk, rv, rr, _) -> m_make(m_make(l, k, v, rl), rk, rv, rr), MEmpty -> m_make(l, k, v, r) }
+}
+fn m_balance(l, k, v, r) {
+  let hl = m_height(l);
+  let hr = m_height(r);
+  if hl > hr + 1 {
+    match l {
+      MNode(ll, lk, lv, lr, _) -> if m_height(ll) >= m_height(lr) { m_rotate_right(l, k, v, r) } else { m_rotate_right(m_rotate_left(ll, lk, lv, lr), k, v, r) },
+      MEmpty -> m_make(l, k, v, r),
+    }
+  } else if hr > hl + 1 {
+    match r {
+      MNode(rl, rk, rv, rr, _) -> if m_height(rr) >= m_height(rl) { m_rotate_left(l, k, v, r) } else { m_rotate_left(l, k, v, m_rotate_right(rl, rk, rv, rr)) },
+      MEmpty -> m_make(l, k, v, r),
+    }
+  } else { m_make(l, k, v, r) }
+}
+fn m_set(m, k, v) {
+  match m {
+    MEmpty -> MNode(MEmpty, k, v, MEmpty, 1),
+    MNode(l, k2, v2, r, h) -> if k < k2 { m_balance(m_set(l, k, v), k2, v2, r) } else if k > k2 { m_balance(l, k2, v2, m_set(r, k, v)) } else { MNode(l, k, v, r, h) },
+  }
+}
+fn m_get(m, k) {
+  match m { MEmpty -> None, MNode(l, k2, v, r, _) -> if k < k2 { m_get(l, k) } else if k > k2 { m_get(r, k) } else { Some(v) } }
+}
+fn m_has(m, k) { match m_get(m, k) { Some(_) -> true, None -> false } }
+fn m_min(m) { match m { MNode(MEmpty, k, v, _, _) -> (k, v), MNode(l, _, _, _, _) -> m_min(l), MEmpty -> panic("internal error: empty map") } }
+fn m_remove(m, k) {
+  match m {
+    MEmpty -> MEmpty,
+    MNode(l, k2, v2, r, _) -> if k < k2 { m_balance(m_remove(l, k), k2, v2, r) } else if k > k2 { m_balance(l, k2, v2, m_remove(r, k)) }
+      else { match (l, r) { (MEmpty, _) -> r, (_, MEmpty) -> l, _ -> match m_min(r) { (mk, mv) -> m_balance(l, mk, mv, m_remove(r, mk)) } } },
+  }
+}
+// The entries in key order.
+fn m_entries(m) {
+  fn go(m, acc) { match m { MEmpty -> acc, MNode(l, k, v, r, _) -> go(l, [(k, v), ..go(r, acc)]) } }
+  go(m, [])
+}
+fn m_keys(m) { map(m_entries(m), |e| match e { (k, _) -> k }) }
+fn m_values(m) { map(m_entries(m), |e| match e { (_, v) -> v }) }
+fn m_from(entries) { fold(entries, MEmpty, |m, e| match e { (k, v) -> m_set(m, k, v) }) }
+
+// A list of strings, joined: the way to build long text in linear time.
+fn cat(xs) { concat_strings(xs) }
+fn cat_rev(xs) { concat_strings(reverse(xs)) }
+
+fn str_eq(a, b) { a == b }
+fn digit(c) { c >= 48 && c <= 57 }
+fn alpha(c) { (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95 }
+fn alnum(c) { digit(c) || alpha(c) }
+fn upper(c) { c >= 65 && c <= 90 }
+
+fn fail_at(msg) { panic(msg) }
+
+// The position of a list element, or -1.
+fn index_of(xs, y) {
+  fn go(xs, i) { match xs { [] -> 0 - 1, [x, ..rest] -> if x == y { i } else { go(rest, i + 1) } } }
+  go(xs, 0)
+}
+fn list_get(xs, i) { match nth(xs, i) { Some(x) -> x, None -> panic("internal error: list index " ++ int_to_string(i)) } }
+fn last(xs) { match reverse(xs) { [x, .._] -> x, [] -> panic("internal error: last of an empty list") } }
+fn dedupe(xs) { reverse(fold(xs, [], |acc, x| if contains(acc, x) { acc } else { [x, ..acc] })) }
+fn zip3(xs, ys, zs) { map(zip(zip(xs, ys), zs), |t| match t { ((x, y), z) -> (x, y, z) }) }
+fn enumerate(xs) { zip(range(0, length(xs)), xs) }
+fn count_where(xs, p) { fold(xs, 0, |n, x| if p(x) { n + 1 } else { n }) }
+
+// ==================================================================== 2. lexer
+
+// A token: its kind ("int", "str", "lower", "upper", "eof", a keyword or a
+// punctuation mark), its text (a literal's value or a name) and its line.
+type Tok { Tok(String, String, Int) }
+
+fn tok_kind(t) { match t { Tok(k, _, _) -> k } }
+fn tok_text(t) { match t { Tok(_, s, _) -> s } }
+fn tok_line(t) { match t { Tok(_, _, l) -> l } }
+
+fn is_keyword(s) {
+  s == "fn" || s == "let" || s == "if" || s == "else" || s == "match" || s == "type" || s == "true" || s == "false"
+    || s == "trait" || s == "impl" || s == "for" || s == "where" || s == "property"
+}
+
+fn punct2(a, b) {
+  let s = char_from_code(a) ++ char_from_code(b);
+  if s == "|>" || s == "->" || s == "=>" || s == "==" || s == "!=" || s == "<=" || s == ">=" || s == "&&" || s == "||" || s == "++" || s == ".." { s } else { "" }
+}
+fn punct1(c) {
+  let s = char_from_code(c);
+  if s == "(" || s == ")" || s == "{" || s == "}" || s == "[" || s == "]" || s == "," || s == ";" || s == ":"
+    || s == "<" || s == ">" || s == "+" || s == "-" || s == "*" || s == "/" || s == "%" || s == "!" || s == "=" || s == "|" { s } else { "" }
+}
+
+fn code_at(src, i) { if i < string_length(src) { char_code_at(src, i) } else { 0 } }
+
+fn hex_value(c) { if digit(c) { c - 48 } else if c >= 97 && c <= 102 { c - 87 } else if c >= 65 && c <= 70 { c - 55 } else { 0 - 1 } }
+
+fn lex(src) {
+  let n = string_length(src);
+  fn skip_line(i) { if i >= n || code_at(src, i) == 10 { i } else { skip_line(i + 1) } }
+  // Nested block comments; returns the position after the comment and the lines it spans.
+  fn skip_block(i, depth, lines) {
+    if i >= n { panic("unterminated comment") }
+    else if code_at(src, i) == 47 && code_at(src, i + 1) == 42 { skip_block(i + 2, depth + 1, lines) }
+    else if code_at(src, i) == 42 && code_at(src, i + 1) == 47 { if depth == 1 { (i + 2, lines) } else { skip_block(i + 2, depth - 1, lines) } }
+    else if code_at(src, i) == 10 { skip_block(i + 1, depth, lines + 1) }
+    else { skip_block(i + 1, depth, lines) }
+  }
+  fn scan_while(i, p) { if i < n && p(code_at(src, i)) { scan_while(i + 1, p) } else { i } }
+  // A string literal's bytes, as a list of pieces; returns the position after the closing quote.
+  fn scan_string(i, acc) {
+    let c = code_at(src, i);
+    if i >= n || c == 10 { panic("unterminated string literal") }
+    else if c == 34 { (i + 1, cat_rev(acc)) }
+    else if c == 92 {
+      let e = code_at(src, i + 1);
+      if e == 110 { scan_string(i + 2, ["\n", ..acc]) }
+      else if e == 116 { scan_string(i + 2, ["\t", ..acc]) }
+      else if e == 114 { scan_string(i + 2, [char_from_code(13), ..acc]) }
+      else if e == 48 { scan_string(i + 2, [char_from_code(0), ..acc]) }
+      else if e == 92 || e == 34 || e == 39 { scan_string(i + 2, [char_from_code(e), ..acc]) }
+      else if e == 120 && hex_value(code_at(src, i + 2)) >= 0 && hex_value(code_at(src, i + 3)) >= 0 {
+        scan_string(i + 4, [char_from_code(hex_value(code_at(src, i + 2)) * 16 + hex_value(code_at(src, i + 3))), ..acc])
+      }
+      else { panic("unknown escape sequence") }
+    } else {
+      let j = scan_while(i, |c| c != 34 && c != 92 && c != 10);
+      scan_string(j, [substring(src, i, j), ..acc])
+    }
+  }
+  fn digits_only(s) { cat(map(range(0, string_length(s)), |k| if code_at(s, k) == 95 { "" } else { substring(s, k, k + 1) })) }
+  fn go(i, line, toks) {
+    if i >= n { array_push(toks, Tok("eof", "", line)) }
+    else {
+      let c = code_at(src, i);
+      if c == 10 { go(i + 1, line + 1, toks) }
+      else if c == 32 || c == 9 || c == 13 { go(i + 1, line, toks) }
+      else if c == 47 && code_at(src, i + 1) == 47 { go(skip_line(i), line, toks) }
+      else if c == 47 && code_at(src, i + 1) == 42 { match skip_block(i, 0, 0) { (j, lines) -> go(j, line + lines, toks) } }
+      else if digit(c) {
+        let j = scan_while(i, |d| digit(d) || d == 95);
+        go(j, line, array_push(toks, Tok("int", digits_only(substring(src, i, j)), line)))
+      }
+      else if alpha(c) {
+        let j = scan_while(i, alnum);
+        let s = substring(src, i, j);
+        let kind = if is_keyword(s) { s } else if upper(c) { "upper" } else { "lower" };
+        go(j, line, array_push(toks, Tok(kind, s, line)))
+      }
+      else if c == 34 { match scan_string(i + 1, []) { (j, s) -> go(j, line, array_push(toks, Tok("str", s, line))) } }
+      else {
+        let p2 = punct2(c, code_at(src, i + 1));
+        if p2 != "" { go(i + 2, line, array_push(toks, Tok(p2, p2, line))) }
+        else {
+          let p1 = punct1(c);
+          if p1 != "" { go(i + 1, line, array_push(toks, Tok(p1, p1, line))) }
+          else { panic("line " ++ int_to_string(line) ++ ": unexpected character `" ++ char_from_code(c) ++ "`") }
+        }
+      }
+    }
+  }
+  go(0, 1, array_empty())
+}
+
+// ======================================================= 3. syntax and parser
+
+// Type expressions as written. A refinement {v: T | p} is read as T.
+type TyX { XVar(String), XCon(String, List<TyX>), XFun(List<TyX>, TyX), XTup(List<TyX>) }
+
+type Pat { PWild, PVar(String), PInt(Int), PStr(String), PBool(Bool), PUnit, PTup(List<Pat>), PCtor(String, List<Pat>) }
+
+// Every expression carries a node id; the checker records each node's type.
+type Ex {
+  EInt(Int, Int), EStr(Int, String), EBool(Int, Bool), EUnit(Int), EVar(Int, String),
+  ECtor(Int, String, List<Ex>, Bool),   // the Bool: written with arguments
+  ECall(Int, Ex, List<Ex>), EBin(Int, String, Ex, Ex), EUn(Int, String, Ex),
+  EIf(Int, Ex, Ex, Ex), EMatch(Int, Ex, List<Arm>), EBlock(Int, List<Stmt>, Ex),
+  ELam(Int, List<Param>, Ex), ETuple(Int, List<Ex>)
+}
+type Param { Param(String, Option<TyX>) }
+type Arm { Arm(Pat, Option<Ex>, Ex) }
+type Stmt { SLet(Pat, Option<TyX>, Ex), SFn(FnD), SExpr(Ex) }
+// A function: name, parameters, result annotation, body, and a node id for its type.
+type FnD { FnD(String, List<Param>, Option<TyX>, Ex, Int) }
+// Trait methods: name, parameters, result annotation.
+type Sig { Sig(String, List<Param>, Option<TyX>) }
+type Decl {
+  DType(String, List<String>, List<(String, List<TyX>)>), DFn(FnD), DTrait(String, List<Sig>),
+  DImpl(String, TyX, List<FnD>), DNone
+}
+
+fn ex_id(e) {
+  match e {
+    EInt(i, _) -> i, EStr(i, _) -> i, EBool(i, _) -> i, EUnit(i) -> i, EVar(i, _) -> i, ECtor(i, _, _, _) -> i,
+    ECall(i, _, _) -> i, EBin(i, _, _, _) -> i, EUn(i, _, _) -> i, EIf(i, _, _, _) -> i, EMatch(i, _, _) -> i,
+    EBlock(i, _, _) -> i, ELam(i, _, _) -> i, ETuple(i, _) -> i,
+  }
+}
+fn fn_name(f) { match f { FnD(n, _, _, _, _) -> n } }
+fn fn_params(f) { match f { FnD(_, ps, _, _, _) -> ps } }
+fn fn_body(f) { match f { FnD(_, _, _, b, _) -> b } }
+fn fn_id(f) { match f { FnD(_, _, _, _, i) -> i } }
+fn param_name(p) { match p { Param(n, _) -> n } }
+
+// The parser's state: the tokens, the position and the next node id.
+type P { P(Array<Tok>, Int, Int) }
+
+fn p_tok(p) { match p { P(toks, pos, _) -> array_get(toks, pos) } }
+fn p_kind(p) { tok_kind(p_tok(p)) }
+fn p_kind2(p) { match p { P(toks, pos, _) -> if pos + 1 < array_length(toks) { tok_kind(array_get(toks, pos + 1)) } else { "eof" } } }
+fn p_next(p) { match p { P(toks, pos, id) -> P(toks, pos + 1, id) } }
+fn p_id(p) { match p { P(toks, pos, id) -> (id, P(toks, pos, id + 1)) } }
+fn p_at(p, k) { p_kind(p) == k }
+fn describe(t) {
+  match t {
+    Tok("eof", _, _) -> "end of input", Tok("int", _, _) -> "a number", Tok("str", _, _) -> "a string",
+    Tok(_, s, _) -> "`" ++ s ++ "`",
+  }
+}
+fn p_fail(p, what) { panic("line " ++ int_to_string(tok_line(p_tok(p))) ++ ": expected " ++ what ++ ", found " ++ describe(p_tok(p))) }
+fn p_expect(p, k) { if p_at(p, k) { (p_tok(p), p_next(p)) } else { p_fail(p, "`" ++ k ++ "`") } }
+fn p_skip(p, k) { match p_expect(p, k) { (_, p) -> p } }
+fn p_accept(p, k) { if p_at(p, k) { (true, p_next(p)) } else { (false, p) } }
+fn p_name(p, k) { match p_expect(p, k) { (t, p) -> (tok_text(t), p) } }
+
+// Digits to an Int; negative literals accumulate downwards so the most negative one fits.
+fn int_of(s, neg) {
+  fold(range(0, string_length(s)), 0, |acc, i| if neg { acc * 10 - (char_code_at(s, i) - 48) } else { acc * 10 + (char_code_at(s, i) - 48) })
+}
+
+// A comma-separated list up to `close`, with an optional trailing comma.
+fn p_list(p, close, item) {
+  fn go(p, acc) {
+    if p_at(p, close) { (reverse(acc), p) }
+    else {
+      match item(p) {
+        (x, p) -> match p_accept(p, ",") { (true, p) -> go(p, [x, ..acc]), (false, p) -> (reverse([x, ..acc]), p) },
+      }
+    }
+  }
+  go(p, [])
+}
+
+// ------------------------------------------------------------------ types
+fn skip_effect(p) {
+  let p = p_skip(p, "!");
+  if p_at(p, "{") {
+    fn go(p) { if p_at(p, "}") { p_next(p) } else { go(p_next(p)) } }
+    go(p_next(p))
+  } else { p_skip(p, "lower") }
+}
+
+fn parse_type(p) {
+  let k = p_kind(p);
+  if k == "{" {
+    let p = p_skip(p_skip(p_next(p), "lower"), ":");
+    let (base, p) = parse_type(p);
+    let p = p_skip(p, "|");
+    let (_, p) = parse_expr(p);
+    (base, p_skip(p, "}"))
+  } else if k == "fn" {
+    let p = p_skip(p_next(p), "(");
+    let (params, p) = p_list(p, ")", parse_type);
+    let p = p_skip(p_skip(p, ")"), "->");
+    let (ret, p) = parse_type(p);
+    let p = if p_at(p, "!") { skip_effect(p) } else { p };
+    (XFun(params, ret), p)
+  } else if k == "(" {
+    let p = p_next(p);
+    if p_at(p, ")") { (XCon("Unit", []), p_next(p)) }
+    else {
+      let (elems, p) = p_list(p, ")", parse_type);
+      let p = p_skip(p, ")");
+      match elems { [t] -> (t, p), _ -> (XTup(elems), p) }
+    }
+  } else if k == "lower" { (XVar(tok_text(p_tok(p))), p_next(p)) }
+  else if k == "upper" {
+    let name = tok_text(p_tok(p));
+    let p = p_next(p);
+    if p_at(p, "<") {
+      let (args, p) = p_list(p_next(p), ">", parse_type);
+      (XCon(name, args), p_skip(p, ">"))
+    } else { (XCon(name, []), p) }
+  } else { p_fail(p, "a type") }
+}
+
+// --------------------------------------------------------------- patterns
+fn parse_pattern(p) {
+  let t = p_tok(p);
+  let k = tok_kind(t);
+  if k == "lower" { if tok_text(t) == "_" { (PWild, p_next(p)) } else { (PVar(tok_text(t)), p_next(p)) } }
+  else if k == "int" { (PInt(int_of(tok_text(t), false)), p_next(p)) }
+  else if k == "-" && p_kind2(p) == "int" {
+    let p = p_next(p);
+    (PInt(int_of(tok_text(p_tok(p)), true)), p_next(p))
+  }
+  else if k == "str" { (PStr(tok_text(t)), p_next(p)) }
+  else if k == "true" { (PBool(true), p_next(p)) }
+  else if k == "false" { (PBool(false), p_next(p)) }
+  else if k == "(" {
+    let p = p_next(p);
+    if p_at(p, ")") { (PUnit, p_next(p)) }
+    else {
+      let (elems, p) = p_list(p, ")", parse_pattern);
+      let p = p_skip(p, ")");
+      match elems { [q] -> (q, p), _ -> (PTup(elems), p) }
+    }
+  }
+  else if k == "[" {
+    fn go(p, acc) {
+      if p_at(p, "]") { (reverse(acc), PCtor("Nil", []), p) }
+      else if p_at(p, "..") {
+        let p = p_next(p);
+        if p_at(p, "]") { (reverse(acc), PWild, p) } else { match parse_pattern(p) { (r, p) -> (reverse(acc), r, p) } }
+      } else {
+        match parse_pattern(p) {
+          (q, p) -> match p_accept(p, ",") { (true, p) -> go(p, [q, ..acc]), (false, p) -> (reverse([q, ..acc]), PCtor("Nil", []), p) },
+        }
+      }
+    }
+    let (elems, rest, p) = go(p_next(p), []);
+    let p = p_skip(p, "]");
+    (fold(reverse(elems), rest, |tail, q| PCtor("Cons", [q, tail])), p)
+  }
+  else if k == "upper" {
+    let p = p_next(p);
+    if p_at(p, "(") {
+      let (args, p) = p_list(p_next(p), ")", parse_pattern);
+      (PCtor(tok_text(t), args), p_skip(p, ")"))
+    } else { (PCtor(tok_text(t), []), p) }
+  }
+  else { p_fail(p, "a pattern") }
+}
+
+// ------------------------------------------------------------ expressions
+fn parse_expr(p) {
+  let (e, p) = parse_bin(p, 0);
+  fn go(e, p) {
+    if p_at(p, "|>") {
+      let (r, p) = parse_bin(p_next(p), 0);
+      let (id, p) = p_id(p);
+      match r { ECall(_, f, args) -> go(ECall(id, f, [e, ..args]), p), _ -> go(ECall(id, r, [e]), p) }
+    } else { (e, p) }
+  }
+  go(e, p)
+}
+
+fn level_has(level, k) {
+  if level == 0 { k == "||" } else if level == 1 { k == "&&" }
+  else if level == 2 { k == "==" || k == "!=" || k == "<" || k == "<=" || k == ">" || k == ">=" }
+  else if level == 3 { k == "++" } else if level == 4 { k == "+" || k == "-" } else { k == "*" || k == "/" || k == "%" }
+}
+
+fn parse_bin(p, level) {
+  if level == 6 { parse_unary(p) }
+  else {
+    let (l, p) = parse_bin(p, level + 1);
+    if level == 2 {
+      if level_has(2, p_kind(p)) {
+        let op = p_kind(p);
+        let (r, p) = parse_bin(p_next(p), 3);
+        let (id, p) = p_id(p);
+        if level_has(2, p_kind(p)) { p_fail(p, "an operand (comparisons cannot be chained)") } else { (EBin(id, op, l, r), p) }
+      } else { (l, p) }
+    } else if level == 3 {
+      if p_at(p, "++") {
+        let (r, p) = parse_bin(p_next(p), 3);
+        let (id, p) = p_id(p);
+        (EBin(id, "++", l, r), p)
+      } else { (l, p) }
+    } else {
+      fn go(l, p) {
+        if level_has(level, p_kind(p)) {
+          let op = p_kind(p);
+          let (r, p) = parse_bin(p_next(p), level + 1);
+          let (id, p) = p_id(p);
+          go(EBin(id, op, l, r), p)
+        } else { (l, p) }
+      }
+      go(l, p)
+    }
+  }
+}
+
+fn parse_unary(p) {
+  if p_at(p, "-") {
+    let p = p_next(p);
+    if p_at(p, "int") {
+      let n = int_of(tok_text(p_tok(p)), true);
+      let (id, p) = p_id(p_next(p));
+      parse_postfix(EInt(id, n), p)
+    } else {
+      let (e, p) = parse_unary(p);
+      let (id, p) = p_id(p);
+      (EUn(id, "-", e), p)
+    }
+  } else if p_at(p, "!") {
+    let (e, p) = parse_unary(p_next(p));
+    let (id, p) = p_id(p);
+    (EUn(id, "!", e), p)
+  } else {
+    let (e, p) = parse_primary(p);
+    parse_postfix(e, p)
+  }
+}
+
+fn parse_postfix(e, p) {
+  if p_at(p, "(") {
+    let (args, p) = p_list(p_next(p), ")", parse_expr);
+    let p = p_skip(p, ")");
+    let (id, p) = p_id(p);
+    parse_postfix(ECall(id, e, args), p)
+  } else { (e, p) }
+}
+
+fn parse_primary(p) {
+  let t = p_tok(p);
+  let k = tok_kind(t);
+  if k == "int" { let (id, p) = p_id(p_next(p)); (EInt(id, int_of(tok_text(t), false)), p) }
+  else if k == "str" { let (id, p) = p_id(p_next(p)); (EStr(id, tok_text(t)), p) }
+  else if k == "true" || k == "false" { let (id, p) = p_id(p_next(p)); (EBool(id, k == "true"), p) }
+  else if k == "lower" { let (id, p) = p_id(p_next(p)); (EVar(id, tok_text(t)), p) }
+  else if k == "upper" {
+    let p = p_next(p);
+    if p_at(p, "(") {
+      let (args, p) = p_list(p_next(p), ")", parse_expr);
+      let (id, p) = p_id(p_skip(p, ")"));
+      (ECtor(id, tok_text(t), args, true), p)
+    } else { let (id, p) = p_id(p); (ECtor(id, tok_text(t), [], false), p) }
+  }
+  else if k == "(" {
+    let p = p_next(p);
+    if p_at(p, ")") { let (id, p) = p_id(p_next(p)); (EUnit(id), p) }
+    else {
+      let (elems, p) = p_list(p, ")", parse_expr);
+      let p = p_skip(p, ")");
+      match elems { [e] -> (e, p), _ -> { let (id, p) = p_id(p); (ETuple(id, elems), p) } }
+    }
+  }
+  else if k == "[" {
+    fn go(p, acc) {
+      if p_at(p, "]") { (reverse(acc), None, p) }
+      else if p_at(p, "..") { match parse_expr(p_next(p)) { (r, p) -> (reverse(acc), Some(r), p) } }
+      else {
+        match parse_expr(p) {
+          (e, p) -> match p_accept(p, ",") { (true, p) -> go(p, [e, ..acc]), (false, p) -> (reverse([e, ..acc]), None, p) },
+        }
+      }
+    }
+    let (elems, rest, p) = go(p_next(p), []);
+    let p = p_skip(p, "]");
+    let (tail, p) = match rest { Some(r) -> (r, p), None -> { let (id, p) = p_id(p); (ECtor(id, "Nil", [], true), p) } };
+    fn build(xs, tail, p) {
+      match xs { [] -> (tail, p), [x, ..rest] -> { let (id, p) = p_id(p); build(rest, ECtor(id, "Cons", [x, tail], true), p) } }
+    }
+    build(reverse(elems), tail, p)
+  }
+  else if k == "{" { parse_block(p) }
+  else if k == "if" { parse_if(p) }
+  else if k == "match" { parse_match(p) }
+  else if k == "|" || k == "||" {
+    let (params, p) = if k == "|" {
+      let (ps, p) = p_list(p_next(p), "|", parse_param);
+      (ps, p_skip(p, "|"))
+    } else { ([], p_next(p)) };
+    let (body, p) = parse_expr(p);
+    let (id, p) = p_id(p);
+    (ELam(id, params, body), p)
+  }
+  else { p_fail(p, "an expression") }
+}
+
+fn parse_param(p) {
+  let (name, p) = p_name(p, "lower");
+  if p_at(p, ":") { match parse_type(p_next(p)) { (t, p) -> (Param(name, Some(t)), p) } } else { (Param(name, None), p) }
+}
+
+fn parse_if(p) {
+  let (c, p) = parse_expr(p_skip(p, "if"));
+  let (t, p) = parse_block(p);
+  let (e, p) = if p_at(p, "else") {
+    let p = p_next(p);
+    if p_at(p, "if") { parse_if(p) } else { parse_block(p) }
+  } else { let (id, p) = p_id(p); (EUnit(id), p) };
+  let (id, p) = p_id(p);
+  (EIf(id, c, t, e), p)
+}
+
+fn ends_without_comma(e) { match e { EBlock(_, _, _) -> true, EIf(_, _, _, _) -> true, EMatch(_, _, _) -> true, _ -> false } }
+
+fn parse_match(p) {
+  let (scrut, p) = parse_expr(p_skip(p, "match"));
+  let p = p_skip(p, "{");
+  fn go(p, acc) {
+    if p_at(p, "}") { (reverse(acc), p_next(p)) }
+    else {
+      let (pat, p) = parse_pattern(p);
+      let (guard, p) = if p_at(p, "if") { match parse_expr(p_next(p)) { (g, p) -> (Some(g), p) } } else { (None, p) };
+      let (body, p) = parse_expr(p_skip(p, "->"));
+      let (comma, p) = p_accept(p, ",");
+      if !comma && !p_at(p, "}") && !ends_without_comma(body) { p_fail(p, "`,` or `}`") } else { go(p, [Arm(pat, guard, body), ..acc]) }
+    }
+  }
+  let (arms, p) = go(p, []);
+  let (id, p) = p_id(p);
+  (EMatch(id, scrut, arms), p)
+}
+
+fn parse_block(p) {
+  let p = p_skip(p, "{");
+  fn go(p, acc) {
+    if p_at(p, "}") { let (id, p) = p_id(p_next(p)); (reverse(acc), EUnit(id), p) }
+    else if p_at(p, "let") {
+      let (pat, p) = parse_pattern(p_next(p));
+      let (ann, p) = if p_at(p, ":") { match parse_type(p_next(p)) { (t, p) -> (Some(t), p) } } else { (None, p) };
+      let (value, p) = parse_expr(p_skip(p, "="));
+      go(p_skip(p, ";"), [SLet(pat, ann, value), ..acc])
+    }
+    else if p_at(p, "fn") && p_kind2(p) == "lower" { match parse_fn(p) { (f, p) -> go(p, [SFn(f), ..acc]) } }
+    else {
+      let (e, p) = parse_expr(p);
+      if p_at(p, ";") { go(p_next(p), [SExpr(e), ..acc]) }
+      else if p_at(p, "}") { (reverse(acc), e, p_next(p)) }
+      else if ends_without_comma(e) { go(p, [SExpr(e), ..acc]) }
+      else { p_fail(p, "`;` or `}`") }
+    }
+  }
+  let (stmts, result, p) = go(p, []);
+  let (id, p) = p_id(p);
+  (EBlock(id, stmts, result), p)
+}
+
+fn parse_fn(p) {
+  let (name, p) = p_name(p_skip(p, "fn"), "lower");
+  let (params, p) = p_list(p_skip(p, "("), ")", parse_param);
+  let p = p_skip(p, ")");
+  let (ret, p) = if p_at(p, "->") { match parse_type(p_next(p)) { (t, p) -> (Some(t), p) } } else { (None, p) };
+  let p = if p_at(p, "!") { skip_effect(p) } else { p };
+  let (body, p) = parse_block(p);
+  let (id, p) = p_id(p);
+  (FnD(name, params, ret, body, id), p)
+}
+
+fn parse_decl(p) {
+  let k = p_kind(p);
+  if k == "type" {
+    let (name, p) = p_name(p_next(p), "upper");
+    let (params, p) = if p_at(p, "<") {
+      let (ps, p) = p_list(p_next(p), ">", |p| p_name(p, "lower"));
+      (ps, p_skip(p, ">"))
+    } else { ([], p) };
+    fn ctor(p) {
+      let (c, p) = p_name(p, "upper");
+      if p_at(p, "(") { match p_list(p_next(p), ")", parse_type) { (fs, p) -> ((c, fs), p_skip(p, ")")) } } else { ((c, []), p) }
+    }
+    let (ctors, p) = p_list(p_skip(p, "{"), "}", ctor);
+    (DType(name, params, ctors), p_skip(p, "}"))
+  } else if k == "fn" { match parse_fn(p) { (f, p) -> (DFn(f), p) } }
+  else if k == "trait" {
+    let (name, p) = p_name(p_next(p), "upper");
+    let p = p_skip(p, "{");
+    fn go(p, acc) {
+      if p_at(p, "}") { (reverse(acc), p_next(p)) }
+      else {
+        let (m, p) = p_name(p_skip(p, "fn"), "lower");
+        let (params, p) = p_list(p_skip(p, "("), ")", parse_param);
+        let p = p_skip(p, ")");
+        let (ret, p) = if p_at(p, "->") { match parse_type(p_next(p)) { (t, p) -> (Some(t), p) } } else { (None, p) };
+        let p = if p_at(p, "!") { skip_effect(p) } else { p };
+        let p = match p_accept(p, ";") { (_, p) -> p };
+        let p = match p_accept(p, ",") { (_, p) -> p };
+        go(p, [Sig(m, params, ret), ..acc])
+      }
+    }
+    let (sigs, p) = go(p, []);
+    (DTrait(name, sigs), p)
+  } else if k == "impl" {
+    let (trait_name, p) = p_name(p_next(p), "upper");
+    let (ty, p) = parse_type(p_skip(p, "for"));
+    let p = if p_at(p, "where") {
+      fn bound(p) {
+        let p = p_skip(p_skip(p_skip(p, "lower"), ":"), "upper");
+        fn more(p) { if p_at(p, "+") { more(p_skip(p_next(p), "upper")) } else { p } }
+        more(p)
+      }
+      fn go(p) { let p = bound(p); if p_at(p, ",") { go(p_next(p)) } else { p } }
+      go(p_next(p))
+    } else { p };
+    let p = p_skip(p, "{");
+    fn go(p, acc) { if p_at(p, "}") { (reverse(acc), p_next(p)) } else { match parse_fn(p) { (f, p) -> go(p, [f, ..acc]) } } }
+    let (fns, p) = go(p, []);
+    (DImpl(trait_name, ty, fns), p)
+  } else if k == "property" {
+    let (_, p) = p_list(p_skip(p_skip(p_next(p), "lower"), "("), ")", parse_param);
+    let (_, p) = parse_block(p_skip(p, ")"));
+    (DNone, p)
+  } else { p_fail(p, "`fn`, `type`, `trait`, `impl` or `property`") }
+}
+
+// Parses a whole source text; node ids continue from `first_id`.
+fn parse_program(src, first_id) {
+  fn go(p, acc) {
+    if p_at(p, "eof") { match p { P(_, _, id) -> (reverse(acc), id) } }
+    else { match parse_decl(p) { (d, p) -> go(p, [d, ..acc]) } }
+  }
+  go(P(lex(src), 0, first_id), [])
+}
+
+// ============================================== 4. types and inference
+
+type Ty { TVar(Int), TCon(String, List<Ty>), TFun(List<Ty>, Ty), TTup(List<Ty>) }
+type Scheme { Scheme(List<Int>, Ty) }
+
+fn t_int() { TCon("Int", []) }
+fn t_bool() { TCon("Bool", []) }
+fn t_str() { TCon("String", []) }
+fn t_unit() { TCon("Unit", []) }
+
+// A type as text: a key for instances and per-type functions, and for messages.
+fn tkey(t) {
+  match t {
+    TVar(i) -> "'" ++ int_to_string(i),
+    TCon(n, []) -> n,
+    TCon(n, args) -> n ++ "<" ++ join(map(args, tkey), ",") ++ ">",
+    TFun(ps, r) -> "fn(" ++ join(map(ps, tkey), ",") ++ ")" ++ tkey(r),
+    TTup(es) -> "(" ++ join(map(es, tkey), ",") ++ ")",
+  }
+}
+
+// The inference state: the substitution (variable i is unbound when entry i
+// is TVar(i)) and the type recorded for each syntax node.
+type Inf { Inf(Array<Ty>, Array<Ty>) }
+
+fn fresh(s) { match s { Inf(sub, nt) -> { let n = array_length(sub); (TVar(n), Inf(array_push(sub, TVar(n)), nt)) } } }
+fn fresh_n(s, n) {
+  fn go(s, k, acc) { if k == 0 { (reverse(acc), s) } else { match fresh(s) { (t, s) -> go(s, k - 1, [t, ..acc]) } } }
+  go(s, n, [])
+}
+fn set_node(s, id, t) { match s { Inf(sub, nt) -> Inf(sub, array_set(nt, id, t)) } }
+fn node_ty(s, id) { match s { Inf(_, nt) -> array_get(nt, id) } }
+
+fn walk(sub, t) {
+  match t {
+    TVar(i) -> match array_get(sub, i) { TVar(j) -> if j == i { t } else { walk(sub, TVar(j)) }, u -> walk(sub, u) },
+    _ -> t,
+  }
+}
+fn zonk(sub, t) {
+  match walk(sub, t) {
+    TCon(n, args) -> TCon(n, map(args, |a| zonk(sub, a))),
+    TFun(ps, r) -> TFun(map(ps, |a| zonk(sub, a)), zonk(sub, r)),
+    TTup(es) -> TTup(map(es, |a| zonk(sub, a))),
+    u -> u,
+  }
+}
+fn s_zonk(s, t) { match s { Inf(sub, _) -> zonk(sub, t) } }
+
+fn type_error(s, a, b) { panic("type error: cannot unify " ++ tkey(s_zonk(s, a)) ++ " with " ++ tkey(s_zonk(s, b))) }
+
+fn unify(s, a, b) {
+  let (wa, wb) = match s { Inf(sub, _) -> (walk(sub, a), walk(sub, b)) };
+  match (wa, wb) {
+    (TVar(i), TVar(j)) -> if i == j { s } else { bind_var(s, i, wb) },
+    (TVar(i), _) -> bind_var(s, i, wb),
+    (_, TVar(j)) -> bind_var(s, j, wa),
+    (TCon(n, xs), TCon(m, ys)) -> if n == m && length(xs) == length(ys) { unify_all(s, xs, ys) } else { type_error(s, a, b) },
+    (TFun(ps, r), TFun(qs, q)) -> if length(ps) == length(qs) { unify(unify_all(s, ps, qs), r, q) } else { type_error(s, a, b) },
+    (TTup(xs), TTup(ys)) -> if length(xs) == length(ys) { unify_all(s, xs, ys) } else { type_error(s, a, b) },
+    _ -> type_error(s, a, b),
+  }
+}
+fn unify_all(s, xs, ys) { fold(zip(xs, ys), s, |s, p| match p { (x, y) -> unify(s, x, y) }) }
+fn bind_var(s, i, t) { match s { Inf(sub, nt) -> Inf(array_set(sub, i, t), nt) } }
+
+fn free_vars(sub, t) {
+  fn go(t, acc) {
+    match walk(sub, t) {
+      TVar(i) -> if contains(acc, i) { acc } else { [i, ..acc] },
+      TCon(_, args) -> fold(args, acc, |acc, a| go(a, acc)),
+      TFun(ps, r) -> go(r, fold(ps, acc, |acc, a| go(a, acc))),
+      TTup(es) -> fold(es, acc, |acc, a| go(a, acc)),
+    }
+  }
+  reverse(go(t, []))
+}
+
+// Replaces variables by the types an association list gives them.
+fn subst(t, m) {
+  match t {
+    TVar(i) -> match find(m, |p| match p { (j, _) -> j == i }) { Some((_, u)) -> u, None -> t },
+    TCon(n, args) -> TCon(n, map(args, |a| subst(a, m))),
+    TFun(ps, r) -> TFun(map(ps, |a| subst(a, m)), subst(r, m)),
+    TTup(es) -> TTup(map(es, |a| subst(a, m))),
+  }
+}
+fn instantiate(s, sc) {
+  match sc {
+    Scheme([], t) -> (t, s),
+    Scheme(ids, t) -> { let (vs, s) = fresh_n(s, length(ids)); (subst(t, zip(ids, vs)), s) },
+  }
+}
+
+// --------------------------------------------------------- the program
+// A constructor: its type, tag, the type's parameters and its field types.
+type CtorI { CtorI(String, Int, List<String>, List<TyX>) }
+type AdtI { AdtI(List<String>, List<(String, List<TyX>)>) }
+// An impl: trait, head type, its type, each method's declaration and scheme, and whether it is prelude code.
+type ImplI { ImplI(String, String, TyX, List<(String, FnD, Scheme)>, Bool) }
+// Everything inference knows about the program's names.
+type G { G(Map<CtorI>, Map<AdtI>, Map<Scheme>, Map<Scheme>, Map<Scheme>, List<ImplI>) }
+//         ctors      types      user fns   prelude fns methods  impls
+
+fn g_ctor(g, n) { match g { G(cs, _, _, _, _, _) -> match m_get(cs, n) { Some(c) -> c, None -> panic("unknown constructor `" ++ n ++ "`") } } }
+fn g_adt(g, n) { match g { G(_, ads, _, _, _, _) -> m_get(ads, n) } }
+fn g_impls(g) { match g { G(_, _, _, _, _, is) -> is } }
+fn g_method(g, n) { match g { G(_, _, _, _, ms, _) -> m_get(ms, n) } }
+// A function's key: user functions hide prelude ones, except inside the prelude.
+fn g_fn_key(g, prelude, n) {
+  match g {
+    G(_, _, us, ps, _, _) -> if !prelude && m_has(us, n) { Some("u:" ++ n) } else if m_has(ps, n) { Some("p:" ++ n) } else { None },
+  }
+}
+fn g_scheme(g, key) {
+  match g {
+    G(_, _, us, ps, _, _) -> {
+      let name = substring(key, 2, string_length(key));
+      match m_get(if substring(key, 0, 2) == "u:" { us } else { ps }, name) { Some(sc) -> sc, None -> panic("internal error: no scheme for " ++ key) }
+    }
+  }
+}
+fn g_set_scheme(g, key, sc) {
+  match g {
+    G(cs, ads, us, ps, ms, is) -> {
+      let name = substring(key, 2, string_length(key));
+      if substring(key, 0, 2) == "u:" { G(cs, ads, m_set(us, name, sc), ps, ms, is) } else { G(cs, ads, us, m_set(ps, name, sc), ms, is) }
+    }
+  }
+}
+
+// The builtins' types. Variable 0 is reserved: it stands for `a`.
+fn builtin_scheme(n) {
+  let a = TVar(0);
+  let s = t_str();
+  let i = t_int();
+  let arr = TCon("Array", [a]);
+  let mono = |t| Some(Scheme([], t));
+  let poly = |t| Some(Scheme([0], t));
+  if n == "print" || n == "println" { mono(TFun([s], t_unit())) }
+  else if n == "read_input" { mono(TFun([], s)) }
+  else if n == "clock_ms" { mono(TFun([], i)) }
+  else if n == "random_int" { mono(TFun([i, i], i)) }
+  else if n == "panic" { poly(TFun([s], a)) }
+  else if n == "int_to_string" { mono(TFun([i], s)) }
+  else if n == "string_length" { mono(TFun([s], i)) }
+  else if n == "substring" { mono(TFun([s, i, i], s)) }
+  else if n == "char_code_at" { mono(TFun([s, i], i)) }
+  else if n == "char_from_code" { mono(TFun([i], s)) }
+  else if n == "concat_strings" { mono(TFun([TCon("List", [s])], s)) }
+  else if n == "array_make" { poly(TFun([i, a], arr)) }
+  else if n == "array_empty" { poly(TFun([], arr)) }
+  else if n == "array_length" { poly(TFun([arr], i)) }
+  else if n == "array_get" { poly(TFun([arr, i], a)) }
+  else if n == "array_set" { poly(TFun([arr, i, a], arr)) }
+  else if n == "array_push" { poly(TFun([arr, a], arr)) }
+  else { None }
+}
+
+// A written type as a type; `names` gives type variables (and Self) their types.
+fn x_to_ty(s, names, x) {
+  match x {
+    XVar(v) -> match m_get(names, v) { Some(t) -> (t, names, s), None -> { let (t, s) = fresh(s); (t, m_set(names, v, t), s) } },
+    XCon(n, args) -> match m_get(names, n) {
+      Some(t) -> (t, names, s),
+      None -> { let (ts, names, s) = xs_to_tys(s, names, args); (TCon(n, ts), names, s) },
+    },
+    XFun(ps, r) -> { let (ts, names, s) = xs_to_tys(s, names, ps); let (rt, names, s) = x_to_ty(s, names, r); (TFun(ts, rt), names, s) },
+    XTup(es) -> { let (ts, names, s) = xs_to_tys(s, names, es); (TTup(ts), names, s) },
+  }
+}
+fn xs_to_tys(s, names, xs) {
+  fn go(s, names, xs, acc) { match xs { [] -> (reverse(acc), names, s), [x, ..rest] -> { let (t, names, s) = x_to_ty(s, names, x); go(s, names, rest, [t, ..acc]) } } }
+  go(s, names, xs, [])
+}
+// A written type with fixed variables (field types, with the type's parameters given).
+fn x_inst(x, params) {
+  match x {
+    XVar(v) -> match m_get(params, v) { Some(t) -> t, None -> t_unit() },
+    XCon(n, args) -> TCon(n, map(args, |a| x_inst(a, params))),
+    XFun(ps, r) -> TFun(map(ps, |a| x_inst(a, params)), x_inst(r, params)),
+    XTup(es) -> TTup(map(es, |a| x_inst(a, params))),
+  }
+}
+
+// ------------------------------------------------------------ expressions
+// env: the local variables' types. prelude: whether this is prelude code.
+fn infer(g, s, env, prelude, e) {
+  match e {
+    EInt(id, _) -> (t_int(), set_node(s, id, t_int())),
+    EStr(id, _) -> (t_str(), set_node(s, id, t_str())),
+    EBool(id, _) -> (t_bool(), set_node(s, id, t_bool())),
+    EUnit(id) -> (t_unit(), set_node(s, id, t_unit())),
+    EVar(id, n) -> {
+      let (t, s) = match m_get(env, n) {
+        Some(t) -> (t, s),
+        None -> match g_fn_key(g, prelude, n) {
+          Some(key) -> instantiate(s, g_scheme(g, key)),
+          None -> match g_method(g, n) {
+            Some(sc) -> instantiate(s, sc),
+            None -> match builtin_scheme(n) { Some(sc) -> instantiate(s, sc), None -> panic("unknown name `" ++ n ++ "`") },
+          },
+        },
+      };
+      (t, set_node(s, id, t))
+    }
+    ECtor(id, n, args, applied) -> {
+      let (t, fields, s) = ctor_type(g, s, n);
+      if applied {
+        let s = infer_args(g, s, env, prelude, args, fields);
+        (t, set_node(s, id, t))
+      } else {
+        let ft = if is_empty(fields) { t } else { TFun(fields, t) };
+        (ft, set_node(s, id, ft))
+      }
+    }
+    ECall(id, f, args) -> {
+      let (ft, s) = infer(g, s, env, prelude, f);
+      let (ats, s) = infer_list(g, s, env, prelude, args);
+      let (r, s) = fresh(s);
+      let s = unify(s, ft, TFun(ats, r));
+      (r, set_node(s, id, r))
+    }
+    EBin(id, op, l, r) -> {
+      let (lt, s) = infer(g, s, env, prelude, l);
+      let (rt, s) = infer(g, s, env, prelude, r);
+      let t = if op == "+" || op == "-" || op == "*" || op == "/" || op == "%" { t_int() } else if op == "++" { t_str() } else { t_bool() };
+      let s = if op == "&&" || op == "||" { unify(unify(s, lt, t_bool()), rt, t_bool()) }
+        else if op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=" { unify(s, lt, rt) }
+        else { unify(unify(s, lt, t), rt, t) };
+      (t, set_node(s, id, t))
+    }
+    EUn(id, op, x) -> {
+      let (xt, s) = infer(g, s, env, prelude, x);
+      let t = if op == "-" { t_int() } else { t_bool() };
+      let s = unify(s, xt, t);
+      (t, set_node(s, id, t))
+    }
+    EIf(id, c, a, b) -> {
+      let (ct, s) = infer(g, s, env, prelude, c);
+      let s = unify(s, ct, t_bool());
+      let (at, s) = infer(g, s, env, prelude, a);
+      let (bt, s) = infer(g, s, env, prelude, b);
+      let s = unify(s, at, bt);
+      (at, set_node(s, id, at))
+    }
+    EMatch(id, scrut, arms) -> {
+      let (st, s) = infer(g, s, env, prelude, scrut);
+      let (r, s) = fresh(s);
+      let s = fold(arms, s, |s, arm| match arm {
+        Arm(p, guard, body) -> {
+          let (env2, s) = infer_pat(g, s, env, p, st);
+          let s = match guard { Some(ge) -> { let (gt, s) = infer(g, s, env2, prelude, ge); unify(s, gt, t_bool()) }, None -> s };
+          let (bt, s) = infer(g, s, env2, prelude, body);
+          unify(s, bt, r)
+        }
+      });
+      (r, set_node(s, id, r))
+    }
+    EBlock(id, stmts, result) -> {
+      let (env2, s) = fold(stmts, (env, s), |acc, st| match acc { (env, s) -> infer_stmt(g, s, env, prelude, st) });
+      let (t, s) = infer(g, s, env2, prelude, result);
+      (t, set_node(s, id, t))
+    }
+    ELam(id, params, body) -> {
+      let (pts, env2, s) = bind_params(s, env, params, MEmpty);
+      let (bt, s) = infer(g, s, env2, prelude, body);
+      let t = TFun(pts, bt);
+      (t, set_node(s, id, t))
+    }
+    ETuple(id, es) -> {
+      let (ts, s) = infer_list(g, s, env, prelude, es);
+      (TTup(ts), set_node(s, id, TTup(ts)))
+    }
+  }
+}
+
+fn infer_list(g, s, env, prelude, es) {
+  fn go(s, es, acc) { match es { [] -> (reverse(acc), s), [e, ..rest] -> { let (t, s) = infer(g, s, env, prelude, e); go(s, rest, [t, ..acc]) } } }
+  go(s, es, [])
+}
+fn infer_args(g, s, env, prelude, args, expected) {
+  if length(args) != length(expected) { panic("wrong number of constructor arguments") }
+  else { fold(zip(args, expected), s, |s, p| match p { (a, t) -> { let (at, s) = infer(g, s, env, prelude, a); unify(s, at, t) } }) }
+}
+
+// A constructor's type with fresh variables for the type's parameters, and its field types.
+fn ctor_type(g, s, n) {
+  match g_ctor(g, n) {
+    CtorI(adt, _, params, fields) -> {
+      let (vs, s) = fresh_n(s, length(params));
+      let m = m_from(zip(params, vs));
+      (TCon(adt, vs), map(fields, |f| x_inst(f, m)), s)
+    }
+  }
+}
+
+// Parameters with fresh types (or their annotations); returns the types and the extended environment.
+fn bind_params(s, env, params, names) {
+  fn go(s, env, names, ps, acc) {
+    match ps {
+      [] -> (reverse(acc), env, s),
+      [Param(n, ann), ..rest] -> {
+        let (t, names, s) = match ann { Some(x) -> x_to_ty(s, names, x), None -> { let (t, s) = fresh(s); (t, names, s) } };
+        go(s, m_set(env, n, t), names, rest, [t, ..acc])
+      }
+    }
+  }
+  go(s, env, names, params, [])
+}
+
+fn infer_stmt(g, s, env, prelude, st) {
+  match st {
+    SLet(p, ann, value) -> {
+      let (vt, s) = infer(g, s, env, prelude, value);
+      let s = match ann { Some(x) -> { let (at, _, s) = x_to_ty(s, MEmpty, x); unify(s, vt, at) }, None -> s };
+      infer_pat(g, s, env, p, vt)
+    }
+    SFn(f) -> {
+      // A local function is monomorphic and may call itself.
+      let (ft, s) = local_fn_type(g, s, env, prelude, f);
+      (m_set(env, fn_name(f), ft), s)
+    }
+    SExpr(e) -> { let (_, s) = infer(g, s, env, prelude, e); (env, s) }
+  }
+}
+fn local_fn_type(g, s, env, prelude, f) {
+  match f {
+    FnD(name, params, ret, body, id) -> {
+      let (pts, env2, s) = bind_params(s, env, params, MEmpty);
+      let (rt, s) = match ret { Some(x) -> { let (t, _, s) = x_to_ty(s, MEmpty, x); (t, s) }, None -> fresh(s) };
+      let ft = TFun(pts, rt);
+      let (bt, s) = infer(g, s, m_set(env2, name, ft), prelude, body);
+      let s = unify(s, bt, rt);
+      (ft, set_node(s, id, ft))
+    }
+  }
+}
+
+fn infer_pat(g, s, env, p, t) {
+  match p {
+    PWild -> (env, s),
+    PVar(n) -> (m_set(env, n, t), s),
+    PInt(_) -> (env, unify(s, t, t_int())),
+    PStr(_) -> (env, unify(s, t, t_str())),
+    PBool(_) -> (env, unify(s, t, t_bool())),
+    PUnit -> (env, unify(s, t, t_unit())),
+    PTup(ps) -> {
+      let (vs, s) = fresh_n(s, length(ps));
+      let s = unify(s, t, TTup(vs));
+      fold(zip(ps, vs), (env, s), |acc, q| match (acc, q) { ((env, s), (p, v)) -> infer_pat(g, s, env, p, v) })
+    }
+    PCtor(n, ps) -> {
+      let (ct, fields, s) = ctor_type(g, s, n);
+      let s = unify(s, t, ct);
+      if length(ps) != length(fields) { panic("constructor `" ++ n ++ "` takes " ++ int_to_string(length(fields)) ++ " fields") }
+      else { fold(zip(ps, fields), (env, s), |acc, q| match (acc, q) { ((env, s), (p, f)) -> infer_pat(g, s, env, p, f) }) }
+    }
+  }
+}
+
+// ----------------------------------------------------------- functions
+// Infers a top-level function or method whose type has been given the shape `ft`.
+fn infer_fn(g, s, prelude, f, ft) {
+  match f {
+    FnD(_, params, ret, body, id) -> {
+      let (pts, env, s) = bind_params(s, MEmpty, params, MEmpty);
+      let (rt, s) = match ret { Some(x) -> { let (t, _, s) = x_to_ty(s, MEmpty, x); (t, s) }, None -> fresh(s) };
+      let s = unify(s, ft, TFun(pts, rt));
+      let (bt, s) = infer(g, s, env, prelude, body);
+      let s = unify(s, bt, rt);
+      set_node(s, id, ft)
+    }
+  }
+}
+
+fn generalize(s, t) { match s { Inf(sub, _) -> { let z = zonk(sub, t); Scheme(free_vars(sub, z), z) } } }
+
+// Names a function body refers to (a superset: locals that shadow a function count too).
+fn ex_names(e, acc) {
+  match e {
+    EVar(_, n) -> [n, ..acc],
+    ECtor(_, _, args, _) -> fold(args, acc, |acc, a| ex_names(a, acc)),
+    ECall(_, f, args) -> fold(args, ex_names(f, acc), |acc, a| ex_names(a, acc)),
+    EBin(_, _, l, r) -> ex_names(r, ex_names(l, acc)),
+    EUn(_, _, x) -> ex_names(x, acc),
+    EIf(_, c, a, b) -> ex_names(b, ex_names(a, ex_names(c, acc))),
+    EMatch(_, x, arms) -> fold(arms, ex_names(x, acc), |acc, arm| match arm {
+      Arm(_, Some(gd), body) -> ex_names(body, ex_names(gd, acc)), Arm(_, None, body) -> ex_names(body, acc),
+    }),
+    EBlock(_, stmts, r) -> ex_names(r, fold(stmts, acc, |acc, st| match st {
+      SLet(_, _, v) -> ex_names(v, acc), SFn(f) -> ex_names(fn_body(f), acc), SExpr(x) -> ex_names(x, acc),
+    })),
+    ELam(_, _, b) -> ex_names(b, acc),
+    ETuple(_, es) -> fold(es, acc, |acc, a| ex_names(a, acc)),
+    _ -> acc,
+  }
+}
+
+// Tarjan's algorithm: the strongly connected components of the call graph,
+// each after every component it calls.
+type Tj { Tj(Int, Map<Int>, Map<Int>, List<String>, Map<Bool>, List<List<String>>) }
+
+fn sccs(nodes, edges) {
+  fn visit(st, v) {
+    match st {
+      Tj(index, idx, low, stack, on, out) -> {
+        let st = Tj(index + 1, m_set(idx, v, index), m_set(low, v, index), [v, ..stack], m_set(on, v, true), out);
+        let succ = unwrap_or(m_get(edges, v), []);
+        let st = fold(succ, st, |st, w| match st {
+          Tj(_, idx, _, _, on, _) -> if !m_has(idx, w) {
+            let st = visit(st, w);
+            match st { Tj(i, idx, low, stack, on, out) -> Tj(i, idx, m_set(low, v, min(unwrap_or(m_get(low, v), 0), unwrap_or(m_get(low, w), 0))), stack, on, out) }
+          } else if unwrap_or(m_get(on, w), false) {
+            match st { Tj(i, idx, low, stack, on, out) -> Tj(i, idx, m_set(low, v, min(unwrap_or(m_get(low, v), 0), unwrap_or(m_get(idx, w), 0))), stack, on, out) }
+          } else { st }
+        });
+        match st {
+          Tj(i, idx, low, stack, on, out) -> if unwrap_or(m_get(low, v), 0) == unwrap_or(m_get(idx, v), 0) {
+            fn pop(stack, on, comp) {
+              match stack { [w, ..rest] -> { let on = m_set(on, w, false); if w == v { (rest, on, [w, ..comp]) } else { pop(rest, on, [w, ..comp]) } }, [] -> ([], on, comp) }
+            }
+            let (stack, on, comp) = pop(stack, on, []);
+            Tj(i, idx, low, stack, on, [comp, ..out])
+          } else { st }
+        }
+      }
+    }
+  }
+  let st = fold(nodes, Tj(0, MEmpty, MEmpty, [], MEmpty, []), |st, v| match st { Tj(_, idx, _, _, _, _) -> if m_has(idx, v) { st } else { visit(st, v) } });
+  match st { Tj(_, _, _, _, _, out) -> reverse(out) }
+}
+
+// The head of a type, which selects an impl: a type's name, or (n) for an n-tuple.
+fn x_head(x) { match x { XCon(n, _) -> n, XTup(es) -> "(" ++ int_to_string(length(es)) ++ ")", _ -> "?" } }
+fn t_head(t) { match t { TCon(n, _) -> n, TTup(es) -> "(" ++ int_to_string(length(es)) ++ ")", _ -> "?" } }
+
+// A derived `impl Show` for each type that has none and holds no functions.
+fn derived_show(types, impls) {
+  let explicit = map(filter(impls, |d| match d { DImpl("Show", _, _) -> true, _ -> false }), |d| match d { DImpl(_, x, _) -> x_head(x), _ -> "" });
+  fn showable(derive, x) {
+    match x {
+      XVar(_) -> true, XFun(_, _) -> false,
+      XTup(es) -> length(es) >= 2 && length(es) <= 4 && all(es, |e| showable(derive, e)),
+      XCon(n, args) -> (contains(explicit, n) || contains(derive, n)) && all(args, |a| showable(derive, a)),
+    }
+  }
+  fn fix(derive) {
+    let keep = filter(derive, |n| match find(types, |d| match d { DType(m, _, _) -> m == n, _ -> false }) {
+      Some(DType(_, _, ctors)) -> all(ctors, |c| match c { (_, fs) -> all(fs, |f| showable(derive, f)) }),
+      _ -> false,
+    });
+    if length(keep) == length(derive) { keep } else { fix(keep) }
+  }
+  let names = filter(map(types, |d| match d { DType(n, _, _) -> n, _ -> "" }), |n| n != "" && !contains(explicit, n));
+  let derive = fix(names);
+  cat(map(derive, |n| match find(types, |d| match d { DType(m, _, _) -> m == n, _ -> false }) {
+    Some(DType(_, params, ctors)) -> {
+      let ty = if is_empty(params) { n } else { n ++ "<" ++ join(params, ", ") ++ ">" };
+      let arms = map(ctors, |c| match c {
+        (cn, []) -> cn ++ " -> \"" ++ cn ++ "\"",
+        (cn, fs) -> {
+          let xs = map(range(0, length(fs)), |i| "a" ++ int_to_string(i));
+          cn ++ "(" ++ join(xs, ", ") ++ ") -> \"" ++ cn ++ "(\" ++ " ++ join(map(xs, |x| "show(" ++ x ++ ")"), " ++ \", \" ++ ") ++ " ++ \")\""
+        }
+      });
+      "impl Show for " ++ ty ++ " { fn show(x) { match x { " ++ join(arms, ", ") ++ " } } }\n"
+    }
+    _ -> "",
+  }))
+}
+
+// Checks the whole program: the prelude's declarations, the program's and the
+// derived impls. Returns what lowering needs: the names, the inference state
+// and every top-level function's declaration by key.
+fn check_program(pre, user, derived, nodes) {
+  let all = append(pre, append(user, derived));
+  let types = filter(all, |d| match d { DType(_, _, _) -> true, _ -> false });
+  let ctors = fold(types, MEmpty, |m, d| match d {
+    DType(n, params, cs) -> fold(enumerate(cs), m, |m, ic| match ic { (i, (cn, fs)) -> m_set(m, cn, CtorI(n, i, params, fs)) }),
+    _ -> m,
+  });
+  let adts = fold(types, MEmpty, |m, d| match d { DType(n, params, cs) -> m_set(m, n, AdtI(params, cs)), _ -> m });
+  // Variable 0 is the builtins' `a`; the node types follow.
+  let s = Inf(array_make(1, TVar(0)), array_make(nodes, t_unit()));
+  // Trait methods: `Self` and any other variables are quantified.
+  let (methods, s) = fold(filter(all, |d| match d { DTrait(_, _) -> true, _ -> false }), (MEmpty, s), |acc, d| match (acc, d) {
+    ((ms, s), DTrait(_, sigs)) -> fold(sigs, (ms, s), |acc, sg| match (acc, sg) {
+      ((ms, s), Sig(m, params, ret)) -> {
+        let (self_t, s) = fresh(s);
+        let names = m_set(MEmpty, "Self", self_t);
+        let (pts, names, s) = xs_to_tys(s, names, map(params, |p| match p { Param(_, Some(x)) -> x, Param(_, None) -> XCon("Unit", []) }));
+        let (rt, _, s) = match ret { Some(x) -> x_to_ty(s, names, x), None -> (t_unit(), names, s) };
+        (m_set(ms, m, generalize(s, TFun(pts, rt))), s)
+      }
+    }),
+    (acc, _) -> acc,
+  });
+  let fns_of = |ds| fold(ds, MEmpty, |m, d| match d { DFn(f) -> m_set(m, fn_name(f), f), _ -> m });
+  let user_fns = fns_of(user);
+  let pre_fns = fns_of(pre);
+  let decls = fold(m_entries(pre_fns), fold(m_entries(user_fns), MEmpty, |m, e| match e { (n, f) -> m_set(m, "u:" ++ n, (f, false)) }),
+    |m, e| match e { (n, f) -> m_set(m, "p:" ++ n, (f, true)) });
+  let placeholder = Scheme([], t_unit());
+  let g = G(ctors, adts, m_from(map(m_keys(user_fns), |n| (n, placeholder))), m_from(map(m_keys(pre_fns), |n| (n, placeholder))), methods, []);
+  // The call graph, and inference one component at a time.
+  let keys = m_keys(decls);
+  let edges = fold(m_entries(decls), MEmpty, |m, e| match e {
+    (k, (f, prelude)) -> m_set(m, k, dedupe(filter(map(ex_names(fn_body(f), []), |n| unwrap_or(g_fn_key(g, prelude, n), "")), |x| x != ""))),
+  });
+  let (g, s) = fold(sccs(keys, edges), (g, s), |acc, comp| match acc {
+    (g, s) -> {
+      let (tys, s) = fresh_n(s, length(comp));
+      let g = fold(zip(comp, tys), g, |g, kt| match kt { (k, t) -> g_set_scheme(g, k, Scheme([], t)) });
+      let s = fold(zip(comp, tys), s, |s, kt| match kt {
+        (k, t) -> match m_get(decls, k) { Some((f, prelude)) -> infer_fn(g, s, prelude, f, t), None -> s },
+      });
+      (fold(zip(comp, tys), g, |g, kt| match kt { (k, t) -> g_set_scheme(g, k, generalize(s, t)) }), s)
+    }
+  });
+  // Impls: each method gets the trait's signature with Self replaced by the impl's type.
+  let impl_decls = map(filter(pre, is_impl), |d| (d, true)) |> append(map(filter(append(user, derived), is_impl), |d| (d, false)));
+  let (impls, s) = fold(impl_decls, ([], s), |acc, dp| match (acc, dp) {
+    ((out, s), (DImpl(tr, x, fns), prelude)) -> {
+      let (it, names, s) = x_to_ty(s, MEmpty, x);
+      let (ms, s) = fold(fns, ([], s), |acc, f| match acc {
+        (ms, s) -> {
+          let (mt, s) = match g_method(g, fn_name(f)) { Some(sc) -> instantiate(s, sc), None -> panic("`" ++ fn_name(f) ++ "` is not a method of " ++ tr) };
+          let s = match mt { TFun([first, .._], _) -> unify(s, first, it), _ -> s };
+          let s = infer_fn(g, s, prelude, f, mt);
+          ([(fn_name(f), f, generalize(s, mt)), ..ms], s)
+        }
+      });
+      void(names);
+      ([ImplI(tr, x_head(x), x, reverse(ms), prelude), ..out], s)
+    },
+    (acc, _) -> acc,
+  });
+  let g = match g { G(cs, ads, us, ps, ms, _) -> G(cs, ads, us, ps, ms, reverse(impls)) };
+  if !m_has(user_fns, "main") { panic("the program has no `main` function") } else { (g, s, decls) }
+}
+fn is_impl(d) { match d { DImpl(_, _, _) -> true, _ -> false } }
+fn void(x) { () }
+fn is_none(o) { match o { None -> true, Some(_) -> false } }
+
+// The prelude, the same source as the reference compiler's (src/prelude.js).
+fn prelude_source() {
+  cat([
+    "type Option<a> { None, Some(a) }\n",
+    "type Result<a, e> { Ok(a), Err(e) }\n",
+    "type List<a> { Nil, Cons(a, List<a>) }\n",
+    "\n",
+    "trait Ord { fn compare(a: Self, b: Self) -> Int }\n",
+    "trait Show { fn show(x: Self) -> String }\n",
+    "\n",
+    "impl Show for Int { fn show(n) { int_to_string(n) } }\n",
+    "impl Show for String { fn show(s) { \"\\\"\" ++ s ++ \"\\\"\" } }\n",
+    "impl Show for Bool { fn show(b) { if b { \"true\" } else { \"false\" } } }\n",
+    "impl Show for () { fn show(u) { \"()\" } }\n",
+    "impl Show for List<a> where a: Show { fn show(xs) { \"[\" ++ join(map(xs, show), \", \") ++ \"]\" } }\n",
+    "impl Show for Array<a> where a: Show { fn show(xs) { \"#\" ++ show(array_to_list(xs)) } }\n",
+    "impl Show for (a, b) where a: Show, b: Show {\n",
+    "  fn show(p) { match p { (x, y) -> \"(\" ++ show(x) ++ \", \" ++ show(y) ++ \")\" } }\n",
+    "}\n",
+    "impl Show for (a, b, c) where a: Show, b: Show, c: Show {\n",
+    "  fn show(p) { match p { (x, y, z) -> \"(\" ++ show(x) ++ \", \" ++ show(y) ++ \", \" ++ show(z) ++ \")\" } }\n",
+    "}\n",
+    "impl Show for (a, b, c, d) where a: Show, b: Show, c: Show, d: Show {\n",
+    "  fn show(p) { match p { (x, y, z, w) -> \"(\" ++ show(x) ++ \", \" ++ show(y) ++ \", \" ++ show(z) ++ \", \" ++ show(w) ++ \")\" } }\n",
+    "}\n",
+    "\n",
+    "fn fold(xs, acc, f) {\n",
+    "  match xs { [] -> acc, [x, ..rest] -> fold(rest, f(acc, x), f) }\n",
+    "}\n",
+    "fn rev_append(xs, ys) {\n",
+    "  match xs { [] -> ys, [x, ..rest] -> rev_append(rest, [x, ..ys]) }\n",
+    "}\n",
+    "fn reverse(xs) { rev_append(xs, []) }\n",
+    "fn append(xs, ys) { rev_append(reverse(xs), ys) }\n",
+    "fn map(xs, f) { reverse(fold(xs, [], |acc, x| [f(x), ..acc])) }\n",
+    "fn filter(xs, keep) { reverse(fold(xs, [], |acc, x| if keep(x) { [x, ..acc] } else { acc })) }\n",
+    "fn flat_map(xs, f) { reverse(fold(xs, [], |acc, x| rev_append(f(x), acc))) }\n",
+    "fn concat(xss) { flat_map(xss, |xs| xs) }\n",
+    "fn each(xs, f) {\n",
+    "  match xs { [] -> (), [x, ..rest] -> { f(x); each(rest, f) } }\n",
+    "}\n",
+    "fn length(xs) { fold(xs, 0, |n, _| n + 1) }\n",
+    "fn sum(xs) { fold(xs, 0, |a, x| a + x) }\n",
+    "fn is_empty(xs) { match xs { [] -> true, _ -> false } }\n",
+    "fn range(lo, hi) {\n",
+    "  fn go(i, acc) { if i < lo { acc } else { go(i - 1, [i, ..acc]) } }\n",
+    "  go(hi - 1, [])\n",
+    "}\n",
+    "fn any(xs, p) { match xs { [] -> false, [x, ..rest] -> if p(x) { true } else { any(rest, p) } } }\n",
+    "fn all(xs, p) { match xs { [] -> true, [x, ..rest] -> if p(x) { all(rest, p) } else { false } } }\n",
+    "fn contains(xs, y) { any(xs, |x| x == y) }\n",
+    "fn find(xs, p) { match xs { [] -> None, [x, ..rest] -> if p(x) { Some(x) } else { find(rest, p) } } }\n",
+    "fn head(xs) { match xs { [] -> None, [x, .._] -> Some(x) } }\n",
+    "fn nth(xs, n) { match xs { [] -> None, [x, ..rest] -> if n == 0 { Some(x) } else { nth(rest, n - 1) } } }\n",
+    "fn take(xs, n) {\n",
+    "  fn go(xs, n, acc) { match xs { [] -> reverse(acc), [x, ..rest] -> if n <= 0 { reverse(acc) } else { go(rest, n - 1, [x, ..acc]) } } }\n",
+    "  go(xs, n, [])\n",
+    "}\n",
+    "fn drop(xs, n) { match xs { [] -> [], [_, ..rest] -> if n <= 0 { xs } else { drop(rest, n - 1) } } }\n",
+    "fn zip(xs, ys) {\n",
+    "  fn go(xs, ys, acc) {\n",
+    "    match (xs, ys) { ([x, ..xr], [y, ..yr]) -> go(xr, yr, [(x, y), ..acc]), _ -> reverse(acc) }\n",
+    "  }\n",
+    "  go(xs, ys, [])\n",
+    "}\n",
+    "fn min(a, b) { if a <= b { a } else { b } }\n",
+    "fn max(a, b) { if a >= b { a } else { b } }\n",
+    "fn abs(n) { if n < 0 { 0 - n } else { n } }\n",
+    "fn unwrap_or(o, default) { match o { Some(x) -> x, None -> default } }\n",
+    "fn map_option(o, f) { match o { Some(x) -> Some(f(x)), None -> None } }\n",
+    "fn sort_by(xs, less) {\n",
+    "  fn merge(xs, ys, acc) {\n",
+    "    match (xs, ys) {\n",
+    "      ([], _) -> rev_append(acc, ys),\n",
+    "      (_, []) -> rev_append(acc, xs),\n",
+    "      ([x, ..xr], [y, ..yr]) -> if less(y, x) { merge(xs, yr, [y, ..acc]) } else { merge(xr, ys, [x, ..acc]) },\n",
+    "    }\n",
+    "  }\n",
+    "  fn split(xs, l, r) { match xs { [] -> (l, r), [x, ..rest] -> split(rest, r, [x, ..l]) } }\n",
+    "  fn go(xs) {\n",
+    "    match xs {\n",
+    "      [] -> [],\n",
+    "      [x] -> [x],\n",
+    "      _ -> { let (l, r) = split(xs, [], []); merge(go(l), go(r), []) },\n",
+    "    }\n",
+    "  }\n",
+    "  go(xs)\n",
+    "}\n",
+    "fn sort(xs) { sort_by(xs, |a, b| a < b) }\n",
+    "fn intersperse(xs, sep) {\n",
+    "  match xs { [] -> [], [x, ..rest] -> reverse(fold(rest, [x], |acc, y| [y, sep, ..acc])) }\n",
+    "}\n",
+    "fn join(xs, sep) { concat_strings(intersperse(xs, sep)) }\n",
+    "fn show_list(xs, show) { \"[\" ++ join(map(xs, show), \", \") ++ \"]\" }\n",
+    "fn repeat_string(s, n) { if n <= 0 { \"\" } else { s ++ repeat_string(s, n - 1) } }\n",
+    "fn array_from_list(xs) { fold(xs, array_empty(), |a, x| array_push(a, x)) }\n",
+    "// Pure: the refinement on i lets the checker prove every array_get in bounds.\n",
+    "fn array_to_list(a) {\n",
+    "  fn go(i: {i: Int | i < array_length(a)}, acc) { if i < 0 { acc } else { go(i - 1, [array_get(a, i), ..acc]) } }\n",
+    "  go(array_length(a) - 1, [])\n",
+    "}\n",
+  ])
+}
+
+// ======================================= 5. lowering to an intermediate language
+//
+// Each top-level function is lowered once per type it is used at
+// (monomorphization), into A-normal form: every intermediate value is named,
+// and every operation's operands are atoms. Lambdas and local functions
+// become closures over the variables they capture; a match becomes tag tests
+// and field reads; trait methods become calls to the impl for the type.
+
+type Atom { AVar(String), AInt(Int), AI32(Int), AStr(String) }
+type Rhs {
+  RAtom(Atom),
+  RPrim(String, List<Atom>),                 // add sub mul div rem neg; eq ne lt le gt ge on Int; eq32 not
+  RCmp(String, Ty, List<Atom>),              // structural comparison: eq ne lt le gt ge, or three (-1, 0, 1)
+  RCall(String, List<Atom>),
+  RCallC(Atom, List<Atom>, Ty),              // a closure call; the closure's type
+  RCtor(Ty, Int, List<Atom>),                // a constructor with fields: type, tag, fields
+  RTuple(Ty, List<Atom>),
+  RClosure(String, List<Atom>, List<Ty>),    // lifted function, captured values and their types
+  RField(Atom, Int, Ty),                     // field i of a cell, of type Ty
+  REnv(Int, Ty),                             // captured value i of the current closure
+  RTag(Atom),                                // the tag of a value of a type with fields
+  RBuiltin(String, List<Atom>, List<Ty>)     // a builtin, with its arguments' types
+}
+type Ir {
+  ILet(String, Ty, Rhs, Ir),
+  IBlock(String, Ty, Ir, Ir),                // let v = (a nested expression); body
+  IIf(Atom, Ir, Ir),
+  IRet(Rhs),
+  IDup(String, Ir),
+  IDrop(String, Ty, Ir),
+  IFail
+}
+// A function: name, parameters, result type, body, and whether its first parameter is a closure's environment.
+type IrFn { IrFn(String, List<(String, Ty)>, Ty, Ir, Bool) }
+type Bind { BLet(String, Ty, Rhs), BBlock(String, Ty, Ir) }
+
+fn wrap(binds, ir) {
+  fold(binds, ir, |body, b| match b { BLet(v, t, r) -> ILet(v, t, r, body), BBlock(v, t, e) -> IBlock(v, t, e, body) })
+}
+
+// What a function instance is lowered from: its name, declaration, whether it is prelude code, and its type variables' types.
+type Pend { Pend(String, FnD, Bool, List<(Int, Ty)>) }
+// The lowering state: a counter for names, instances made (key -> name), the
+// worklist, finished functions, and user Ord impls by type (tkey -> function, or "").
+type L { L(Int, Map<String>, List<Pend>, List<IrFn>, Map<String>) }
+// The context: names, inference results, the instance's type variables, prelude or not, the locals
+// (name -> atom and type), and the top-level functions' declarations.
+type C { C(G, Inf, List<(Int, Ty)>, Bool, Map<(Atom, Ty)>, Map<(FnD, Bool)>) }
+
+fn l_var(l) { match l { L(n, is, w, d, o) -> ("v" ++ int_to_string(n), L(n + 1, is, w, d, o)) } }
+fn l_label(l, prefix) { match l { L(n, is, w, d, o) -> (prefix ++ int_to_string(n), L(n + 1, is, w, d, o)) } }
+fn l_done(l, f) { match l { L(n, is, w, d, o) -> L(n, is, w, [f, ..d], o) } }
+fn c_env(c) { match c { C(_, _, _, _, env, _) -> env } }
+fn c_with_env(c, env) { match c { C(g, s, m, p, _, ds) -> C(g, s, m, p, env, ds) } }
+fn c_g(c) { match c { C(g, _, _, _, _, _) -> g } }
+fn c_bind(c, n, a, t) { c_with_env(c, m_set(c_env(c), n, (a, t))) }
+
+// Types made concrete: the instance's variables replaced, any others defaulted to ().
+fn concrete(t, m) {
+  match t {
+    TVar(i) -> match find(m, |p| match p { (j, _) -> j == i }) { Some((_, u)) -> u, None -> t_unit() },
+    TCon(n, args) -> TCon(n, map(args, |a| concrete(a, m))),
+    TFun(ps, r) -> TFun(map(ps, |a| concrete(a, m)), concrete(r, m)),
+    TTup(es) -> TTup(map(es, |a| concrete(a, m))),
+  }
+}
+fn cty(c, id) { match c { C(_, s, m, _, _, _) -> concrete(s_zonk(s, node_ty(s, id)), m) } }
+
+// Matches a scheme's type against a concrete type: the variables' types.
+fn match_ty(p, t, acc) {
+  match (p, t) {
+    (TVar(i), _) -> if any(acc, |q| match q { (j, _) -> j == i }) { acc } else { [(i, t), ..acc] },
+    (TCon(_, xs), TCon(_, ys)) -> fold(zip(xs, ys), acc, |acc, q| match q { (x, y) -> match_ty(x, y, acc) }),
+    (TFun(ps, r), TFun(qs, q)) -> match_ty(r, q, fold(zip(ps, qs), acc, |acc, z| match z { (x, y) -> match_ty(x, y, acc) })),
+    (TTup(xs), TTup(ys)) -> fold(zip(xs, ys), acc, |acc, q| match q { (x, y) -> match_ty(x, y, acc) }),
+    _ -> acc,
+  }
+}
+
+// The name of a function's instance at a concrete type, queued for lowering if new.
+fn instance(l, key, ft, decl, prelude, sc) {
+  let k = key ++ "@" ++ tkey(ft);
+  match l {
+    L(n, is, w, d, o) -> match m_get(is, k) {
+      Some(name) -> (name, l),
+      None -> {
+        let name = k;
+        let m = match sc { Scheme(_, t) -> match_ty(t, ft, []) };
+        (name, L(n, m_set(is, k, name), [Pend(name, decl, prelude, m), ..w], d, o))
+      }
+    }
+  }
+}
+
+fn find_impl(g, trait_name, head) { find(g_impls(g), |i| match i { ImplI(tr, h, _, _, _) -> tr == trait_name && h == head }) }
+fn trait_of(g, m) {
+  match find(g_impls(g), |i| match i { ImplI(_, _, _, ms, _) -> any(ms, |e| match e { (n, _, _) -> n == m }) }) {
+    Some(ImplI(tr, _, _, _, _)) -> tr, _ -> if m == "show" { "Show" } else if m == "compare" { "Ord" } else { "" },
+  }
+}
+// The instance of method m of the impl for the type of its first argument, or None.
+fn method_instance(c, l, m, ft) {
+  let g = c_g(c);
+  let head = match ft { TFun([first, .._], _) -> t_head(first), _ -> "?" };
+  match find_impl(g, trait_of(g, m), head) {
+    Some(ImplI(tr, h, _, ms, prelude)) -> match find(ms, |e| match e { (n, _, _) -> n == m }) {
+      Some((_, f, sc)) -> { let (name, l) = instance(l, "i:" ++ tr ++ ":" ++ h ++ ":" ++ m, ft, f, prelude, sc); (Some(name), l) },
+      None -> (None, l),
+    },
+    None -> (None, l),
+  }
+}
+
+fn adt_info(c, n) { match g_adt(c_g(c), n) { Some(a) -> a, None -> panic("internal error: unknown type " ++ n) } }
+// The field types of constructor `tag` of a concrete type.
+fn variant_fields(c, t, tag) {
+  match t {
+    TCon(n, args) -> match adt_info(c, n) { AdtI(params, ctors) -> match list_get(ctors, tag) { (_, fs) -> map(fs, |f| x_inst(f, m_from(zip(params, args)))) } },
+    _ -> panic("internal error: not a data type: " ++ tkey(t)),
+  }
+}
+// A type whose constructors have no fields is an immediate (like Bool).
+fn is_enum(c, t) {
+  match t {
+    TCon(n, _) -> match g_adt(c_g(c), n) { Some(AdtI(_, ctors)) -> all(ctors, |k| match k { (_, fs) -> is_empty(fs) }), None -> true },
+    _ -> false,
+  }
+}
+fn ctor_tag(c, n) { match g_ctor(c_g(c), n) { CtorI(_, tag, _, _) -> tag } }
+
+// User Ord impls reachable from a compared type, so per-type comparison can call them.
+fn request_ord(c, l, t) {
+  let k = tkey(t);
+  match l {
+    L(_, _, _, _, o) -> if m_has(o, k) { l } else {
+      let l = match l { L(n, is, w, d, o) -> L(n, is, w, d, m_set(o, k, "")) };
+      match t {
+        TCon(n, args) -> match find_impl(c_g(c), "Ord", n) {
+          Some(_) -> match method_instance(c, l, "compare", TFun([t, t], t_int())) {
+            (Some(name), l) -> match l { L(n2, is, w, d, o) -> L(n2, is, w, d, m_set(o, k, name)) },
+            (None, l) -> l,
+          },
+          None -> {
+            let l = fold(args, l, |l, a| request_ord(c, l, a));
+            match g_adt(c_g(c), n) {
+              Some(AdtI(_, ctors)) -> fold(range(0, length(ctors)), l, |l, i| fold(variant_fields(c, t, i), l, |l, f| request_ord(c, l, f))),
+              None -> l,
+            }
+          }
+        },
+        TTup(es) -> fold(es, l, |l, e| request_ord(c, l, e)),
+        _ -> l,
+      }
+    }
+  }
+}
+
+// ------------------------------------------------------------ expressions
+fn lower_tail(c, l, e) {
+  match e {
+    EIf(_, cond, a, b) -> {
+      let (bs, ca, l) = lower_val(c, l, cond, []);
+      let (ta, l) = lower_tail(c, l, a);
+      let (tb, l) = lower_tail(c, l, b);
+      (wrap(bs, IIf(ca, ta, tb)), l)
+    }
+    EMatch(_, scrut, arms) -> {
+      let (bs, sa, l) = lower_val(c, l, scrut, []);
+      let (m, l) = lower_arms(c, l, sa, cty(c, ex_id(scrut)), arms);
+      (wrap(bs, m), l)
+    }
+    EBlock(_, stmts, result) -> {
+      let (bs, c2, l) = lower_stmts(c, l, stmts, []);
+      let (r, l) = lower_tail(c2, l, result);
+      (wrap(bs, r), l)
+    }
+    _ -> { let (bs, r, l) = lower_rhs(c, l, e, []); (wrap(bs, IRet(r)), l) },
+  }
+}
+
+// Lowers e to an atom; binds (in reverse order) collect what must be computed first.
+fn lower_val(c, l, e, bs) {
+  match e {
+    EInt(_, n) -> (bs, AInt(n), l),
+    EStr(_, s) -> (bs, AStr(s), l),
+    EBool(_, b) -> (bs, AI32(if b { 1 } else { 0 }), l),
+    EUnit(_) -> (bs, AI32(0), l),
+    EVar(_, n) -> match m_get(c_env(c), n) {
+      Some((a, _)) -> (bs, a, l),
+      None -> named(c, l, e, bs),
+    },
+    EIf(id, _, _, _) -> nested(c, l, e, bs, cty(c, id)),
+    EMatch(id, _, _) -> nested(c, l, e, bs, cty(c, id)),
+    EBlock(_, stmts, result) -> {
+      let (bs, c2, l) = lower_stmts(c, l, stmts, bs);
+      lower_val(c2, l, result, bs)
+    }
+    _ -> named(c, l, e, bs),
+  }
+}
+fn named(c, l, e, bs) {
+  let (bs, r, l) = lower_rhs(c, l, e, bs);
+  match r {
+    RAtom(a) -> (bs, a, l),
+    _ -> { let (v, l) = l_var(l); ([BLet(v, cty(c, ex_id(e)), r), ..bs], AVar(v), l) },
+  }
+}
+fn nested(c, l, e, bs, t) {
+  let (inner, l) = lower_tail(c, l, e);
+  let (v, l) = l_var(l);
+  ([BBlock(v, t, inner), ..bs], AVar(v), l)
+}
+fn lower_vals(c, l, es, bs) {
+  fn go(l, es, bs, acc) { match es { [] -> (bs, reverse(acc), l), [e, ..rest] -> { let (bs, a, l) = lower_val(c, l, e, bs); go(l, rest, bs, [a, ..acc]) } } }
+  go(l, es, bs, [])
+}
+
+fn lower_rhs(c, l, e, bs) {
+  match e {
+    EInt(_, _) -> { let (bs, a, l) = lower_val(c, l, e, bs); (bs, RAtom(a), l) },
+    EStr(_, _) -> { let (bs, a, l) = lower_val(c, l, e, bs); (bs, RAtom(a), l) },
+    EBool(_, _) -> { let (bs, a, l) = lower_val(c, l, e, bs); (bs, RAtom(a), l) },
+    EUnit(_) -> (bs, RAtom(AI32(0)), l),
+    EVar(id, n) -> match m_get(c_env(c), n) {
+      Some((a, _)) -> (bs, RAtom(a), l),
+      None -> function_value(c, l, e, bs, cty(c, id)),
+    },
+    ECtor(id, n, args, applied) -> {
+      let t = cty(c, id);
+      if applied {
+        let (bs, as, l) = lower_vals(c, l, args, bs);
+        if is_empty(as) { (bs, RAtom(AI32(ctor_tag(c, n))), l) } else { (bs, RCtor(t, ctor_tag(c, n), as), l) }
+      } else {
+        match t { TFun(_, _) -> function_value(c, l, e, bs, t), _ -> (bs, RAtom(AI32(ctor_tag(c, n))), l) }
+      }
+    }
+    ECall(id, f, args) -> lower_call(c, l, id, f, args, bs),
+    EBin(id, op, a, b) -> {
+      if op == "&&" { lower_if_value(c, l, bs, EIf(id, a, b, EBool(id, false))) }
+      else if op == "||" { lower_if_value(c, l, bs, EIf(id, a, EBool(id, true), b)) }
+      else {
+        let (bs, x, l) = lower_val(c, l, a, bs);
+        let (bs, y, l) = lower_val(c, l, b, bs);
+        if op == "++" { (bs, RBuiltin("concat", [x, y], [t_str(), t_str()]), l) }
+        else if op == "+" { (bs, RPrim("add", [x, y]), l) }
+        else if op == "-" { (bs, RPrim("sub", [x, y]), l) }
+        else if op == "*" { (bs, RPrim("mul", [x, y]), l) }
+        else if op == "/" { (bs, RPrim("div", [x, y]), l) }
+        else if op == "%" { (bs, RPrim("rem", [x, y]), l) }
+        else {
+          let name = if op == "==" { "eq" } else if op == "!=" { "ne" } else if op == "<" { "lt" } else if op == "<=" { "le" } else if op == ">" { "gt" } else { "ge" };
+          let t = cty(c, ex_id(a));
+          if t == t_int() { (bs, RPrim(name, [x, y]), l) }
+          else { let l = request_ord(c, l, t); (bs, RCmp(name, t, [x, y]), l) }
+        }
+      }
+    }
+    EUn(_, op, x) -> {
+      let (bs, a, l) = lower_val(c, l, x, bs);
+      (bs, RPrim(if op == "-" { "neg" } else { "not" }, [a]), l)
+    }
+    ETuple(id, es) -> { let (bs, as, l) = lower_vals(c, l, es, bs); (bs, RTuple(cty(c, id), as), l) },
+    ELam(id, params, body) -> lambda(c, l, bs, id, None, params, body),
+    _ -> { let (bs, a, l) = lower_val(c, l, e, bs); (bs, RAtom(a), l) },
+  }
+}
+
+// a && b is `if a { b } else { false }`; a || b is `if a { true } else { b }`.
+fn lower_if_value(c, l, bs, e) { let (bs, a, l) = lower_val(c, l, e, bs); (bs, RAtom(a), l) }
+
+fn lower_call(c, l, id, f, args, bs) {
+  match f {
+    EVar(fid, n) -> match m_get(c_env(c), n) {
+      Some((a, t)) -> { let (bs, as, l) = lower_vals(c, l, args, bs); (bs, RCallC(a, as, t), l) },
+      None -> {
+        let ft = cty(c, fid);
+        let (bs, as, l) = lower_vals(c, l, args, bs);
+        let (r, l) = call_named(c, l, n, ft, as);
+        (bs, r, l)
+      }
+    },
+    ECtor(fid, n, [], false) -> {
+      let (bs, as, l) = lower_vals(c, l, args, bs);
+      (bs, RCtor(cty(c, id), ctor_tag(c, n), as), l)
+    }
+    _ -> {
+      let (bs, fa, l) = lower_val(c, l, f, bs);
+      let (bs, as, l) = lower_vals(c, l, args, bs);
+      (bs, RCallC(fa, as, cty(c, ex_id(f))), l)
+    }
+  }
+}
+
+// A call to a named function, method or builtin at concrete type ft.
+fn call_named(c, l, n, ft, as) {
+  match c {
+    C(g, _, _, prelude, _, decls) -> match g_fn_key(g, prelude, n) {
+      Some(key) -> match m_get(decls, key) {
+        Some((decl, pre)) -> { let (name, l) = instance(l, key, ft, decl, pre, g_scheme(g, key)); (RCall(name, as), l) },
+        None -> panic("internal error: no declaration for " ++ key),
+      },
+      None -> match g_method(g, n) {
+        Some(_) -> match method_instance(c, l, n, ft) {
+          (Some(name), l) -> (RCall(name, as), l),
+          (None, l) -> if n == "compare" {
+            let t = match ft { TFun([first, .._], _) -> first, _ -> t_unit() };
+            let l = request_ord(c, l, t);
+            (RCmp("three", t, as), l)
+          } else { panic("no impl of `" ++ n ++ "` for " ++ tkey(ft)) },
+        },
+        None -> match ft { TFun(ps, _) -> (RBuiltin(n, as, ps), l), _ -> panic("internal error: builtin type") },
+      },
+    },
+  }
+}
+
+// A named function, method, builtin or constructor used as a value: a closure
+// with no captures around a call to it.
+fn function_value(c, l, e, bs, ft) {
+  match ft {
+    TFun(ps, r) -> {
+      let key = "wrap:" ++ (match e { EVar(_, n) -> n, ECtor(_, n, _, _) -> n, _ -> "?" }) ++ "@" ++ tkey(ft);
+      match l {
+        L(_, is, _, _, _) -> match m_get(is, key) {
+          Some(name) -> (bs, RClosure(name, [], []), l),
+          None -> {
+            let l = match l { L(n, is, w, d, o) -> L(n, m_set(is, key, key), w, d, o) };
+            let (vs, l) = fold(ps, ([], l), |acc, _| match acc { (vs, l) -> { let (v, l) = l_var(l); ([v, ..vs], l) } });
+            let vs = reverse(vs);
+            let atoms = map(vs, AVar);
+            let (body, l) = match e {
+              ECtor(_, n, _, _) -> (IRet(RCtor(r, ctor_tag(c, n), atoms)), l),
+              EVar(_, n) -> { let (rhs, l) = call_named(c, l, n, ft, atoms); (IRet(rhs), l) },
+              _ -> panic("internal error: function value"),
+            };
+            let f = IrFn(key, [("env", ft), ..zip(vs, ps)], r, body, true);
+            (bs, RClosure(key, [], []), l_done(l, f))
+          }
+        }
+      }
+    }
+    _ -> panic("internal error: not a function type"),
+  }
+}
+
+// A lambda or local function: a lifted function over the captured variables.
+// For a local function, `self` is its name, which inside refers to the closure itself.
+fn lambda(c, l, bs, id, self_name, params, body) {
+  let ft = cty(c, id);
+  let (pts, rt) = match ft { TFun(ps, r) -> (ps, r), _ -> panic("internal error: lambda type") };
+  let pnames = map(params, param_name);
+  let bound = match self_name { Some(n) -> [n, ..pnames], None -> pnames };
+  let captured = filter(dedupe(free_locals(body, bound, [])), |n| m_has(c_env(c), n));
+  let (name, l) = l_label(l, "lambda");
+  let (pvs, l) = fold(params, ([], l), |acc, _| match acc { (vs, l) -> { let (v, l) = l_var(l); ([v, ..vs], l) } });
+  let pvs = reverse(pvs);
+  // Inside: captured values are loaded from the environment at entry.
+  let caps = map(captured, |n| match m_get(c_env(c), n) { Some(at) -> (n, at), None -> panic("internal error: capture") });
+  let (loads, inner_env, l) = fold(enumerate(caps), ([], MEmpty, l), |acc, ic| match (acc, ic) {
+    ((loads, env, l), (i, (n, (_, t)))) -> { let (v, l) = l_var(l); ([BLet(v, t, REnv(i, t)), ..loads], m_set(env, n, (AVar(v), t)), l) },
+  });
+  let inner_env = fold(zip3(pnames, pvs, pts), inner_env, |env, p| match p { (n, v, t) -> m_set(env, n, (AVar(v), t)) });
+  let inner_env = match self_name { Some(n) -> m_set(inner_env, n, (AVar("env"), ft)), None -> inner_env };
+  let (b, l) = lower_tail(c_with_env(c, inner_env), l, body);
+  let f = IrFn(name, [("env", ft), ..zip(pvs, pts)], rt, wrap(loads, b), true);
+  (bs, RClosure(name, map(caps, |p| match p { (_, (a, _)) -> a }), map(caps, |p| match p { (_, (_, t)) -> t })), l_done(l, f))
+}
+
+// Variables an expression uses that it does not bind itself.
+fn free_locals(e, bound, acc) {
+  match e {
+    EVar(_, n) -> if contains(bound, n) { acc } else { [n, ..acc] },
+    ECtor(_, _, args, _) -> fold(args, acc, |acc, a| free_locals(a, bound, acc)),
+    ECall(_, f, args) -> fold(args, free_locals(f, bound, acc), |acc, a| free_locals(a, bound, acc)),
+    EBin(_, _, a, b) -> free_locals(b, bound, free_locals(a, bound, acc)),
+    EUn(_, _, x) -> free_locals(x, bound, acc),
+    EIf(_, x, a, b) -> free_locals(b, bound, free_locals(a, bound, free_locals(x, bound, acc))),
+    EMatch(_, x, arms) -> fold(arms, free_locals(x, bound, acc), |acc, arm| match arm {
+      Arm(p, gd, body) -> {
+        let b2 = append(pat_vars(p, []), bound);
+        let acc = match gd { Some(ge) -> free_locals(ge, b2, acc), None -> acc };
+        free_locals(body, b2, acc)
+      }
+    }),
+    EBlock(_, stmts, r) -> {
+      let (bound2, acc) = fold(stmts, (bound, acc), |st, s| match (st, s) {
+        ((b, acc), SLet(p, _, v)) -> (append(pat_vars(p, []), b), free_locals(v, b, acc)),
+        ((b, acc), SFn(f)) -> ([fn_name(f), ..b], free_locals(fn_body(f), append(map(fn_params(f), param_name), [fn_name(f), ..b]), acc)),
+        ((b, acc), SExpr(x)) -> (b, free_locals(x, b, acc)),
+      });
+      free_locals(r, bound2, acc)
+    }
+    ELam(_, ps, body) -> free_locals(body, append(map(ps, param_name), bound), acc),
+    ETuple(_, es) -> fold(es, acc, |acc, a| free_locals(a, bound, acc)),
+    _ -> acc,
+  }
+}
+fn pat_vars(p, acc) {
+  match p {
+    PVar(n) -> [n, ..acc],
+    PTup(ps) -> fold(ps, acc, |acc, q| pat_vars(q, acc)),
+    PCtor(_, ps) -> fold(ps, acc, |acc, q| pat_vars(q, acc)),
+    _ -> acc,
+  }
+}
+
+// ------------------------------------------------------------- statements
+fn lower_stmts(c, l, stmts, bs) {
+  match stmts {
+    [] -> (bs, c, l),
+    [SLet(p, _, value), ..rest] -> {
+      let (bs, a, l) = lower_val(c, l, value, bs);
+      let (bs, c2, l) = bind_pattern(c, l, p, a, cty(c, ex_id(value)), bs);
+      lower_stmts(c2, l, rest, bs)
+    }
+    [SFn(FnD(name, params, _, body, id)), ..rest] -> {
+      let (bs, r, l) = lambda(c, l, bs, id, Some(name), params, body);
+      let (v, l) = l_var(l);
+      let t = cty(c, id);
+      lower_stmts(c_bind(c, name, AVar(v), t), l, rest, [BLet(v, t, r), ..bs])
+    }
+    [SExpr(e), ..rest] -> {
+      let (bs, _, l) = lower_val(c, l, e, bs);
+      lower_stmts(c, l, rest, bs)
+    }
+  }
+}
+
+// Binds the variables of an irrefutable pattern (or of a pattern already tested).
+fn bind_pattern(c, l, p, a, t, bs) {
+  match p {
+    PVar(n) -> (bs, c_bind(c, n, a, t), l),
+    PTup(ps) -> match t { TTup(ts) -> bind_fields(c, l, ps, a, ts, bs), _ -> panic("internal error: tuple pattern") },
+    PCtor(n, ps) -> if is_empty(ps) { (bs, c, l) } else { bind_fields(c, l, ps, a, variant_fields(c, t, ctor_tag(c, n)), bs) },
+    _ -> (bs, c, l),
+  }
+}
+fn bind_fields(c, l, ps, a, ts, bs) {
+  fold(enumerate(zip(ps, ts)), (bs, c, l), |acc, ip| match (acc, ip) {
+    ((bs, c, l), (i, (q, ft))) -> if is_empty(pat_vars(q, [])) { (bs, c, l) } else {
+      let (v, l) = l_var(l);
+      bind_pattern(c, l, q, AVar(v), ft, [BLet(v, ft, RField(a, i, ft)), ..bs])
+    },
+  })
+}
+
+// ---------------------------------------------------------------- matches
+fn refutable(p) {
+  match p { PWild -> false, PVar(_) -> false, PUnit -> false, PTup(ps) -> any(ps, refutable), _ -> true }
+}
+
+fn lower_arms(c, l, a, t, arms) {
+  match arms {
+    [] -> (IFail, l),
+    [Arm(p, guard, body), ..rest] -> {
+      if !refutable(p) && is_none(guard) {
+        let (bs, c2, l) = bind_pattern(c, l, p, a, t, []);
+        let (b, l) = lower_tail(c2, l, body);
+        (wrap(bs, b), l)
+      } else {
+        // ok = the pattern matches (and the guard holds); then bind and run the arm.
+        let (k, l) = match guard {
+          Some(ge) -> { let (bs, c2, l) = bind_pattern(c, l, p, a, t, []); let (gi, l) = lower_tail(c2, l, ge); (wrap(bs, gi), l) },
+          None -> (IRet(RAtom(AI32(1))), l),
+        };
+        let (test, l) = test_pattern(c, l, p, a, t, k);
+        let (ok, l) = l_var(l);
+        let (bs, c2, l) = bind_pattern(c, l, p, a, t, []);
+        let (b, l) = lower_tail(c2, l, body);
+        let (others, l) = lower_arms(c, l, a, t, rest);
+        (IBlock(ok, t_bool(), test, IIf(AVar(ok), wrap(bs, b), others)), l)
+      }
+    }
+  }
+}
+
+// Continue with k when the test v holds, else yield false; `if v { true } else { false }` is just v.
+fn when_true(v, k) {
+  match k { IRet(RAtom(AI32(1))) -> IRet(RAtom(AVar(v))), _ -> IIf(AVar(v), k, IRet(RAtom(AI32(0)))) }
+}
+// Code that yields `k` when the pattern matches a, and false otherwise.
+fn test_pattern(c, l, p, a, t, k) {
+  match p {
+    PInt(n) -> { let (v, l) = l_var(l); (ILet(v, t_bool(), RPrim("eq", [a, AInt(n)]), when_true(v, k)), l) },
+    PStr(s) -> { let (v, l) = l_var(l); (ILet(v, t_bool(), RCmp("eq", t_str(), [a, AStr(s)]), when_true(v, k)), l) },
+    PBool(b) -> { let (v, l) = l_var(l); (ILet(v, t_bool(), RPrim("eq32", [a, AI32(if b { 1 } else { 0 })]), when_true(v, k)), l) },
+    PTup(ps) -> match t { TTup(ts) -> test_fields(c, l, ps, a, ts, k), _ -> panic("internal error: tuple test") },
+    PCtor(n, ps) -> {
+      let tag = ctor_tag(c, n);
+      let (inner, l) = if is_empty(ps) { (k, l) } else { test_fields(c, l, ps, a, variant_fields(c, t, tag), k) };
+      if is_enum(c, t) {
+        let (v, l) = l_var(l);
+        (ILet(v, t_bool(), RPrim("eq32", [a, AI32(tag)]), when_true(v, inner)), l)
+      } else {
+        let (tg, l) = l_var(l);
+        let (v, l) = l_var(l);
+        (ILet(tg, t_int32(), RTag(a), ILet(v, t_bool(), RPrim("eq32", [AVar(tg), AI32(tag)]), when_true(v, inner))), l)
+      }
+    }
+    _ -> (k, l),
+  }
+}
+fn t_int32() { TCon("Tag", []) }
+fn test_fields(c, l, ps, a, ts, k) {
+  fold(reverse(enumerate(zip(ps, ts))), (k, l), |acc, ip| match (acc, ip) {
+    ((k, l), (i, (q, ft))) -> if !refutable(q) { (k, l) } else {
+      let (v, l) = l_var(l);
+      let (inner, l) = test_pattern(c, l, q, AVar(v), ft, k);
+      (ILet(v, ft, RField(a, i, ft), inner), l)
+    },
+  })
+}
+
+// Lowers every function instance reachable from main. Returns main's name,
+// the functions, and the user Ord impls by type.
+fn lower_program(g, s, decls) {
+  let main_decl = match m_get(decls, "u:main") { Some((f, _)) -> f, None -> panic("the program has no `main` function") };
+  let main_t = match g_scheme(g, "u:main") { Scheme(_, t) -> concrete(t, []) };
+  let (main_name, l) = instance(L(0, MEmpty, [], [], MEmpty), "u:main", main_t, main_decl, false, g_scheme(g, "u:main"));
+  fn go(l) {
+    match l {
+      L(n, is, [Pend(name, FnD(_, params, _, body, id), prelude, m), ..rest], d, o) -> {
+        let l = L(n, is, rest, d, o);
+        let c = C(g, s, m, prelude, MEmpty, decls);
+        let (pts, rt) = match cty(c, id) { TFun(ps, r) -> (ps, r), _ -> panic("internal error: function type") };
+        let (pvs, l) = fold(params, ([], l), |acc, _| match acc { (vs, l) -> { let (v, l) = l_var(l); ([v, ..vs], l) } });
+        let pvs = reverse(pvs);
+        let env = fold(zip3(map(params, param_name), pvs, pts), MEmpty, |env, p| match p { (pn, v, t) -> m_set(env, pn, (AVar(v), t)) });
+        let (b, l) = lower_tail(c_with_env(c, env), l, body);
+        go(l_done(l, IrFn(name, zip(pvs, pts), rt, b, false)))
+      }
+      _ -> l,
+    }
+  }
+  match go(l) { L(_, _, _, d, o) -> (main_name, reverse(d), o) }
+}
+
+// The intermediate language as text, for debugging (`lumen2c --ir`).
+fn show_atom(a) { match a { AVar(v) -> v, AInt(n) -> int_to_string(n), AI32(n) -> int_to_string(n) ++ "i", AStr(s) -> "\"" ++ s ++ "\"" } }
+fn show_atoms(as) { join(map(as, show_atom), ", ") }
+fn show_rhs(r) {
+  match r {
+    RAtom(a) -> show_atom(a),
+    RPrim(op, as) -> op ++ "(" ++ show_atoms(as) ++ ")",
+    RCmp(op, t, as) -> "cmp_" ++ op ++ "<" ++ tkey(t) ++ ">(" ++ show_atoms(as) ++ ")",
+    RCall(f, as) -> f ++ "(" ++ show_atoms(as) ++ ")",
+    RCallC(f, as, _) -> show_atom(f) ++ ".call(" ++ show_atoms(as) ++ ")",
+    RCtor(t, tag, as) -> tkey(t) ++ "#" ++ int_to_string(tag) ++ "(" ++ show_atoms(as) ++ ")",
+    RTuple(_, as) -> "(" ++ show_atoms(as) ++ ")",
+    RClosure(f, as, _) -> "closure " ++ f ++ "[" ++ show_atoms(as) ++ "]",
+    RField(a, i, _) -> "field " ++ show_atom(a) ++ "." ++ int_to_string(i),
+    REnv(i, _) -> "env." ++ int_to_string(i),
+    RTag(a) -> "tag " ++ show_atom(a),
+    RBuiltin(n, as, _) -> n ++ "(" ++ show_atoms(as) ++ ")",
+  }
+}
+fn show_ir(e, indent) {
+  match e {
+    ILet(v, t, r, b) -> indent ++ "let " ++ v ++ ": " ++ tkey(t) ++ " = " ++ show_rhs(r) ++ "\n" ++ show_ir(b, indent),
+    IBlock(v, t, x, b) -> indent ++ "let " ++ v ++ ": " ++ tkey(t) ++ " = {\n" ++ show_ir(x, indent ++ "  ") ++ indent ++ "}\n" ++ show_ir(b, indent),
+    IIf(a, x, y) -> indent ++ "if " ++ show_atom(a) ++ " {\n" ++ show_ir(x, indent ++ "  ") ++ indent ++ "} else {\n" ++ show_ir(y, indent ++ "  ") ++ indent ++ "}\n",
+    IRet(r) -> indent ++ "ret " ++ show_rhs(r) ++ "\n",
+    IDup(v, b) -> indent ++ "dup " ++ v ++ "\n" ++ show_ir(b, indent),
+    IDrop(v, _, b) -> indent ++ "drop " ++ v ++ "\n" ++ show_ir(b, indent),
+    IFail -> indent ++ "fail\n",
+  }
+}
+fn show_fn(f) {
+  match f { IrFn(name, params, rt, body, _) -> "fn " ++ name ++ "(" ++ join(map(params, |p| match p { (v, t) -> v ++ ": " ++ tkey(t) }), ", ") ++ ") -> " ++ tkey(rt) ++ " {\n" ++ show_ir(body, "  ") ++ "}\n" }
+}
+
+// ================================================ 6. reference counting (Perceus)
+//
+// Every heap value has a reference count, and the compiler decides where it
+// changes. Each variable owns one reference. An operation either consumes an
+// operand (a call's arguments, a constructor's fields, a returned value) or
+// borrows it (a comparison, a field read, a string builtin). A consumed
+// variable that is still needed afterwards is dup'ed first; a variable is
+// dropped as soon as it is dead: right after its last borrowing use, at the
+// start of a branch that does not use it, or where it is bound if it is never
+// used. A closure's environment parameter is borrowed, and so are, inside a
+// nested expression, the variables still needed after it.
+
+// Sets of names, as maps.
+fn set_of(xs) { fold(xs, MEmpty, |m, x| m_set(m, x, true)) }
+fn set_union(a, b) { fold(m_keys(b), a, |m, k| m_set(m, k, true)) }
+fn set_without(a, k) { m_remove(a, k) }
+
+fn is_heap(g, t) {
+  match t {
+    TCon(n, _) -> if n == "Int" || n == "Bool" || n == "Unit" || n == "Tag" { false }
+      else if n == "String" || n == "Array" { true }
+      else { match g_adt(g, n) { Some(AdtI(_, ctors)) -> any(ctors, |k| match k { (_, fs) -> !is_empty(fs) }), None -> false } },
+    TTup(_) -> true,
+    TFun(_, _) -> true,
+    TVar(_) -> false,
+  }
+}
+
+fn atom_vars(as) { flat_map(as, |a| match a { AVar(v) -> [v], _ -> [] }) }
+// The variables an operation consumes and borrows (with repetitions).
+fn uses(r) {
+  match r {
+    RAtom(a) -> (atom_vars([a]), []),
+    RPrim(_, as) -> ([], atom_vars(as)),
+    RCmp(_, _, as) -> ([], atom_vars(as)),
+    RCall(_, as) -> (atom_vars(as), []),
+    RCallC(f, as, _) -> (atom_vars(as), atom_vars([f])),
+    RCtor(_, _, as) -> (atom_vars(as), []),
+    RTuple(_, as) -> (atom_vars(as), []),
+    RClosure(_, as, _) -> (atom_vars(as), []),
+    RField(a, _, _) -> ([], atom_vars([a])),
+    REnv(_, _) -> ([], []),
+    RTag(a) -> ([], atom_vars([a])),
+    RBuiltin(n, as, _) ->
+      if n == "array_set" { match as { [a, i, x] -> (atom_vars([a, x]), atom_vars([i])), _ -> (atom_vars(as), []) } }
+      else if n == "array_push" { (atom_vars(as), []) }
+      else if n == "array_make" { match as { [k, x] -> (atom_vars([x]), atom_vars([k])), _ -> (atom_vars(as), []) } }
+      else { ([], atom_vars(as)) },
+  }
+}
+
+// The variable types of a function.
+fn var_types(params, body) {
+  fn go(e, m) {
+    match e {
+      ILet(v, t, _, b) -> go(b, m_set(m, v, t)),
+      IBlock(v, t, x, b) -> go(b, go(x, m_set(m, v, t))),
+      IIf(_, x, y) -> go(y, go(x, m)),
+      IDup(_, b) -> go(b, m), IDrop(_, _, b) -> go(b, m),
+      _ -> m,
+    }
+  }
+  go(body, m_from(params))
+}
+
+// Rewrites e so that every variable it owns (heap, not borrowed) and uses is
+// consumed exactly once. Returns the new code and the variables e uses.
+fn rc(g, types, borrowed, rt, e) {
+  let heap = |v| match m_get(types, v) { Some(t) -> is_heap(g, t), None -> false };
+  let owned = |v| heap(v) && !m_has(borrowed, v);
+  let ty = |v| unwrap_or(m_get(types, v), t_unit());
+  let drop_all = |vs, body| fold(vs, body, |b, v| IDrop(v, ty(v), b));
+  // Dups for the consumed occurrences, given what is still live afterwards.
+  let dups = |consumed, borrows, live_after, body| fold(dedupe(consumed), body, |b, v| {
+    let k = count_where(consumed, |x| x == v);
+    let n = if !owned(v) { if heap(v) { k } else { 0 } } else if m_has(live_after, v) || contains(borrows, v) { k } else { k - 1 };
+    fold(range(0, n), b, |b, _| IDup(v, b))
+  });
+  match e {
+    ILet(v, t, r, body) -> {
+      let (b2, fvb) = rc(g, types, borrowed, rt, body);
+      let b2 = if heap(v) && !m_has(fvb, v) { IDrop(v, t, b2) } else { b2 };
+      let live_after = set_without(fvb, v);
+      let (consumed, borrows) = uses(r);
+      // Borrowed operands that die here are dropped right after.
+      let dying = filter(dedupe(borrows), |x| owned(x) && !contains(consumed, x) && !m_has(live_after, x));
+      let out = dups(consumed, borrows, live_after, ILet(v, t, r, drop_all(dying, b2)));
+      (out, set_union(live_after, set_of(append(consumed, borrows))))
+    }
+    IRet(r) -> {
+      let (consumed, borrows) = uses(r);
+      let dying = filter(dedupe(borrows), |x| owned(x) && !contains(consumed, x));
+      let tmp = "$r:" ++ tkey(rt);
+      let body = if is_empty(dying) { IRet(r) } else { ILet(tmp, rt, r, drop_all(dying, IRet(RAtom(AVar(tmp))))) };
+      (dups(consumed, borrows, MEmpty, body), set_of(append(consumed, borrows)))
+    }
+    IIf(a, x, y) -> {
+      let (x2, fx) = rc(g, types, borrowed, rt, x);
+      let (y2, fy) = rc(g, types, borrowed, rt, y);
+      let only = |m, other| filter(m_keys(m), |v| owned(v) && !m_has(other, v));
+      (IIf(a, drop_all(only(fy, fx), x2), drop_all(only(fx, fy), y2)), set_union(set_union(fx, fy), set_of(atom_vars([a]))))
+    }
+    IBlock(v, t, inner, body) -> {
+      let (b2, fvb) = rc(g, types, borrowed, rt, body);
+      let b2 = if heap(v) && !m_has(fvb, v) { IDrop(v, t, b2) } else { b2 };
+      let live_after = set_without(fvb, v);
+      let (i2, fi) = rc(g, types, set_union(borrowed, live_after), t, inner);
+      (IBlock(v, t, i2, b2), set_union(fi, live_after))
+    }
+    _ -> (e, MEmpty),
+  }
+}
+
+fn rc_fn(g, f) {
+  match f {
+    IrFn(name, params, rt, body, env) -> {
+      let types = var_types(params, body);
+      let borrowed = if env { set_of(["env"]) } else { MEmpty };
+      let (b2, fv) = rc(g, types, borrowed, rt, body);
+      let unused = filter(params, |p| match p { (v, t) -> is_heap(g, t) && !m_has(borrowed, v) && !m_has(fv, v) });
+      IrFn(name, params, rt, fold(unused, b2, |b, p| match p { (v, t) -> IDrop(v, t, b) }), env)
+    }
+  }
+}
+
+// ============================================== 7. WebAssembly code generation
+//
+// The same runtime conventions as the reference compiler (src/codegen.js), so
+// a module from either compiler runs on the same host. Int is an i64;
+// everything else is an i32: an immediate (Bool, (), a constructor without
+// fields, below 1024) or a pointer to a heap object. An object starts with a
+// reference count (offset 0) and a tag (offset 4); fields follow in 8-byte
+// slots from offset 8. A string holds its length at 4 and its bytes from 8; an
+// array its length at 4, its capacity at 8 and its elements from 16; a closure
+// the table index of its code at 4, of the function that releases its
+// captures at 8, and its captures from 16. A negative count marks a static
+// object, which is never freed. Memory comes in power-of-two size classes
+// with a free list each; the `live` global counts objects not yet freed.
+
+// Instructions. Locals, globals, functions and labels are referred to by name.
+type W {
+  Op(String), OpI32(Int), OpI64(Int), OpLocal(String, String), OpGlobal(String, String),
+  OpCall(String, String), OpCallInd(String, List<String>, List<String>), OpBlock(String, String, String),
+  OpBr(String, String), OpMem(String, Int)
+}
+// A function: name, parameters, results, locals and body.
+type WFn { WFn(String, List<(String, String)>, List<String>, List<(String, String)>, List<W>) }
+
+fn lget(n) { OpLocal("local.get", n) }
+fn lset(n) { OpLocal("local.set", n) }
+fn ltee(n) { OpLocal("local.tee", n) }
+fn gget(n) { OpGlobal("global.get", n) }
+fn gset(n) { OpGlobal("global.set", n) }
+fn i32c(v) { OpI32(v) }
+fn i64c(v) { OpI64(v) }
+fn op(s) { Op(s) }
+fn call(f) { OpCall("call", f) }
+fn load32(off) { OpMem("i32.load", off) }
+fn store32(off) { OpMem("i32.store", off) }
+fn if_() { OpBlock("if", "", "") }
+fn if_r(t) { OpBlock("if", "", t) }
+fn block(l) { OpBlock("block", l, "") }
+fn loop(l) { OpBlock("loop", l, "") }
+fn br(l) { OpBr("br", l) }
+fn br_if(l) { OpBr("br_if", l) }
+fn end_() { Op("end") }
+fn else_() { Op("else") }
+
+fn k_overflow() { 1 }
+fn k_divzero() { 2 }
+fn k_bounds() { 3 }
+fn k_oom() { 4 }
+fn k_strlong() { 5 }
+fn k_uaf() { 6 }
+fn k_imm() { 1024 }
+fn k_free_lists() { 64 }
+fn k_scratch() { 256 }
+fn k_data() { 1024 }
+fn k_max_len() { 16777215 }
+fn k_int_min() { 0 - 9223372036854775807 - 1 }
+
+fn fail_code(code) { [i32c(code), call("rt_fail"), op("unreachable")] }
+fn trap_if(code) { concat([[if_()], fail_code(code), [end_()]]) }
+fn wfn(name, params, results, locals, body) { WFn(name, params, results, locals, concat(body)) }
+
+// The runtime functions every module has.
+fn runtime() {
+  [rt_fn_rt_fail(), rt_fn_rt_class(), rt_fn_rt_alloc(), rt_fn_rt_free(), rt_fn_rt_dup(), rt_fn_rt_release(), rt_fn_rt_tag(), rt_fn_int_add(), rt_fn_int_sub(), rt_fn_int_mul(), rt_fn_int_div(), rt_fn_int_rem(), rt_fn_int_neg(), rt_fn_str_new(), rt_fn_str_concat(), rt_fn_str_concat_list(), rt_fn_str_cmp(), rt_fn_int_to_string(), rt_fn_str_length(), rt_fn_str_sub(), rt_fn_str_code_at(), rt_fn_str_from_code(), rt_fn_str_print(), rt_fn_str_read_input(), rt_fn_str_panic(), rt_fn_arr_new()]
+}
+fn rt_head(c) { [lget(c), i32c(2), op("i32.shl")] }
+fn rt_len(p) { [lget(p), load32(4)] }
+fn rt_fn_rt_fail() {
+  wfn("rt_fail", [("code", "i32")], [], [], [[lget("code"), call("host_fail"), op("unreachable")]])
+}
+
+// The size class of an allocation: log2 of the block size, at least 16 bytes.
+fn rt_fn_rt_class() {
+  wfn("rt_class", [("size", "i32")], ["i32"], [], [[
+      lget("size"), i32c(16), op("i32.le_u"), if_r("i32"), i32c(4),
+      else_(), i32c(32), lget("size"), i32c(1), op("i32.sub"), op("i32.clz"), op("i32.sub"), end_(),
+    ]])
+}
+
+fn rt_fn_rt_alloc() {
+  wfn("rt_alloc", [("size", "i32")], ["i32"], [("c", "i32"), ("p", "i32"), ("top", "i32")], [
+      [lget("size"), call("rt_class"), lset("c"), block("have")],
+      rt_head("c"), [load32(k_free_lists()), ltee("p"), if_()],
+      rt_head("c"), [lget("p"), load32(8), store32(k_free_lists()), br("have"), end_()],
+      [gget("hp"), lset("p"),
+       gget("hp"), i32c(1), lget("c"), op("i32.shl"), op("i32.add"), gset("hp"),
+       op("memory.size"), i32c(16), op("i32.shl"), lset("top"),
+       gget("hp"), lget("top"), op("i32.gt_u"), if_(),
+       gget("hp"), lget("top"), op("i32.sub"), i32c(65535), op("i32.add"), i32c(16), op("i32.shr_u"),
+       op("memory.grow"), i32c(0 - 1), op("i32.eq")],
+      trap_if(k_oom()),
+      [end_(), end_(),
+       lget("p"), i32c(1), store32(0),
+       gget("live"), i32c(1), op("i32.add"), gset("live"),
+       gget("allocs"), i32c(1), op("i32.add"), gset("allocs"),
+       lget("p")],
+    ])
+}
+
+fn rt_fn_rt_free() {
+  wfn("rt_free", [("p", "i32"), ("size", "i32")], [], [("c", "i32")], [
+      [lget("p"), i32c(0), store32(0),
+       gget("live"), i32c(1), op("i32.sub"), gset("live"),
+       lget("size"), call("rt_class"), lset("c"),
+       lget("p")], rt_head("c"), [load32(k_free_lists()), store32(8)],
+      rt_head("c"), [lget("p"), store32(k_free_lists())],
+    ])
+}
+
+// One more reference; immediates and static objects are not counted.
+fn rt_fn_rt_dup() {
+  wfn("rt_dup", [("p", "i32")], ["i32"], [("rc", "i32")], [
+      [lget("p"), i32c(k_imm()), op("i32.ge_u"), if_(),
+       lget("p"), load32(0), ltee("rc"), i32c(0), op("i32.gt_s"), if_(),
+       lget("p"), lget("rc"), i32c(1), op("i32.add"), store32(0),
+       else_(), lget("rc"), op("i32.eqz")], trap_if(k_uaf()), [end_(), end_(), lget("p")],
+    ])
+}
+
+// One reference fewer; 1 when that was the last one and the object must be freed.
+fn rt_fn_rt_release() {
+  wfn("rt_release", [("p", "i32")], ["i32"], [("rc", "i32")], [
+      [lget("p"), i32c(k_imm()), op("i32.lt_u"), if_(), i32c(0), op("return"), end_(),
+       lget("p"), load32(0), ltee("rc"), i32c(1), op("i32.gt_s"), if_(),
+       lget("p"), lget("rc"), i32c(1), op("i32.sub"), store32(0), i32c(0), op("return"), end_(),
+       lget("rc"), i32c(1), op("i32.eq"), if_(), i32c(1), op("return"), end_(),
+       lget("rc"), op("i32.eqz")], trap_if(k_uaf()), [i32c(0)],
+    ])
+}
+
+fn rt_fn_rt_tag() {
+  wfn("rt_tag", [("p", "i32")], ["i32"], [], [[lget("p"), i32c(k_imm()), op("i32.lt_u"), if_r("i32"), lget("p"), else_(), lget("p"), load32(4), end_()]])
+}
+
+// Checked 64-bit arithmetic.
+fn rt_fn_int_add() {
+  wfn("int_add", [("a", "i64"), ("b", "i64")], ["i64"], [("r", "i64")], [
+      [lget("a"), lget("b"), op("i64.add"), lset("r"),
+       lget("a"), lget("r"), op("i64.xor"), lget("b"), lget("r"), op("i64.xor"), op("i64.and"), i64c(0), op("i64.lt_s")], trap_if(k_overflow()), [lget("r")],
+    ])
+}
+
+fn rt_fn_int_sub() {
+  wfn("int_sub", [("a", "i64"), ("b", "i64")], ["i64"], [("r", "i64")], [
+      [lget("a"), lget("b"), op("i64.sub"), lset("r"),
+       lget("a"), lget("b"), op("i64.xor"), lget("a"), lget("r"), op("i64.xor"), op("i64.and"), i64c(0), op("i64.lt_s")], trap_if(k_overflow()), [lget("r")],
+    ])
+}
+
+fn rt_fn_int_mul() {
+  wfn("int_mul", [("a", "i64"), ("b", "i64")], ["i64"], [("r", "i64")], [
+      [lget("a"), op("i64.eqz"), lget("b"), op("i64.eqz"), op("i32.or"), if_(), i64c(0), op("return"), end_(),
+       lget("a"), i64c(0 - 1), op("i64.eq"), lget("b"), i64c(k_int_min()), op("i64.eq"), op("i32.and"),
+       lget("b"), i64c(0 - 1), op("i64.eq"), lget("a"), i64c(k_int_min()), op("i64.eq"), op("i32.and"), op("i32.or")], trap_if(k_overflow()),
+      [lget("a"), lget("b"), op("i64.mul"), ltee("r"), lget("b"), op("i64.div_s"), lget("a"), op("i64.ne")], trap_if(k_overflow()), [lget("r")],
+    ])
+}
+
+fn rt_fn_int_div() {
+  wfn("int_div", [("a", "i64"), ("b", "i64")], ["i64"], [], [
+      [lget("b"), op("i64.eqz")], trap_if(k_divzero()),
+      [lget("a"), i64c(k_int_min()), op("i64.eq"), lget("b"), i64c(0 - 1), op("i64.eq"), op("i32.and")], trap_if(k_overflow()),
+      [lget("a"), lget("b"), op("i64.div_s")],
+    ])
+}
+
+fn rt_fn_int_rem() {
+  wfn("int_rem", [("a", "i64"), ("b", "i64")], ["i64"], [], [
+      [lget("b"), op("i64.eqz")], trap_if(k_divzero()), [lget("a"), lget("b"), op("i64.rem_s")],
+    ])
+}
+
+fn rt_fn_int_neg() {
+  wfn("int_neg", [("a", "i64")], ["i64"], [], [[lget("a"), i64c(k_int_min()), op("i64.eq")], trap_if(k_overflow()), [i64c(0), lget("a"), op("i64.sub")]])
+}
+
+// Strings.
+fn rt_fn_str_new() {
+  wfn("str_new", [("n", "i32")], ["i32"], [("p", "i32")], [
+      [lget("n"), i32c(k_max_len()), op("i32.gt_u")], trap_if(k_strlong()),
+      [lget("n"), i32c(8), op("i32.add"), call("rt_alloc"), ltee("p"), lget("n"), store32(4), lget("p")],
+    ])
+}
+
+fn rt_fn_str_concat() {
+  wfn("str_concat", [("a", "i32"), ("b", "i32")], ["i32"], [("la", "i32"), ("lb", "i32"), ("p", "i32")], [
+      rt_len("a"), [lset("la")], rt_len("b"), [lset("lb"),
+      lget("la"), lget("lb"), op("i32.add"), call("str_new"), lset("p"),
+      lget("p"), i32c(8), op("i32.add"), lget("a"), i32c(8), op("i32.add"), lget("la"), op("memory.copy"),
+      lget("p"), i32c(8), op("i32.add"), lget("la"), op("i32.add"), lget("b"), i32c(8), op("i32.add"), lget("lb"), op("memory.copy"),
+      lget("p")],
+    ])
+}
+
+// Joins a List<String>: Cons cells hold the head at 8 and the tail at 16; Nil is the immediate 0.
+fn rt_fn_str_concat_list() {
+  wfn("str_concat_list", [("xs", "i32")], ["i32"], [("c", "i32"), ("n", "i64"), ("p", "i32"), ("at", "i32"), ("s", "i32")], [
+      [lget("xs"), lset("c"), block("sized"), loop("size"),
+       lget("c"), i32c(k_imm()), op("i32.lt_u"), br_if("sized"),
+       lget("n"), lget("c"), load32(8), load32(4), op("i64.extend_i32_u"), op("i64.add"), lset("n"),
+       lget("c"), load32(16), lset("c"), br("size"), end_(), end_(),
+       lget("n"), i64c(k_max_len()), op("i64.gt_u")], trap_if(k_strlong()),
+      [lget("n"), op("i32.wrap_i64"), call("str_new"), ltee("p"), i32c(8), op("i32.add"), lset("at"),
+       lget("xs"), lset("c"), block("done"), loop("copy"),
+       lget("c"), i32c(k_imm()), op("i32.lt_u"), br_if("done"),
+       lget("c"), load32(8), lset("s"),
+       lget("at"), lget("s"), i32c(8), op("i32.add"), lget("s"), load32(4), op("memory.copy"),
+       lget("at"), lget("s"), load32(4), op("i32.add"), lset("at"),
+       lget("c"), load32(16), lset("c"), br("copy"), end_(), end_(),
+       lget("p")],
+    ])
+}
+
+fn rt_fn_str_cmp() {
+  wfn("str_cmp", [("a", "i32"), ("b", "i32")], ["i32"], [("la", "i32"), ("lb", "i32"), ("n", "i32"), ("i", "i32"), ("ca", "i32"), ("cb", "i32")], [
+      rt_len("a"), [lset("la")], rt_len("b"), [lset("lb"),
+      lget("la"), lget("lb"), lget("la"), lget("lb"), op("i32.lt_u"), op("select"), lset("n"),
+      block("done"), loop("next"),
+      lget("i"), lget("n"), op("i32.ge_u"), br_if("done"),
+      lget("a"), lget("i"), op("i32.add"), OpMem("i32.load8_u", 8), lset("ca"),
+      lget("b"), lget("i"), op("i32.add"), OpMem("i32.load8_u", 8), lset("cb"),
+      lget("ca"), lget("cb"), op("i32.ne"), if_(), i32c(0 - 1), i32c(1), lget("ca"), lget("cb"), op("i32.lt_u"), op("select"), op("return"), end_(),
+      lget("i"), i32c(1), op("i32.add"), lset("i"), br("next"),
+      end_(), end_(),
+      lget("la"), lget("lb"), op("i32.gt_u"), lget("la"), lget("lb"), op("i32.lt_u"), op("i32.sub")],
+    ])
+}
+
+fn rt_fn_int_to_string() {
+  wfn("int_to_string", [("n", "i64")], ["i32"], [("neg", "i32"), ("i", "i32"), ("p", "i32")], [[
+      i32c(k_scratch() + 32), lset("i"),
+      lget("n"), i64c(0), op("i64.lt_s"), lset("neg"),
+      lget("neg"), op("i32.eqz"), if_(), i64c(0), lget("n"), op("i64.sub"), lset("n"), end_(),
+      loop("digit"),
+      lget("i"), i32c(1), op("i32.sub"), lset("i"),
+      lget("i"), i64c(0), lget("n"), i64c(10), op("i64.rem_s"), op("i64.sub"), op("i32.wrap_i64"), i32c(48), op("i32.add"), OpMem("i32.store8", 0),
+      lget("n"), i64c(10), op("i64.div_s"), ltee("n"), op("i64.eqz"), op("i32.eqz"), br_if("digit"),
+      end_(),
+      lget("neg"), if_(), lget("i"), i32c(1), op("i32.sub"), ltee("i"), i32c(45), OpMem("i32.store8", 0), end_(),
+      i32c(k_scratch() + 32), lget("i"), op("i32.sub"), call("str_new"), lset("p"),
+      lget("p"), i32c(8), op("i32.add"), lget("i"), i32c(k_scratch() + 32), lget("i"), op("i32.sub"), op("memory.copy"),
+      lget("p"),
+    ]])
+}
+
+fn rt_fn_str_length() {
+  wfn("str_length", [("s", "i32")], ["i64"], [], [rt_len("s"), [op("i64.extend_i32_u")]])
+}
+
+fn rt_fn_str_sub() {
+  wfn("str_sub", [("s", "i32"), ("a", "i64"), ("b", "i64")], ["i32"], [("n", "i64"), ("p", "i32")], [
+      rt_len("s"), [op("i64.extend_i32_u"), lset("n"),
+      lget("a"), i64c(0), op("i64.lt_s"), if_(), i64c(0), lset("a"), end_(),
+      lget("a"), lget("n"), op("i64.gt_s"), if_(), lget("n"), lset("a"), end_(),
+      lget("b"), lget("a"), op("i64.lt_s"), if_(), lget("a"), lset("b"), end_(),
+      lget("b"), lget("n"), op("i64.gt_s"), if_(), lget("n"), lset("b"), end_(),
+      lget("b"), lget("a"), op("i64.sub"), op("i32.wrap_i64"), call("str_new"), lset("p"),
+      lget("p"), i32c(8), op("i32.add"), lget("s"), i32c(8), op("i32.add"), lget("a"), op("i32.wrap_i64"), op("i32.add"),
+      lget("b"), lget("a"), op("i64.sub"), op("i32.wrap_i64"), op("memory.copy"),
+      lget("p")],
+    ])
+}
+
+fn rt_fn_str_code_at() {
+  wfn("str_code_at", [("s", "i32"), ("i", "i64")], ["i64"], [], [
+      [lget("i")], rt_len("s"), [op("i64.extend_i32_u"), op("i64.ge_u")], trap_if(k_bounds()),
+      [lget("s"), lget("i"), op("i32.wrap_i64"), op("i32.add"), OpMem("i32.load8_u", 8), op("i64.extend_i32_u")],
+    ])
+}
+
+fn rt_fn_str_from_code() {
+  wfn("str_from_code", [("c", "i64")], ["i32"], [("p", "i32")], [[i32c(1), call("str_new"), ltee("p"), lget("c"), op("i32.wrap_i64"), OpMem("i32.store8", 8), lget("p")]])
+}
+
+fn rt_fn_str_print() {
+  wfn("str_print", [("s", "i32")], [], [], [[lget("s"), i32c(8), op("i32.add")], rt_len("s"), [call("host_write")]])
+}
+
+fn rt_fn_str_read_input() {
+  wfn("str_read_input", [], ["i32"], [("p", "i32")], [[call("host_input_len"), call("str_new"), ltee("p"), i32c(8), op("i32.add"), call("host_input_read"), lget("p")]])
+}
+
+fn rt_fn_str_panic() {
+  wfn("str_panic", [("s", "i32")], [], [], [[lget("s"), i32c(8), op("i32.add")], rt_len("s"), [call("host_panic"), op("unreachable")]])
+}
+
+// Arrays.
+fn rt_fn_arr_new() {
+  wfn("arr_new", [("n", "i32"), ("cap", "i32")], ["i32"], [("p", "i32")], [[
+      lget("cap"), i32c(3), op("i32.shl"), i32c(16), op("i32.add"), call("rt_alloc"), ltee("p"), lget("n"), store32(4),
+      lget("p"), lget("cap"), store32(8), lget("p"),
+    ]])
+}
+
+
+fn valtype(t) { if t == t_int() { "i64" } else { "i32" } }
+fn load_t(t, off) { OpMem(if valtype(t) == "i64" { "i64.load" } else { "i32.load" }, off) }
+fn store_t(t, off) { OpMem(if valtype(t) == "i64" { "i64.store" } else { "i32.store" }, off) }
+
+// The field types of constructor `tag` of a concrete data type.
+fn fields_of(g, t, tag) {
+  match t {
+    TCon(n, args) -> match g_adt(g, n) {
+      Some(AdtI(params, ctors)) -> match list_get(ctors, tag) { (_, fs) -> map(fs, |f| x_inst(f, m_from(zip(params, args)))) },
+      None -> panic("internal error: unknown type " ++ n),
+    },
+    _ -> panic("internal error: not a data type: " ++ tkey(t)),
+  }
+}
+fn ctor_count(g, t) { match t { TCon(n, _) -> match g_adt(g, n) { Some(AdtI(_, ctors)) -> length(ctors), None -> 0 }, _ -> 0 } }
+
+// The code generator's state: functions made so far (in reverse), names made,
+// static data (chunks in reverse, and its length), string and closure
+// addresses, the function table (slots, and names in reverse), and a label counter.
+type CG { CG(List<WFn>, Map<Bool>, List<List<Int>>, Int, Map<Int>, Map<Int>, List<String>, Map<Int>, Int) }
+
+fn cg_add(cg, f) { match cg { CG(fs, m, d, n, ss, sl, tb, cl, k) -> CG([f, ..fs], m, d, n, ss, sl, tb, cl, k) } }
+fn cg_made(cg, name) { match cg { CG(_, m, _, _, _, _, _, _, _) -> m_has(m, name) } }
+fn cg_mark(cg, name) { match cg { CG(fs, m, d, n, ss, sl, tb, cl, k) -> CG(fs, m_set(m, name, true), d, n, ss, sl, tb, cl, k) } }
+fn cg_label(cg) { match cg { CG(fs, m, d, n, ss, sl, tb, cl, k) -> ("L" ++ int_to_string(k), CG(fs, m, d, n, ss, sl, tb, cl, k + 1)) } }
+fn cg_data(cg, bytes) { match cg { CG(fs, m, d, n, ss, sl, tb, cl, k) -> CG(fs, m, [bytes, ..d], n + length(bytes), ss, sl, tb, cl, k) } }
+fn cg_data_len(cg) { match cg { CG(_, _, _, n, _, _, _, _, _) -> n } }
+fn cg_pad(cg) { let r = cg_data_len(cg) % 8; if r == 0 { cg } else { cg_data(cg, map(range(r, 8), |_| 0)) } }
+fn i32_bytes(v) {
+  let u = if v < 0 { v + 4294967296 } else { v };
+  [u % 256, (u / 256) % 256, (u / 65536) % 256, (u / 16777216) % 256]
+}
+fn cg_string(cg, s) {
+  match cg {
+    CG(_, _, _, _, ss, _, _, _, _) -> match m_get(ss, s) {
+      Some(a) -> (a, cg),
+      None -> {
+        let cg = cg_pad(cg);
+        let addr = k_data() + cg_data_len(cg);
+        let cg = cg_data(cg, append(i32_bytes(0 - 1), append(i32_bytes(string_length(s)), map(range(0, string_length(s)), |i| char_code_at(s, i)))));
+        let cg = cg_pad(cg);
+        match cg { CG(fs, m, d, n, ss, sl, tb, cl, k) -> (addr, CG(fs, m, d, n, m_set(ss, s, addr), sl, tb, cl, k)) }
+      }
+    }
+  }
+}
+fn cg_slot(cg, f) {
+  match cg {
+    CG(fs, m, d, n, ss, sl, tb, cl, k) -> match m_get(sl, f) {
+      Some(i) -> (i, cg),
+      None -> { let i = length(tb); (i, CG(fs, m, d, n, ss, m_set(sl, f, i), [f, ..tb], cl, k)) },
+    }
+  }
+}
+fn cg_static_closure(cg, f) {
+  match cg {
+    CG(_, _, _, _, _, _, _, cl, _) -> match m_get(cl, f) {
+      Some(a) -> (a, cg),
+      None -> {
+        let (slot, cg) = cg_slot(cg, f);
+        let cg = cg_pad(cg);
+        let addr = k_data() + cg_data_len(cg);
+        let cg = cg_data(cg, concat([i32_bytes(0 - 1), i32_bytes(slot), i32_bytes(0), i32_bytes(0)]));
+        match cg { CG(fs, m, d, n, ss, sl, tb, cl, k) -> (addr, CG(fs, m, d, n, ss, sl, tb, m_set(cl, f, addr), k)) }
+      }
+    }
+  }
+}
+
+// ------------------------------------------------------ per-type functions
+// drop:T releases one reference to a heap value of type T. The last heap
+// field is released by a tail call, so dropping a long list takes constant stack.
+fn drop_fn(g, cg, t) {
+  let name = match t { TFun(_, _) -> "drop:fun", _ -> "drop:" ++ tkey(t) };
+  if cg_made(cg, name) { (name, cg) } else {
+    let cg = cg_mark(cg, name);
+    let release = [lget("p"), call("rt_release"), op("i32.eqz"), if_(), op("return"), end_()];
+    // Loads the heap fields, frees the object, then releases the fields.
+    let fields = |cg, tys, size, prefix| {
+      let heap_fields = filter(enumerate(tys), |it| match it { (_, ft) -> is_heap(g, ft) });
+      let locals = map(heap_fields, |it| match it { (i, ft) -> (prefix ++ int_to_string(i), valtype(ft)) });
+      let (calls, cg) = fold(enumerate(heap_fields), ([], cg), |acc, jit| match (acc, jit) {
+        ((out, cg), (j, (i, ft))) -> {
+          let (d, cg) = drop_fn(g, cg, ft);
+          let c = if j == length(heap_fields) - 1 { OpCall("return_call", d) } else { call(d) };
+          ([[lget(prefix ++ int_to_string(i)), c], ..out], cg)
+        }
+      });
+      let code = concat([
+        flat_map(heap_fields, |it| match it { (i, ft) -> [lget("p"), load_t(ft, 8 + 8 * i), lset(prefix ++ int_to_string(i))] }),
+        [lget("p"), i32c(size), call("rt_free")],
+        concat(reverse(calls)),
+      ]);
+      (code, locals, cg)
+    };
+    let (body, locals, cg) = match t {
+      TFun(_, _) -> (concat([release, [lget("p"), lget("p"), load32(8), OpCallInd("call_indirect", ["i32"], [])]]), [], cg),
+      TTup(es) -> { let (code, ls, cg) = fields(cg, es, 8 + 8 * length(es), "f"); (append(release, code), ls, cg) },
+      TCon("String", _) -> (append(release, [lget("p"), lget("p"), load32(4), i32c(8), op("i32.add"), call("rt_free")]), [], cg),
+      TCon("Array", [e]) -> {
+        let (loop_code, cg) = if is_heap(g, e) {
+          let (d, cg) = drop_fn(g, cg, e);
+          ([lget("p"), load32(4), lset("n"), block("done"), loop("next"), lget("i"), lget("n"), op("i32.ge_u"), br_if("done"),
+            lget("p"), lget("i"), i32c(3), op("i32.shl"), op("i32.add"), load_t(e, 16), call(d),
+            lget("i"), i32c(1), op("i32.add"), lset("i"), br("next"), end_(), end_()], cg)
+        } else { ([], cg) };
+        (concat([release, loop_code, [lget("p"), lget("p"), load32(8), i32c(3), op("i32.shl"), i32c(16), op("i32.add"), call("rt_free")]]), [("i", "i32"), ("n", "i32")], cg)
+      }
+      _ -> {
+        let (arms, locals, cg) = fold(range(0, ctor_count(g, t)), ([], [], cg), |acc, tag| match acc {
+          (arms, locals, cg) -> {
+            let fs = fields_of(g, t, tag);
+            if is_empty(fs) { (arms, locals, cg) } else {
+              let (code, ls, cg) = fields(cg, fs, 8 + 8 * length(fs), "f" ++ int_to_string(tag) ++ "_");
+              ([concat([[lget("tag"), i32c(tag), op("i32.eq"), if_()], code, [op("return"), end_()]]), ..arms], append(locals, ls), cg)
+            }
+          }
+        });
+        (concat([release, [lget("p"), load32(4), lset("tag")], concat(reverse(arms))]), [("tag", "i32"), ..locals], cg)
+      }
+    };
+    (name, cg_add(cg, WFn(name, [("p", "i32")], [], locals, body)))
+  }
+}
+
+// cmp:T compares two values of type T: -1, 0 or 1. A type with a user Ord
+// uses its compare; others compare structurally, the last field by a tail call.
+fn cmp_fn(g, ords, cg, t) {
+  let name = "cmp:" ++ tkey(t);
+  if cg_made(cg, name) { (name, cg) } else {
+    let cg = cg_mark(cg, name);
+    let vt = valtype(t);
+    let field_cmps = |cg, tys| fold(enumerate(tys), ([], cg), |acc, it| match (acc, it) {
+      ((out, cg), (i, ft)) -> {
+        let (c, cg) = cmp_fn(g, ords, cg, ft);
+        let operands = [lget("a"), load_t(ft, 8 + 8 * i), lget("b"), load_t(ft, 8 + 8 * i)];
+        let code = if i == length(tys) - 1 { append(operands, [OpCall("return_call", c)]) }
+          else { append(operands, [call(c), ltee("c"), if_(), lget("c"), op("return"), end_()]) };
+        ([code, ..out], cg)
+      }
+    });
+    let user = unwrap_or(m_get(ords, tkey(t)), "");
+    let (body, locals, cg) = if user != "" {
+      let own = |x| if is_heap(g, t) { [lget(x), call("rt_dup")] } else { [lget(x)] };
+      (concat([own("a"), own("b"), [call(user), ltee("r"), i64c(0), op("i64.gt_s"), lget("r"), i64c(0), op("i64.lt_s"), op("i32.sub")]]), [("r", "i64")], cg)
+    } else {
+      match t {
+        TCon("Int", _) -> ([lget("a"), lget("b"), op("i64.gt_s"), lget("a"), lget("b"), op("i64.lt_s"), op("i32.sub")], [], cg),
+        TTup(es) -> { let (cs, cg) = field_cmps(cg, es); (append(concat(reverse(cs)), [i32c(0)]), [("c", "i32")], cg) },
+        TCon("String", _) -> ([lget("a"), lget("b"), call("str_cmp")], [], cg),
+        TCon("Array", [e]) -> {
+          let (c, cg) = cmp_fn(g, ords, cg, e);
+          ([lget("a"), load32(4), lget("b"), load32(4), op("i32.ne"), if_(),
+            i32c(0 - 1), i32c(1), lget("a"), load32(4), lget("b"), load32(4), op("i32.lt_u"), op("select"), op("return"), end_(),
+            lget("a"), load32(4), lset("n"),
+            block("done"), loop("next"), lget("i"), lget("n"), op("i32.ge_u"), br_if("done"),
+            lget("a"), lget("i"), i32c(3), op("i32.shl"), op("i32.add"), load_t(e, 16),
+            lget("b"), lget("i"), i32c(3), op("i32.shl"), op("i32.add"), load_t(e, 16), call(c), ltee("c"), if_(), lget("c"), op("return"), end_(),
+            lget("i"), i32c(1), op("i32.add"), lset("i"), br("next"), end_(), end_(), i32c(0)], [("c", "i32"), ("i", "i32"), ("n", "i32")], cg)
+        }
+        _ -> if !is_heap(g, t) {
+          ([lget("a"), lget("b"), op("i32.gt_u"), lget("a"), lget("b"), op("i32.lt_u"), op("i32.sub")], [], cg)
+        } else {
+          let (arms, cg) = fold(range(0, ctor_count(g, t)), ([], cg), |acc, tag| match acc {
+            (arms, cg) -> {
+              let fs = fields_of(g, t, tag);
+              if is_empty(fs) { (arms, cg) } else {
+                let (cs, cg) = field_cmps(cg, fs);
+                ([concat([[lget("ta"), i32c(tag), op("i32.eq"), if_()], concat(reverse(cs)), [end_()]]), ..arms], cg)
+              }
+            }
+          });
+          (concat([
+            [lget("a"), call("rt_tag"), lset("ta"), lget("b"), call("rt_tag"), lset("tb"),
+             lget("ta"), lget("tb"), op("i32.ne"), if_(), i32c(0 - 1), i32c(1), lget("ta"), lget("tb"), op("i32.lt_u"), op("select"), op("return"), end_()],
+            concat(reverse(arms)), [i32c(0)],
+          ]), [("c", "i32"), ("ta", "i32"), ("tb", "i32")], cg)
+        },
+      }
+    };
+    (name, cg_add(cg, WFn(name, [("a", vt), ("b", vt)], ["i32"], locals, body)))
+  }
+}
+
+// The array builtins for one element type.
+fn array_fns(g, cg, t) {
+  let k = tkey(t);
+  let name = |o| "array_" ++ o ++ ":" ++ k;
+  if cg_made(cg, name("get")) { cg } else {
+    let cg = cg_mark(cg, name("get"));
+    let vt = valtype(t);
+    let heap = is_heap(g, t);
+    let at = TCon("Array", [t]);
+    let (de, cg) = if heap { drop_fn(g, cg, t) } else { ("", cg) };
+    let (da, cg) = drop_fn(g, cg, at);
+    let slot = |a, i| [lget(a), lget(i), i32c(3), op("i32.shl"), op("i32.add")];
+    let len = |a| [lget(a), load32(4)];
+    let dup_all = |p, n| if heap {
+      concat([[i32c(0), lset("j"), block("dd"), loop("dl"), lget("j"), lget(n), op("i32.ge_u"), br_if("dd")],
+        slot(p, "j"), [load_t(t, 16), call("rt_dup"), op("drop"), lget("j"), i32c(1), op("i32.add"), lset("j"), br("dl"), end_(), end_()]])
+    } else { [] };
+    let bounds = concat([[lget("i")], len("a"), [op("i64.extend_i32_u"), op("i64.ge_u")], trap_if(k_bounds()), [lget("i"), op("i32.wrap_i64"), lset("ix")]]);
+    let make = wfn(name("make"), [("n", "i64"), ("x", vt)], ["i32"], [("p", "i32"), ("i", "i32"), ("len", "i32")], [
+      [lget("n"), i64c(0), op("i64.lt_s")], trap_if(k_bounds()),
+      [lget("n"), i64c(k_max_len()), op("i64.gt_s")], trap_if(k_oom()),
+      [lget("n"), op("i32.wrap_i64"), ltee("len"), lget("len"), call("arr_new"), lset("p"),
+       block("done"), loop("next"), lget("i"), lget("len"), op("i32.ge_u"), br_if("done")],
+      slot("p", "i"), [lget("x")], if heap { [call("rt_dup")] } else { [] }, [store_t(t, 16),
+       lget("i"), i32c(1), op("i32.add"), lset("i"), br("next"), end_(), end_()],
+      if heap { [lget("x"), call(de)] } else { [] },
+      [lget("p")],
+    ]);
+    let get = wfn(name("get"), [("a", "i32"), ("i", "i64")], [vt], [("ix", "i32")], [
+      bounds, slot("a", "ix"), [load_t(t, 16)], if heap { [call("rt_dup")] } else { [] },
+    ]);
+    let set = wfn(name("set"), [("a", "i32"), ("i", "i64"), ("x", vt)], ["i32"], [("ix", "i32"), ("b", "i32"), ("n", "i32"), ("j", "i32")], [
+      bounds,
+      [lget("a"), load32(0), i32c(1), op("i32.eq"), if_()],
+      if heap { concat([slot("a", "ix"), [load_t(t, 16), lset("b")]]) } else { [] },
+      slot("a", "ix"), [lget("x"), store_t(t, 16)],
+      if heap { [lget("b"), call(de)] } else { [] },
+      [lget("a"), op("return"), end_()],
+      len("a"), [lset("n"), lget("n"), lget("n"), call("arr_new"), lset("b"),
+       lget("b"), i32c(16), op("i32.add"), lget("a"), i32c(16), op("i32.add"), lget("n"), i32c(3), op("i32.shl"), op("memory.copy")],
+      dup_all("b", "n"),
+      if heap { concat([slot("b", "ix"), [load_t(t, 16), call(de)]]) } else { [] },
+      slot("b", "ix"), [lget("x"), store_t(t, 16), lget("a"), call(da), lget("b")],
+    ]);
+    let push = wfn(name("push"), [("a", "i32"), ("x", vt)], ["i32"], [("n", "i32"), ("cap", "i32"), ("b", "i32"), ("j", "i32"), ("uniq", "i32")], [
+      len("a"), [lset("n"), lget("a"), load32(8), lset("cap"),
+       lget("n"), i32c(k_max_len()), op("i32.ge_u")], trap_if(k_oom()),
+      [lget("a"), load32(0), i32c(1), op("i32.eq"), lset("uniq"),
+       lget("uniq"), lget("n"), lget("cap"), op("i32.lt_u"), op("i32.and"), if_()],
+      slot("a", "n"), [lget("x"), store_t(t, 16), lget("a"), lget("n"), i32c(1), op("i32.add"), store32(4), lget("a"), op("return"), end_(),
+       lget("n"), i32c(1), op("i32.add"),
+       i32c(4), lget("n"), i32c(1), op("i32.shl"), lget("n"), i32c(4), op("i32.lt_u"), op("select"), lset("cap"),
+       lget("cap"), i32c(k_max_len()), op("i32.gt_u"), if_(), i32c(k_max_len()), lset("cap"), end_(),
+       lget("cap"), call("arr_new"), lset("b"),
+       lget("b"), i32c(16), op("i32.add"), lget("a"), i32c(16), op("i32.add"), lget("n"), i32c(3), op("i32.shl"), op("memory.copy"),
+       lget("uniq"), if_(),
+       lget("a"), lget("a"), load32(8), i32c(3), op("i32.shl"), i32c(16), op("i32.add"), call("rt_free"),
+       else_()], dup_all("b", "n"), [lget("a"), call(da), end_()],
+      slot("b", "n"), [lget("x"), store_t(t, 16), lget("b")],
+    ]);
+    cg_add(cg_add(cg_add(cg_add(cg, make), get), set), push)
+  }
+}
+
+// Releases a closure's captures and frees it.
+fn dropenv_fn(g, cg, f, tys) {
+  let name = "dropenv:" ++ f;
+  if cg_made(cg, name) { (name, cg) } else {
+    let cg = cg_mark(cg, name);
+    let heap_caps = filter(enumerate(tys), |it| match it { (_, t) -> is_heap(g, t) });
+    let (drops, cg) = fold(heap_caps, ([], cg), |acc, it| match (acc, it) {
+      ((out, cg), (i, t)) -> { let (d, cg) = drop_fn(g, cg, t); ([[lget("c" ++ int_to_string(i)), call(d)], ..out], cg) },
+    });
+    let body = concat([
+      flat_map(heap_caps, |it| match it { (i, t) -> [lget("p"), load_t(t, 16 + 8 * i), lset("c" ++ int_to_string(i))] }),
+      [lget("p"), i32c(16 + 8 * length(tys)), call("rt_free")],
+      concat(reverse(drops)),
+    ]);
+    (name, cg_add(cg, WFn(name, [("p", "i32")], [], map(heap_caps, |it| match it { (i, t) -> ("c" ++ int_to_string(i), valtype(t)) }), body)))
+  }
+}
+
+// ---------------------------------------------------------- IR functions
+fn gen_atom(cg, a) {
+  match a {
+    AVar(v) -> ([lget(v)], cg),
+    AInt(n) -> ([i64c(n)], cg),
+    AI32(n) -> ([i32c(n)], cg),
+    AStr(s) -> { let (addr, cg) = cg_string(cg, s); ([i32c(addr)], cg) },
+  }
+}
+fn gen_atoms(cg, as) {
+  let (parts, cg) = fold(as, ([], cg), |acc, a| match acc { (out, cg) -> { let (w, cg) = gen_atom(cg, a); ([w, ..out], cg) } });
+  (concat(reverse(parts)), cg)
+}
+fn closure_sig(t) {
+  match t { TFun(ps, r) -> (["i32", ..map(ps, valtype)], [valtype(r)]), _ -> panic("internal error: closure type " ++ tkey(t)) }
+}
+
+// A new object: allocate, store the tag, then each field.
+fn new_object(cg, size, tag, fields) {
+  let (stores, cg) = fold(enumerate(fields), ([], cg), |acc, it| match (acc, it) {
+    ((out, cg), (i, (a, t))) -> { let (w, cg) = gen_atom(cg, a); ([concat([[lget("$p")], w, [store_t(t, 8 + 8 * i)]]), ..out], cg) },
+  });
+  (concat([[i32c(size), call("rt_alloc"), lset("$p"), lget("$p"), i32c(tag), store32(4)], concat(reverse(stores)), [lget("$p")]]), cg)
+}
+
+fn gen_rhs(g, ords, cg, r) {
+  match r {
+    RAtom(a) -> gen_atom(cg, a),
+    RPrim(o, as) -> {
+      let (args, cg) = gen_atoms(cg, as);
+      let tail = if o == "add" { [call("int_add")] } else if o == "sub" { [call("int_sub")] } else if o == "mul" { [call("int_mul")] }
+        else if o == "div" { [call("int_div")] } else if o == "rem" { [call("int_rem")] } else if o == "neg" { [call("int_neg")] }
+        else if o == "not" { [op("i32.eqz")] } else if o == "eq32" { [op("i32.eq")] }
+        else if o == "eq" { [op("i64.eq")] } else if o == "ne" { [op("i64.ne")] } else if o == "lt" { [op("i64.lt_s")] }
+        else if o == "le" { [op("i64.le_s")] } else if o == "gt" { [op("i64.gt_s")] } else { [op("i64.ge_s")] };
+      (append(args, tail), cg)
+    }
+    RCmp(o, t, as) -> {
+      let (args, cg) = gen_atoms(cg, as);
+      let (c, cg) = cmp_fn(g, ords, cg, t);
+      let tail = if o == "three" { [op("i64.extend_i32_s")] } else if o == "eq" { [op("i32.eqz")] }
+        else if o == "ne" { [i32c(0), op("i32.ne")] } else if o == "lt" { [i32c(0), op("i32.lt_s")] } else if o == "le" { [i32c(0), op("i32.le_s")] }
+        else if o == "gt" { [i32c(0), op("i32.gt_s")] } else { [i32c(0), op("i32.ge_s")] };
+      (concat([args, [call(c)], tail]), cg)
+    }
+    RCall(f, as) -> { let (args, cg) = gen_atoms(cg, as); (append(args, [call(f)]), cg) },
+    RCallC(f, as, t) -> {
+      let (fw, cg) = gen_atom(cg, f);
+      let (args, cg) = gen_atoms(cg, as);
+      let (ps, rs) = closure_sig(t);
+      (concat([fw, args, fw, [load32(4), OpCallInd("call_indirect", ps, rs)]]), cg)
+    }
+    RCtor(t, tag, as) -> new_object(cg, 8 + 8 * length(as), tag, zip(as, fields_of(g, t, tag))),
+    RTuple(t, as) -> match t { TTup(ts) -> new_object(cg, 8 + 8 * length(as), 0, zip(as, ts)), _ -> panic("internal error: tuple type") },
+    RClosure(f, [], _) -> { let (addr, cg) = cg_static_closure(cg, f); ([i32c(addr)], cg) },
+    RClosure(f, caps, tys) -> {
+      let (code, cg) = cg_slot(cg, f);
+      let (de, cg) = dropenv_fn(g, cg, f, tys);
+      let (drop_slot, cg) = cg_slot(cg, de);
+      let (stores, cg) = fold(enumerate(zip(caps, tys)), ([], cg), |acc, it| match (acc, it) {
+        ((out, cg), (i, (a, t))) -> { let (w, cg) = gen_atom(cg, a); ([concat([[lget("$p")], w, [store_t(t, 16 + 8 * i)]]), ..out], cg) },
+      });
+      (concat([[i32c(16 + 8 * length(caps)), call("rt_alloc"), lset("$p"), lget("$p"), i32c(code), store32(4), lget("$p"), i32c(drop_slot), store32(8)],
+        concat(reverse(stores)), [lget("$p")]]), cg)
+    }
+    RField(a, i, t) -> { let (w, cg) = gen_atom(cg, a); (concat([w, [load_t(t, 8 + 8 * i)], if is_heap(g, t) { [call("rt_dup")] } else { [] }]), cg) },
+    REnv(i, t) -> ([lget("env"), load_t(t, 16 + 8 * i), ..(if is_heap(g, t) { [call("rt_dup")] } else { [] })], cg),
+    RTag(a) -> { let (w, cg) = gen_atom(cg, a); (append(w, [call("rt_tag")]), cg) },
+    RBuiltin(n, as, tys) -> {
+      let (args, cg) = gen_atoms(cg, as);
+      let elem = match tys { [TCon("Array", [e]), .._] -> e, _ -> t_unit() };
+      if n == "print" { (append(args, [call("str_print"), i32c(0)]), cg) }
+      else if n == "println" { (append(args, [call("str_println"), i32c(0)]), cg) }
+      else if n == "read_input" { ([call("str_read_input")], cg) }
+      else if n == "clock_ms" { ([call("host_clock")], cg) }
+      else if n == "random_int" { (append(args, [call("host_random")]), cg) }
+      else if n == "int_to_string" { (append(args, [call("int_to_string")]), cg) }
+      else if n == "concat_strings" { (append(args, [call("str_concat_list")]), cg) }
+      else if n == "string_length" { (append(args, [call("str_length")]), cg) }
+      else if n == "substring" { (append(args, [call("str_sub")]), cg) }
+      else if n == "char_code_at" { (append(args, [call("str_code_at")]), cg) }
+      else if n == "char_from_code" { (append(args, [call("str_from_code")]), cg) }
+      else if n == "concat" { (append(args, [call("str_concat")]), cg) }
+      else if n == "panic" { (append(args, [call("str_panic"), op("unreachable")]), cg) }
+      else if n == "array_empty" { ([i32c(0), i32c(0), call("arr_new")], cg) }
+      else if n == "array_length" { (append(args, [load32(4), op("i64.extend_i32_u")]), cg) }
+      else if n == "array_make" { let t = list_get(tys, 1); (append(args, [call("array_make:" ++ tkey(t))]), array_fns(g, cg, t)) }
+      else if n == "array_get" || n == "array_set" || n == "array_push" { (append(args, [call(n ++ ":" ++ tkey(elem))]), array_fns(g, cg, elem)) }
+      else { panic("internal error: builtin " ++ n) }
+    }
+  }
+}
+fn emit(acc, ws) { rev_append(ws, acc) }
+
+// label "" means the value is the function's result; otherwise it is the value of block `label`.
+fn gen_ir(g, ords, cg, e, label, acc) {
+  match e {
+    ILet(v, _, r, b) -> { let (w, cg) = gen_rhs(g, ords, cg, r); gen_ir(g, ords, cg, b, label, emit(acc, append(w, [lset(v)]))) },
+    IBlock(v, t, inner, b) -> {
+      let (l, cg) = cg_label(cg);
+      let (acc, cg) = gen_ir(g, ords, cg, inner, l, emit(acc, [OpBlock("block", l, valtype(t))]));
+      gen_ir(g, ords, cg, b, label, emit(acc, [end_(), lset(v)]))
+    }
+    IIf(a, x, y) -> {
+      let (w, cg) = gen_atom(cg, a);
+      let (acc, cg) = gen_ir(g, ords, cg, x, label, emit(acc, append(w, [if_()])));
+      let (acc, cg) = gen_ir(g, ords, cg, y, label, emit(acc, [else_()]));
+      (emit(acc, [end_(), op("unreachable")]), cg)
+    }
+    IRet(r) -> match (label, r) {
+      ("", RCall(f, as)) -> { let (args, cg) = gen_atoms(cg, as); (emit(acc, append(args, [OpCall("return_call", f)])), cg) },
+      ("", RCallC(f, as, t)) -> {
+        let (fw, cg) = gen_atom(cg, f);
+        let (args, cg) = gen_atoms(cg, as);
+        let (ps, rs) = closure_sig(t);
+        (emit(acc, concat([fw, args, fw, [load32(4), OpCallInd("return_call_indirect", ps, rs)]])), cg)
+      }
+      _ -> { let (w, cg) = gen_rhs(g, ords, cg, r); (emit(acc, append(w, [if label == "" { op("return") } else { br(label) }])), cg) },
+    },
+    IDup(v, b) -> gen_ir(g, ords, cg, b, label, emit(acc, [lget(v), call("rt_dup"), op("drop")])),
+    IDrop(v, t, b) -> { let (d, cg) = drop_fn(g, cg, t); gen_ir(g, ords, cg, b, label, emit(acc, [lget(v), call(d)])) },
+    IFail -> (emit(acc, [op("unreachable")]), cg),
+  }
+}
+
+fn gen_fn(g, ords, cg, f) {
+  match f {
+    IrFn(name, params, rt, body, _) -> {
+      let pnames = map(params, |p| match p { (v, _) -> v });
+      let locals = filter(m_entries(var_types([], body)), |e| match e { (v, _) -> !contains(pnames, v) });
+      let (acc, cg) = gen_ir(g, ords, cg, body, "", []);
+      cg_add(cg, WFn(name, map(params, |p| match p { (v, t) -> (v, valtype(t)) }), [valtype(rt)],
+        [("$p", "i32"), ..map(locals, |e| match e { (v, t) -> (v, valtype(t)) })], reverse(acc)))
+    }
+  }
+}
+
+// ============================================== 8. the binary encoder, and main
+
+fn uleb(n) { if n < 128 { [n] } else { [n % 128 + 128, ..uleb(n / 128)] } }
+// Signed LEB128; division rounds down, so negative numbers shift arithmetically.
+fn sleb(n) {
+  let low = ((n % 128) + 128) % 128;
+  let rest = (n - low) / 128;
+  let sign = low >= 64;
+  if (rest == 0 && !sign) || (rest == 0 - 1 && sign) { [low] } else { [low + 128, ..sleb(rest)] }
+}
+fn enc_name(s) { append(uleb(string_length(s)), map(range(0, string_length(s)), |i| char_code_at(s, i))) }
+fn enc_vec(items) { append(uleb(length(items)), concat(items)) }
+fn enc_section(id, content) { if is_empty(content) { [] } else { concat([[id], uleb(length(content)), content]) } }
+fn enc_valtype(t) { if t == "i64" { 126 } else { 127 } }
+fn enc_functype(ps, rs) { concat([[96], enc_vec(map(ps, |t| [enc_valtype(t)])), enc_vec(map(rs, |t| [enc_valtype(t)]))]) }
+fn sig_key(ps, rs) { join(ps, ",") ++ "->" ++ join(rs, ",") }
+
+fn opcodes() {
+  m_from([
+    ("unreachable", 0), ("nop", 1), ("else", 5), ("end", 11), ("return", 15), ("drop", 26), ("select", 27),
+    ("memory.size", 63), ("memory.grow", 64),
+    ("i32.eqz", 69), ("i32.eq", 70), ("i32.ne", 71), ("i32.lt_s", 72), ("i32.lt_u", 73), ("i32.gt_s", 74), ("i32.gt_u", 75),
+    ("i32.le_s", 76), ("i32.le_u", 77), ("i32.ge_s", 78), ("i32.ge_u", 79),
+    ("i64.eqz", 80), ("i64.eq", 81), ("i64.ne", 82), ("i64.lt_s", 83), ("i64.lt_u", 84), ("i64.gt_s", 85), ("i64.gt_u", 86),
+    ("i64.le_s", 87), ("i64.le_u", 88), ("i64.ge_s", 89), ("i64.ge_u", 90),
+    ("i32.clz", 103), ("i32.add", 106), ("i32.sub", 107), ("i32.mul", 108), ("i32.and", 113), ("i32.or", 114), ("i32.xor", 115),
+    ("i32.shl", 116), ("i32.shr_s", 117), ("i32.shr_u", 118),
+    ("i64.add", 124), ("i64.sub", 125), ("i64.mul", 126), ("i64.div_s", 127), ("i64.rem_s", 129), ("i64.and", 131), ("i64.or", 132), ("i64.xor", 133),
+    ("i32.wrap_i64", 167), ("i64.extend_i32_s", 172), ("i64.extend_i32_u", 173),
+    ("i32.load", 40), ("i64.load", 41), ("i32.load8_u", 45), ("i32.store", 54), ("i64.store", 55), ("i32.store8", 58),
+  ])
+}
+fn mem_align(o) { if o == "i64.load" || o == "i64.store" { 3 } else if o == "i32.load8_u" || o == "i32.store8" { 0 } else { 2 } }
+
+// The module's indices: functions, types and the opcode table.
+type Ix { Ix(Map<Int>, Map<Int>, Map<Int>) }
+
+fn enc_body(ix, f) {
+  match (ix, f) {
+    (Ix(funcs, types, ops), WFn(name, params, _, locals, body)) -> {
+      let names = map(params, |p| match p { (n, _) -> n }) |> append(map(locals, |p| match p { (n, _) -> n }));
+      let lidx = m_from(enumerate(names) |> map(|p| match p { (i, n) -> (n, i) }));
+      let local = |n| match m_get(lidx, n) { Some(i) -> uleb(i), None -> panic("internal error: no local " ++ n ++ " in " ++ name) };
+      let fidx = |n| match m_get(funcs, n) { Some(i) -> uleb(i), None -> panic("internal error: no function " ++ n) };
+      let tidx = |ps, rs| match m_get(types, sig_key(ps, rs)) { Some(i) -> uleb(i), None -> panic("internal error: no type") };
+      let opc = |o| match m_get(ops, o) { Some(c) -> c, None -> panic("internal error: no opcode " ++ o) };
+      // Locals, grouped by type.
+      fn groups(ls, acc) {
+        match (ls, acc) {
+          ([], _) -> reverse(acc),
+          ([(_, t), ..rest], [(n, u), ..more]) -> if t == u { groups(rest, [(n + 1, u), ..more]) } else { groups(rest, [(1, t), ..acc]) },
+          ([(_, t), ..rest], []) -> groups(rest, [(1, t)]),
+        }
+      }
+      let lgroups = enc_vec(map(groups(locals, []), |p| match p { (n, t) -> append(uleb(n), [enc_valtype(t)]) }));
+      let (_, chunks) = fold(body, ([], []), |st, w| match st {
+        (labels, out) -> match w {
+          Op(o) -> if o == "end" { (drop(labels, 1), [[11], ..out]) }
+            else if o == "memory.size" || o == "memory.grow" { (labels, [[opc(o), 0], ..out]) }
+            else if o == "memory.copy" { (labels, [[252, 10, 0, 0], ..out]) }
+            else { (labels, [[opc(o)], ..out]) },
+          OpI32(v) -> (labels, [[65, ..sleb(v)], ..out]),
+          OpI64(v) -> (labels, [[66, ..sleb(v)], ..out]),
+          OpLocal(k, n) -> (labels, [[if k == "local.get" { 32 } else if k == "local.set" { 33 } else { 34 }, ..local(n)], ..out]),
+          OpGlobal(k, n) -> (labels, [[if k == "global.get" { 35 } else { 36 }, if n == "hp" { 0 } else if n == "live" { 1 } else { 2 }], ..out]),
+          OpCall(k, f) -> (labels, [[if k == "call" { 16 } else { 18 }, ..fidx(f)], ..out]),
+          OpCallInd(k, ps, rs) -> (labels, [concat([[if k == "call_indirect" { 17 } else { 19 }], tidx(ps, rs), [0]]), ..out]),
+          OpBlock(k, l, t) -> (
+            [l, ..labels],
+            [[if k == "block" { 2 } else if k == "loop" { 3 } else { 4 }, if t == "" { 64 } else { enc_valtype(t) }], ..out]
+          ),
+          OpBr(k, l) -> {
+            let d = index_of(labels, l);
+            if d < 0 { panic("internal error: no label " ++ l) } else { (labels, [[if k == "br" { 12 } else { 13 }, ..uleb(d)], ..out]) }
+          }
+          OpMem(o, off) -> (labels, [concat([[opc(o)], uleb(mem_align(o)), uleb(off)]), ..out]),
+        }
+      });
+      let code = concat([lgroups, concat(reverse(chunks)), [11]]);
+      append(uleb(length(code)), code)
+    }
+  }
+}
+
+fn imports() {
+  [("write", "host_write", ["i32", "i32"], []), ("input_len", "host_input_len", [], ["i32"]), ("input_read", "host_input_read", ["i32"], []),
+   ("fail", "host_fail", ["i32"], []), ("panic", "host_panic", ["i32", "i32"], []), ("clock", "host_clock", [], ["i64"]),
+   ("random", "host_random", ["i64", "i64"], ["i64"])]
+}
+
+fn encode_module(funcs, table, data, heap_start) {
+  let imps = imports();
+  let n_imp = length(imps);
+  let fidx = m_from(append(map(enumerate(imps), |p| match p { (i, (_, n, _, _)) -> (n, i) }), map(enumerate(funcs), |p| match p { (i, WFn(n, _, _, _, _)) -> (n, i + n_imp) })));
+  // Every function type: imports, functions, and indirect calls.
+  let sigs = dedupe(concat([
+    map(imps, |p| match p { (_, _, ps, rs) -> (ps, rs) }),
+    map(funcs, |f| match f { WFn(_, ps, rs, _, _) -> (map(ps, |p| match p { (_, t) -> t }), rs) }),
+    flat_map(funcs, |f| match f { WFn(_, _, _, _, body) -> flat_map(body, |w| match w { OpCallInd(_, ps, rs) -> [(ps, rs)], _ -> [] }) }),
+  ]));
+  let tidx = m_from(map(enumerate(sigs), |p| match p { (i, (ps, rs)) -> (sig_key(ps, rs), i) }));
+  let ix = Ix(fidx, tidx, opcodes());
+  let ti = |ps, rs| match m_get(tidx, sig_key(ps, rs)) { Some(i) -> uleb(i), None -> panic("internal error: type") };
+  let fi = |n| match m_get(fidx, n) { Some(i) -> uleb(i), None -> panic("internal error: no function " ++ n) };
+  let pages = (heap_start + 65536 + 65535) / 65536;
+  let i32_init = |v| concat([[127, 1, 65], sleb(v), [11]]);
+  concat([
+    [0, 97, 115, 109, 1, 0, 0, 0],
+    enc_section(1, enc_vec(map(sigs, |p| match p { (ps, rs) -> enc_functype(ps, rs) }))),
+    enc_section(2, enc_vec(map(imps, |p| match p { (field, _, ps, rs) -> concat([enc_name("env"), enc_name(field), [0], ti(ps, rs)]) }))),
+    enc_section(3, enc_vec(map(funcs, |f| match f { WFn(_, ps, rs, _, _) -> ti(map(ps, |p| match p { (_, t) -> t }), rs) }))),
+    enc_section(4, enc_vec([concat([[112, 1], uleb(length(table)), uleb(length(table))])])),
+    enc_section(5, enc_vec([concat([[1], uleb(pages), uleb(16384)])])),
+    enc_section(6, enc_vec([i32_init(heap_start), i32_init(0), i32_init(0)])),
+    enc_section(7, enc_vec([concat([enc_name("_start"), [0], fi("_start")]), concat([enc_name("memory"), [2, 0]]),
+      concat([enc_name("live"), [3, 1]]), concat([enc_name("allocs"), [3, 2]])])),
+    enc_section(9, enc_vec([concat([[0, 65, 0, 11], enc_vec(map(table, fi))])])),
+    enc_section(10, enc_vec(map(funcs, |f| enc_body(ix, f)))),
+    enc_section(11, enc_vec([concat([[0, 65], sleb(k_data()), [11], uleb(length(data)), data])])),
+  ])
+}
+
+// The whole compiler: source text in, module bytes out.
+fn compile(src) {
+  let (pre, n1) = parse_program(prelude_source(), 0);
+  let (user, n2) = parse_program(src, n1);
+  let all = append(pre, user);
+  let dtext = derived_show(filter(all, |d| match d { DType(_, _, _) -> true, _ -> false }), filter(all, is_impl));
+  let (derived, n3) = parse_program(dtext, n2);
+  let (g, s, decls) = check_program(pre, user, derived, n3);
+  let (main_name, fns, ords) = lower_program(g, s, decls);
+  let cg = CG([], MEmpty, [], 0, MEmpty, MEmpty, [], MEmpty, 0);
+  let (nl, cg) = cg_string(cg, "\n");
+  let println_fn = wfn("str_println", [("s", "i32")], [], [], [[lget("s"), call("str_print"), i32c(nl + 8), i32c(1), call("host_write")]]);
+  let cg = fold(fns, cg, |cg, f| gen_fn(g, ords, cg, rc_fn(g, f)));
+  let main_ret = match find(fns, |f| match f { IrFn(n, _, _, _, _) -> n == main_name }) { Some(IrFn(_, _, r, _, _)) -> r, _ -> t_unit() };
+  let (finish, cg) = if is_heap(g, main_ret) { match drop_fn(g, cg, main_ret) { (d, cg) -> ([call(d)], cg) } } else { ([op("drop")], cg) };
+  let start = WFn("_start", [], [], [], append([call(main_name)], finish));
+  match cg {
+    CG(made, _, chunks, n, _, _, table, _, _) -> {
+      let heap_start = ((k_data() + n + 15) / 16) * 16;
+      let funcs = concat([runtime(), [println_fn], reverse(made), [start]]);
+      encode_module(funcs, reverse(table), concat(reverse(chunks)), heap_start)
+    }
+  }
+}
+
+fn main() {
+  let bytes = compile(read_input());
+  print(concat_strings(map(bytes, char_from_code)))
+}
