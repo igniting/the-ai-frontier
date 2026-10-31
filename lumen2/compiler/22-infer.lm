@@ -1,0 +1,597 @@
+// ================================================================ inference
+// Type and effect inference (the second half of check.js). Every expression
+// is checked against an ambient effect row. The results are kept in tables
+// indexed by node id, for the refinement checker and the back end.
+
+type Binding { Binding(Int, String, Ty, Int, Int) }   // local id, name, type, span
+type Ref { RNone, RLocal(Int), RMethod(String, String), RGlobal(String), RBuiltin(String) }
+// the refined value's local id and name, the predicate, the annotation's span, the predicate's span
+type RefineInfo { RefineInfo(Int, String, Ex, Int, Int, Int, Int) }
+type ElemSpec { ElemSpec(Option<RefineInfo>, Option<ElemSpec>) }
+type Defer { DLet(Ty, Pat), DMatch(Ty, List<Arm>, Int, Int) }
+
+// grants (or none), entry, assume every partial operation safe, safe sites, notes for unproved sites
+type Opts { Opts(Option<List<String>>, String, Bool, Map<Bool>, Map<String>) }
+
+// The checker's state. Tables by node id: types, references, instantiations,
+// constructors, local ids, safe partial operations, refinements, element
+// refinements, function keys, scopes, schemes and preset effects.
+type CS {
+  CS(Store, Array<Option<Ty>>, Array<Ref>, Array<Option<Inst>>, Array<Option<CtorInfo>>, Array<Int>, Array<Bool>,
+     Array<Option<RefineInfo>>, Array<Option<ElemSpec>>, Array<String>, Array<String>, Array<Option<Ty>>, Array<Option<Row>>,
+     Int, List<Defer>, List<(String, Int, Int)>, Map<Ty>, Map<Int>)
+}
+
+fn cs_new(st, n) {
+  CS(st, array_make(n, None), array_make(n, RNone), array_make(n, None), array_make(n, None), array_make(n, 0 - 1), array_make(n, false),
+     array_make(n, None), array_make(n, None), array_make(n, ""), array_make(n, ""), array_make(n, None), array_make(n, None),
+     0, [], [], MEmpty, MEmpty)
+}
+fn cs_st(cs) { match cs { CS(st, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) -> st } }
+fn cs_with_st(cs, st) { match cs { CS(_, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q) -> CS(st, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q) } }
+fn cs_ty(cs, id) { match cs { CS(_, a, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) -> array_get(a, id) } }
+fn cs_set_ty(cs, id, t) { match cs { CS(st, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q) -> CS(st, array_set(a, id, Some(t)), b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q) } }
+fn cs_ref(cs, id) { match cs { CS(_, _, b, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) -> array_get(b, id) } }
+fn cs_set_ref(cs, id, r) { match cs { CS(st, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q) -> CS(st, a, array_set(b, id, r), c, d, e, f, g, h, i, j, k, l, m, n, o, p, q) } }
+fn cs_inst(cs, id) { match cs { CS(_, _, _, c, _, _, _, _, _, _, _, _, _, _, _, _, _, _) -> array_get(c, id) } }
+fn cs_set_inst(cs, id, x) { match cs { CS(st, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q) -> CS(st, a, b, array_set(c, id, Some(x)), d, e, f, g, h, i, j, k, l, m, n, o, p, q) } }
+fn cs_ctor(cs, id) { match cs { CS(_, _, _, _, d, _, _, _, _, _, _, _, _, _, _, _, _, _) -> array_get(d, id) } }
+fn cs_set_ctor(cs, id, x) { match cs { CS(st, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q) -> CS(st, a, b, c, array_set(d, id, Some(x)), e, f, g, h, i, j, k, l, m, n, o, p, q) } }
+fn cs_lid(cs, id) { match cs { CS(_, _, _, _, _, e, _, _, _, _, _, _, _, _, _, _, _, _) -> array_get(e, id) } }
+fn cs_set_lid(cs, id, x) { match cs { CS(st, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q) -> CS(st, a, b, c, d, array_set(e, id, x), f, g, h, i, j, k, l, m, n, o, p, q) } }
+fn cs_safe(cs, id) { match cs { CS(_, _, _, _, _, _, f, _, _, _, _, _, _, _, _, _, _, _) -> array_get(f, id) } }
+fn cs_set_safe(cs, id) { match cs { CS(st, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q) -> CS(st, a, b, c, d, e, array_set(f, id, true), g, h, i, j, k, l, m, n, o, p, q) } }
+fn cs_refine(cs, id) { match cs { CS(_, _, _, _, _, _, _, g, _, _, _, _, _, _, _, _, _, _) -> array_get(g, id) } }
+fn cs_set_refine(cs, id, x) { match cs { CS(st, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q) -> CS(st, a, b, c, d, e, f, array_set(g, id, x), h, i, j, k, l, m, n, o, p, q) } }
+fn cs_elem(cs, id) { match cs { CS(_, _, _, _, _, _, _, _, h, _, _, _, _, _, _, _, _, _) -> array_get(h, id) } }
+fn cs_set_elem(cs, id, x) { match cs { CS(st, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q) -> CS(st, a, b, c, d, e, f, g, array_set(h, id, x), i, j, k, l, m, n, o, p, q) } }
+fn cs_fkey(cs, id) { match cs { CS(_, _, _, _, _, _, _, _, _, i, _, _, _, _, _, _, _, _) -> array_get(i, id) } }
+fn cs_set_fkey(cs, id, x) { match cs { CS(st, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q) -> CS(st, a, b, c, d, e, f, g, h, array_set(i, id, x), j, k, l, m, n, o, p, q) } }
+fn cs_fscope(cs, id) { match cs { CS(_, _, _, _, _, _, _, _, _, _, j, _, _, _, _, _, _, _) -> array_get(j, id) } }
+fn cs_set_fscope(cs, id, x) { match cs { CS(st, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q) -> CS(st, a, b, c, d, e, f, g, h, i, array_set(j, id, x), k, l, m, n, o, p, q) } }
+fn cs_scheme(cs, id) { match cs { CS(_, _, _, _, _, _, _, _, _, _, _, k, _, _, _, _, _, _) -> array_get(k, id) } }
+fn cs_set_scheme(cs, id, x) { match cs { CS(st, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q) -> CS(st, a, b, c, d, e, f, g, h, i, j, array_set(k, id, Some(x)), l, m, n, o, p, q) } }
+fn cs_preset(cs, id) { match cs { CS(_, _, _, _, _, _, _, _, _, _, _, _, l, _, _, _, _, _) -> array_get(l, id) } }
+fn cs_set_preset(cs, id, x) { match cs { CS(st, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q) -> CS(st, a, b, c, d, e, f, g, h, i, j, k, array_set(l, id, Some(x)), m, n, o, p, q) } }
+fn cs_fresh_id(cs) { match cs { CS(st, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q) -> (m, CS(st, a, b, c, d, e, f, g, h, i, j, k, l, m + 1, n, o, p, q)) } }
+fn cs_defer(cs, x) { match cs { CS(st, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q) -> CS(st, a, b, c, d, e, f, g, h, i, j, k, l, m, [x, ..n], o, p, q) } }
+fn cs_deferred(cs) { match cs { CS(_, _, _, _, _, _, _, _, _, _, _, _, _, _, n, _, _, _) -> reverse(n) } }
+fn cs_warn(cs, w) { match cs { CS(st, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q) -> CS(st, a, b, c, d, e, f, g, h, i, j, k, l, m, n, [w, ..o], p, q) } }
+fn cs_warnings(cs) { match cs { CS(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, o, _, _) -> reverse(o) } }
+fn cs_sig(cs) { match cs { CS(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, p, q) -> (p, q) } }
+fn cs_with_sig(cs, tv, rv) { match cs { CS(st, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, _, _) -> CS(st, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, tv, rv) } }
+
+// The program-wide environment: declarations, builtins, globals by scope,
+// options, the entry function (its node id), the user source, the trait
+// environment for unification.
+type Env { Env(Decls, Map<Ty>, Map<Fn>, Map<Fn>, Opts, Option<Int>, String, TEnv) }
+fn env_decls(env) { match env { Env(d, _, _, _, _, _, _, _) -> d } }
+fn env_tenv(env) { match env { Env(_, _, _, _, _, _, _, t) -> t } }
+fn env_opts(env) { match env { Env(_, _, _, _, o, _, _, _) -> o } }
+fn assume_safe(env) { match env_opts(env) { Opts(_, _, a, _, _) -> a } }
+
+// level, scope (local names), ambient effect, owner (for messages), scope name, granted?
+type Ctx { Ctx(Int, Map<Binding>, Row, String, String, Bool) }
+fn ctx_level(c) { match c { Ctx(l, _, _, _, _, _) -> l } }
+fn ctx_scope(c) { match c { Ctx(_, s, _, _, _, _) -> s } }
+fn ctx_eff(c) { match c { Ctx(_, _, e, _, _, _) -> e } }
+fn ctx_owner(c) { match c { Ctx(_, _, _, o, _, _) -> o } }
+fn ctx_sname(c) { match c { Ctx(_, _, _, _, n, _) -> n } }
+fn ctx_granted(c) { match c { Ctx(_, _, _, _, _, g) -> g } }
+fn ctx_with_scope(c, s) { match c { Ctx(l, _, e, o, n, g) -> Ctx(l, s, e, o, n, g) } }
+fn ctx_with_eff(c, e) { match c { Ctx(l, s, _, o, n, g) -> Ctx(l, s, e, o, n, g) } }
+
+fn site_key(scope, s, e) { scope ++ ":" ++ int_to_string(s) ++ ":" ++ int_to_string(e) }
+fn is_safe(env, ctx, s, e) { match env_opts(env) { Opts(_, _, a, safe, _) -> a || m_has(safe, site_key(ctx_sname(ctx), s, e)) } }
+fn why_unsafe(env, ctx, s, e) { match env_opts(env) { Opts(_, _, _, _, notes) -> m_get(notes, site_key(ctx_sname(ctx), s, e)) } }
+
+fn new_tv(cs, level) { let (v, st) = new_var(cs_st(cs), level, []); (v, cs_with_st(cs, st)) }
+fn new_rv(cs, level) { let (v, st) = new_rvar(cs_st(cs), level); (v, cs_with_st(cs, st)) }
+fn cs_prune(cs, t) { prune(cs_st(cs), t) }
+
+// ------------------------------------------------------------ messages
+fn effect_word(l) {
+  if l == "input" { "read input" } else if l == "output" { "write output" } else if l == "clock" { "read the clock" }
+  else if l == "random" { "use randomness" } else if l == "fail" { "fail" } else { l }
+}
+fn plural(n, word) { int_to_string(n) ++ " " ++ word ++ (if n == 1 { "" } else { "s" }) }
+
+fn trait_error(st, tr, t, s, e) {
+  let shown = show_type(st, t);
+  if tr == "Ord" { fail_at("values of type " ++ shown ++ " cannot be compared", s, e, Some("equality and ordering need a type without functions in it, or an `impl Ord`")) }
+  else { fail_at("`" ++ shown ++ "` does not implement `" ++ tr ++ "`", s, e, Some("add `impl " ++ tr ++ " for ...` for it")) }
+}
+
+fn unify_at(env, cs, expected, found, s, e, what) {
+  match unify(env_tenv(env), cs_st(cs), expected, found) {
+    (st, None) -> cs_with_st(cs, st),
+    (st, Some(err)) -> {
+      let (x, pr) = pr_show(st, printer(), expected, true);
+      let (y, _) = pr_show(st, pr, found, true);
+      let w = match what { Some(t) -> t, None -> "type mismatch" };
+      match err {
+        UEffect(ls) -> fail_at(w ++ ": expected " ++ x ++ ", found " ++ y, s, e, Some("the two differ in their effects (" ++ join(ls, ", ") ++ ")")),
+        UTrait(tr, t) -> trait_error(st, tr, t, s, e),
+        UInfinite -> fail_span(w ++ ": this would need an infinite type", s, e),
+        _ -> fail_span((match what { Some(t) -> t ++ ": ", None -> "" }) ++ "expected " ++ x ++ ", found " ++ y, s, e),
+      }
+    },
+  }
+}
+
+fn effect_violation(cs, labels, ctx, s, e, cause, why) {
+  let words = join(map(labels, effect_word), " and ");
+  if ctx_granted(ctx) {
+    fail_at(cause ++ " can " ++ words ++ ", but `main` was not granted `" ++ join(labels, ", ") ++ "`", s, e,
+      Some("grant it when running the program, for example `lumen2 run --allow " ++ join(labels, ",") ++ "`"))
+  } else {
+    let note = match why {
+      Some(w) -> w,
+      None -> "add the effect to the signature (for example `! {" ++ join(uniq_sorted(sort_strings(append(row_labels(prune_row(cs_st(cs), ctx_eff(ctx))), labels))), ", ") ++ "}`), or remove the cause",
+    };
+    fail_at(cause ++ " can " ++ words ++ ", but " ++ ctx_owner(ctx) ++ " is declared without `" ++ join(labels, ", ") ++ "`", s, e, Some(note))
+  }
+}
+
+// The current function may perform the effects in `labels`.
+fn perform(cs, labels, ctx, s, e, cause, note) {
+  let (v, cs) = new_rv(cs, ctx_level(ctx));
+  match unify_rows(cs_st(cs), mk_row(labels, Some(v)), ctx_eff(ctx)) {
+    (st, None) -> cs_with_st(cs, st),
+    (st, Some(err)) -> effect_violation(cs_with_st(cs, st), match err { UEffect(ls) -> ls, _ -> labels }, ctx, s, e, cause, note),
+  }
+}
+fn call_effects(cs, eff, ctx, s, e, cause, note) {
+  match unify_rows(cs_st(cs), eff, ctx_eff(ctx)) {
+    (st, None) -> cs_with_st(cs, st),
+    (st, Some(err)) -> effect_violation(cs_with_st(cs, st), match err { UEffect(ls) -> ls, _ -> [] }, ctx, s, e, cause, note),
+  }
+}
+
+// ---------------------------------------------------------------- names
+type Found { FLocal(Binding), FGlobal(Fn), FMethod(MethodInfo), FBuiltin(String), FNone }
+
+fn lookup(env, ctx, name) {
+  match m_get(ctx_scope(ctx), name) {
+    Some(b) -> FLocal(b),
+    None -> match env {
+      Env(Decls(_, _, _, _, mp, mu, _, _), builtins, gp, gu, _, _, _, _) -> {
+        let user = if ctx_sname(ctx) == "user" {
+          match m_get(gu, name) { Some(f) -> FGlobal(f), None -> match m_get(mu, name) { Some(m) -> FMethod(m), None -> FNone } }
+        } else { FNone };
+        match user {
+          FNone -> match m_get(gp, name) {
+            Some(f) -> FGlobal(f),
+            None -> match m_get(mp, name) { Some(m) -> FMethod(m), None -> if m_has(builtins, name) { FBuiltin(name) } else { FNone } },
+          },
+          found -> found,
+        }
+      },
+    },
+  }
+}
+
+fn bind_local(cs, ctx, name, ty, s, e) {
+  let (id, cs) = cs_fresh_id(cs);
+  let b = Binding(id, name, ty, s, e);
+  let ctx2 = if name != "_" { ctx_with_scope(ctx, m_set(ctx_scope(ctx), name, b)) } else { ctx };
+  (id, cs, ctx2)
+}
+
+fn fn_id(f) { match f { Fn(i, _, _, _, _, _, _, _, _, _, _) -> i } }
+fn fn_name(f) { match f { Fn(_, n, _, _, _, _, _, _, _, _, _) -> n } }
+fn fn_params(f) { match f { Fn(_, _, ps, _, _, _, _, _, _, _, _) -> ps } }
+fn fn_body(f) { match f { Fn(_, _, _, _, _, b, _, _, _, _, _) -> b } }
+fn fn_ns(f) { match f { Fn(_, _, _, _, _, _, _, _, ns, _, _) -> ns } }
+fn fn_ne(f) { match f { Fn(_, _, _, _, _, _, _, _, _, ne, _) -> ne } }
+fn fn_is_property(f) { match f { Fn(_, _, _, _, _, _, _, _, _, _, p) -> p } }
+fn param_id(p) { match p { Param(i, _, _, _, _) -> i } }
+fn param_name(p) { match p { Param(_, n, _, _, _) -> n } }
+
+// Instantiates a scheme and reopens its effects.
+fn instantiate_open(cs, t, level) {
+  let (u, st, inst) = instantiate(cs_st(cs), t, level, inst_empty());
+  let (w, st) = open_effect(st, u, level);
+  (w, inst, cs_with_st(cs, st))
+}
+
+fn ctor_info(env, name, list, ctx, s, e) {
+  match env_decls(env) {
+    Decls(_, cp, cu, _, _, _, _, _) -> {
+      let found = if list || ctx_sname(ctx) == "prelude" { m_get(cp, name) } else { match m_get(cu, name) { Some(c) -> Some(c), None -> m_get(cp, name) } };
+      match found { Some(c) -> c, None -> fail_span("unknown constructor `" ++ name ++ "`", s, e) }
+    },
+  }
+}
+fn adt_of(env, name) { match om_get(d_adts(env_decls(env)), name) { Some(a) -> a, None -> internal("adt " ++ name) } }
+
+// Fresh variables for a type's parameters: (name, variable) in order.
+fn fresh_params(cs, params, level) {
+  match params { [] -> ([], cs), [p, ..rest] -> { let (v, cs) = new_tv(cs, level); let (more, cs) = fresh_params(cs, rest, level); ([(p, v), ..more], cs) } }
+}
+
+// ---------------------------------------------------------- expressions
+fn infer(env, cs, x, ctx) {
+  let (t, cs) = infer_inner(env, cs, x, ctx);
+  (t, cs_set_ty(cs, ex_id(x), t))
+}
+
+fn infer_all(env, cs, xs, ctx) {
+  match xs { [] -> ([], cs), [x, ..rest] -> { let (t, cs) = infer(env, cs, x, ctx); let (ts, cs) = infer_all(env, cs, rest, ctx); ([t, ..ts], cs) } }
+}
+
+fn infer_inner(env, cs, x, ctx) {
+  let level = ctx_level(ctx);
+  match x {
+    EInt(_, _, _, _) -> (t_int(), cs),
+    EStr(_, _, _, _) -> (t_string(), cs),
+    EBool(_, _, _, _) -> (t_bool(), cs),
+    EUnit(_, _, _) -> (t_unit(), cs),
+    EVar(id, name, s, e) -> match lookup(env, ctx, name) {
+      FNone -> fail_span("unknown variable `" ++ name ++ "`", s, e),
+      FLocal(Binding(lid, _, ty, _, _)) -> { let cs = cs_set_ref(cs, id, RLocal(lid)); let (t, st) = open_effect(cs_st(cs), ty, level); (t, cs_with_st(cs, st)) },
+      FMethod(MethodInfo(mname, tr, scheme, _)) -> {
+        let cs = cs_set_ref(cs, id, RMethod(tr, mname));
+        let (t, inst, cs) = instantiate_open(cs, scheme, level);
+        (t, cs_set_inst(cs, id, inst))
+      },
+      FGlobal(f) -> {
+        let cs = cs_set_ref(cs, id, RGlobal(cs_fkey(cs, fn_id(f))));
+        match cs_scheme(cs, fn_id(f)) {
+          None -> {
+            // A call inside the function's own component: its type, used monomorphically.
+            let cs = cs_set_inst(cs, id, inst_empty());
+            let ty = match cs_ty(cs, fn_id(f)) { Some(t) -> t, None -> internal("fn type") };
+            let (t, st) = open_effect(cs_st(cs), ty, level);
+            (t, cs_with_st(cs, st))
+          },
+          Some(scheme) -> { let (t, inst, cs) = instantiate_open(cs, scheme, level); (t, cs_set_inst(cs, id, inst)) },
+        }
+      },
+      FBuiltin(b) -> {
+        let cs = cs_set_ref(cs, id, RBuiltin(b));
+        let scheme = match env { Env(_, bt, _, _, _, _, _, _) -> match m_get(bt, b) { Some(t) -> t, None -> internal("builtin") } };
+        let (t, inst, cs) = instantiate_open(cs, scheme, level);
+        (t, cs_set_inst(cs, id, inst))
+      },
+    },
+    ECtor(id, name, args, list, s, e) -> {
+      let info = ctor_info(env, name, list, ctx, s, e);
+      let cs = cs_set_ctor(cs, id, info);
+      let decl = adt_of(env, ctor_adt(info));
+      let (sub, cs) = fresh_params(cs, adt_params(decl), level);
+      let result = TC(adt_name(decl), map(sub, |pv| match pv { (_, v) -> v }));
+      let fields = map(ctor_fields(info), |f| subst_params(f, sub));
+      match args {
+        None -> if is_empty(fields) { (result, cs) } else { let (r, cs) = new_rv(cs, level); (TF(fields, result, Row([], Some(r))), cs) },
+        Some(as) -> {
+          if length(as) != length(fields) { fail_span("constructor `" ++ name ++ "` takes " ++ plural(length(fields), "argument") ++ ", found " ++ int_to_string(length(as)), s, e) } else { () };
+          let cs = fold(enumerate(as), cs, |cs, ia| match ia { (i, a) -> {
+            let (t, cs) = infer(env, cs, a, ctx);
+            unify_at(env, cs, list_get(fields, i), t, ex_s(a), ex_e(a), Some("argument " ++ int_to_string(i + 1) ++ " of `" ++ name ++ "`"))
+          } });
+          (result, cs)
+        },
+      }
+    },
+    ECall(id, f, args, s, e) -> {
+      let (ft0, cs) = infer(env, cs, f, ctx);
+      let (fty, st) = open_effect(cs_st(cs), ft0, level);
+      let cs = cs_with_st(cs, st);
+      let (arg_tys, cs) = infer_all(env, cs, args, ctx);
+      let what = match f { EVar(_, n, _, _) -> "`" ++ n ++ "`", _ -> "this function" };
+      match cs_prune(cs, fty) {
+        TF(ps, ret, eff) -> {
+          if length(ps) != length(arg_tys) { fail_span(what ++ " takes " ++ plural(length(ps), "argument") ++ ", found " ++ int_to_string(length(arg_tys)), s, e) } else { () };
+          let cs = fold(enumerate(arg_tys), cs, |cs, ia| match ia { (i, a) -> {
+            let arg = list_get(args, i);
+            unify_at(env, cs, list_get(ps, i), a, ex_s(arg), ex_e(arg), Some("argument " ++ int_to_string(i + 1) ++ " of " ++ what))
+          } });
+          let partial = match f { EVar(fid, _, _, _) -> match cs_ref(cs, fid) { RBuiltin(b) -> partial_builtin(b), _ -> false }, _ -> false };
+          let (eff2, note, cs) = if partial {
+            if is_safe(env, ctx, s, e) {
+              let r = prune_row(cs_st(cs), eff);
+              let cs = if !assume_safe(env) { cs_set_safe(cs, id) } else { cs };
+              (Row(filter(row_labels(r), |l| l != "fail"), row_tail(r)), None, cs)
+            } else { (eff, why_unsafe(env, ctx, s, e), cs) }
+          } else { (eff, None, cs) };
+          (ret, call_effects(cs, eff2, ctx, s, e, "calling " ++ what, note))
+        },
+        TV(_) -> {
+          let (ret, cs) = new_tv(cs, level);
+          (ret, unify_at(env, cs, fty, TF(arg_tys, ret, ctx_eff(ctx)), s, e, None))
+        },
+        other -> fail_span(what ++ " is not a function (its type is " ++ show_type(cs_st(cs), other) ++ ")", ex_s(f), ex_e(f)),
+      }
+    },
+    EBinop(id, op, l, r, s, e) -> infer_binop(env, cs, id, op, l, r, s, e, ctx),
+    EUnop(_, op, a, _, _) -> {
+      let (t, cs) = infer(env, cs, a, ctx);
+      if op == "-" { (t_int(), unify_at(env, cs, t_int(), t, ex_s(a), ex_e(a), Some("operand of `-`"))) }
+      else { (t_bool(), unify_at(env, cs, t_bool(), t, ex_s(a), ex_e(a), Some("operand of `!`"))) }
+    },
+    ELambda(_, params, body, _, _) -> {
+      let (rv, cs) = new_rv(cs, level);
+      let inner0 = match ctx { Ctx(l, sc, _, _, n, g) -> Ctx(l, sc, Row([], Some(rv)), "this function", n, g) };
+      let (pts, cs, inner) = fold(params, ([], cs, inner0), |acc, p| match (acc, p) {
+        ((pts, cs, inner), Param(pid, pname, ann, ps, pe)) -> {
+          match ann { Some(TRefine(_, _, _, _, _, rs, re)) -> fail_span("the parameters of a lambda cannot be refined; use a named function", rs, re), _ -> () };
+          let (ty, cs) = match ann { Some(te) -> sig_type_cs(env, cs, te, level), None -> new_tv(cs, level) };
+          let (lid, cs, inner) = bind_local(cs, inner, pname, ty, ps, pe);
+          let cs = cs_set_ty(cs_set_lid(cs, pid, lid), pid, ty);
+          ([ty, ..pts], cs, inner)
+        },
+      });
+      let (bt, cs) = infer(env, cs, body, inner);
+      (TF(reverse(pts), bt, ctx_eff(inner)), cs)
+    },
+    EBlock(_, stmts, result, _, _) -> {
+      let (cs, inner) = fold(stmts, (cs, ctx), |acc, stmt| match acc { (cs, inner) -> infer_stmt(env, cs, stmt, inner, ctx) });
+      match result { Some(rx) -> infer(env, cs, rx, inner), None -> (t_unit(), cs) }
+    },
+    EIf(_, c, t, el, _, _) -> {
+      let (ct, cs) = infer(env, cs, c, ctx);
+      let cs = unify_at(env, cs, t_bool(), ct, ex_s(c), ex_e(c), Some("condition of `if`"));
+      let (tt, cs) = infer(env, cs, t, ctx);
+      match el {
+        None -> (t_unit(), unify_at(env, cs, t_unit(), tt, ex_s(t), ex_e(t), Some("an `if` without `else` must have type ()"))),
+        Some(ex2) -> { let (et, cs) = infer(env, cs, ex2, ctx); (tt, unify_at(env, cs, tt, et, ex_s(ex2), ex_e(ex2), Some("`if` branches differ"))) },
+      }
+    },
+    EMatch(_, scrut, arms, _, _) -> {
+      let (stt, cs) = infer(env, cs, scrut, ctx);
+      let (result, cs) = new_tv(cs, level);
+      let cs = fold(arms, cs, |cs, arm| match arm {
+        Arm(pat, guard, body, _, _) -> {
+          let (cs, inner, _) = check_pattern(env, cs, pat, stt, ctx, []);
+          let cs = match guard {
+            Some(g) -> { let (gt, cs) = infer(env, cs, g, inner); unify_at(env, cs, t_bool(), gt, ex_s(g), ex_e(g), Some("match guard")) },
+            None -> cs,
+          };
+          let (bt, cs) = infer(env, cs, body, inner);
+          unify_at(env, cs, result, bt, ex_s(body), ex_e(body), Some("`match` arms differ"))
+        },
+      });
+      (result, cs_defer(cs, DMatch(stt, arms, ex_s(scrut), ex_e(scrut))))
+    },
+    ETuple(_, es, _, _) -> { let (ts, cs) = infer_all(env, cs, es, ctx); (TT(ts), cs) },
+  }
+}
+
+// A statement in a block; returns the state and the block's context.
+fn infer_stmt(env, cs, stmt, inner, outer) {
+  match stmt {
+    SLet(lid, pat, ann, value, _, _) -> {
+      let (vt, cs) = infer(env, cs, value, inner);
+      let refined = match ann { Some(TRefine(_, _, _, _, _, _, _)) -> true, _ -> false };
+      let plain = match ann { Some(TRefine(_, _, _, base, _, _, _)) -> Some(base), other -> other };
+      match ann { Some(a) -> if has_elem_refine(plain) { fail_span("element refinements can annotate the parameters and results of named functions", te_s(a), te_e(a)) } else { () }, None -> () };
+      let cs = match plain { Some(te) -> { let (t, cs) = sig_type_cs(env, cs, te, ctx_level(outer)); unify_at(env, cs, t, vt, ex_s(value), ex_e(value), Some("let binding")) }, None -> cs };
+      let cs = if refined {
+        match pat { PVar(_, _, _, _) -> (), _ -> fail_span("a refined let binds one variable", pat_s(pat), pat_e(pat)) };
+        let (ri, cs) = check_refinement(env, cs, match ann { Some(a) -> a, None -> internal("ann") }, vt, inner);
+        cs_set_refine(cs, lid, Some(ri))
+      } else { cs };
+      let (cs, inner, _) = check_pattern(env, cs, pat, vt, inner, []);
+      (cs_defer(cs, DLet(vt, pat)), inner)
+    },
+    SExpr(x) -> { let (_, cs) = infer(env, cs, x, inner); (cs, inner) },
+    SFn(f) -> infer_local_fn(env, cs, f, inner),
+  }
+}
+
+fn infer_binop(env, cs, id, op, l, r, s, e, ctx) {
+  let (lt, cs) = infer(env, cs, l, ctx);
+  let (rt, cs) = infer(env, cs, r, ctx);
+  let both = |cs, t, what_l, what_r| {
+    let cs = unify_at(env, cs, t, lt, ex_s(l), ex_e(l), Some(what_l));
+    unify_at(env, cs, t, rt, ex_s(r), ex_e(r), Some(what_r))
+  };
+  if op == "+" || op == "-" || op == "*" {
+    (t_int(), both(cs, t_int(), "left operand of `" ++ op ++ "`", "right operand of `" ++ op ++ "`"))
+  } else if op == "/" || op == "%" {
+    let cs = both(cs, t_int(), "left operand of `" ++ op ++ "`", "right operand of `" ++ op ++ "`");
+    if is_safe(env, ctx, s, e) { (t_int(), if !assume_safe(env) { cs_set_safe(cs, id) } else { cs }) }
+    else { (t_int(), perform(cs, ["fail"], ctx, s, e, "`" ++ op ++ "` (division by zero)", why_unsafe(env, ctx, s, e))) }
+  } else if op == "&&" || op == "||" {
+    (t_bool(), both(cs, t_bool(), "left operand of `" ++ op ++ "`", "right operand of `" ++ op ++ "`"))
+  } else if op == "++" {
+    (t_string(), both(cs, t_string(), "`++` joins Strings", "`++` joins Strings"))
+  } else {
+    let cs = unify_at(env, cs, lt, rt, ex_s(r), ex_e(r), Some("both sides of `" ++ op ++ "` must have the same type"));
+    match require_trait(env_tenv(env), cs_st(cs), "Ord", lt, []) {
+      (st, None) -> (t_bool(), cs_with_st(cs, st)),
+      (st, Some(_)) -> fail_at("values of type " ++ show_type(st, lt) ++ " cannot be compared", s, e, Some("equality and ordering need a type without functions in it, or an `impl Ord`")),
+    }
+  }
+}
+
+// ------------------------------------------------------------- patterns
+// Binds a pattern's variables in ctx; `seen` is the names bound so far in it.
+fn check_pattern(env, cs, p, t, ctx, seen) {
+  let cs = cs_set_ty(cs, pat_id(p), t);
+  let level = ctx_level(ctx);
+  match p {
+    PWild(_, _, _) -> (cs, ctx, seen),
+    PVar(id, name, s, e) -> {
+      if contains_str(seen, name) { fail_span("`" ++ name ++ "` is bound twice in this pattern", s, e) } else { () };
+      let (lid, cs, ctx) = bind_local(cs, ctx, name, t, s, e);
+      (cs_set_lid(cs, id, lid), ctx, [name, ..seen])
+    },
+    PInt(_, _, s, e) -> (unify_at(env, cs, t, t_int(), s, e, Some("pattern")), ctx, seen),
+    PStr(_, _, s, e) -> (unify_at(env, cs, t, t_string(), s, e, Some("pattern")), ctx, seen),
+    PBool(_, _, s, e) -> (unify_at(env, cs, t, t_bool(), s, e, Some("pattern")), ctx, seen),
+    PUnit(_, s, e) -> (unify_at(env, cs, t, t_unit(), s, e, Some("pattern")), ctx, seen),
+    PTuple(_, elems, s, e) -> {
+      let (vs, cs) = fold(elems, ([], cs), |acc, _| match acc { (vs, cs) -> { let (v, cs) = new_tv(cs, level); ([v, ..vs], cs) } });
+      let vars = reverse(vs);
+      let cs = unify_at(env, cs, t, TT(vars), s, e, Some("pattern"));
+      fold(zip(elems, vars), (cs, ctx, seen), |acc, qv| match (acc, qv) { ((cs, ctx, seen), (q, v)) -> check_pattern(env, cs, q, v, ctx, seen) })
+    },
+    PCtor(id, name, args, list, s, e) -> {
+      let info = ctor_info(env, name, list, ctx, s, e);
+      let cs = cs_set_ctor(cs, id, info);
+      let decl = adt_of(env, ctor_adt(info));
+      let (sub, cs) = fresh_params(cs, adt_params(decl), level);
+      let cs = unify_at(env, cs, t, TC(adt_name(decl), map(sub, |pv| match pv { (_, v) -> v })), s, e, Some("pattern"));
+      let n = length(ctor_fields(info));
+      if length(args) != n { fail_span("constructor `" ++ name ++ "` has " ++ plural(n, "field") ++ ", found " ++ int_to_string(length(args)), s, e) } else { () };
+      fold(zip(args, ctor_fields(info)), (cs, ctx, seen), |acc, qf| match (acc, qf) { ((cs, ctx, seen), (q, f)) -> check_pattern(env, cs, q, subst_params(f, sub), ctx, seen) })
+    },
+  }
+}
+
+// ----------------------------------------------------------- refinements
+// A refinement {v: T | p}: v is bound to the refined value; p must be in the
+// decidable fragment the refinement checker understands.
+fn check_refinement(env, cs, te, ty, ctx) {
+  match te {
+    TRefine(v, vs, ve, _, pred, s, e) -> {
+      let ok = match cs_prune(cs, ty) { TC(n, _) -> n == "Int" || n == "Array" || n == "String", _ -> false };
+      if !ok { fail_span("only Int, Array and String values can be refined; this one has type " ++ show_type(cs_st(cs), ty), s, e) } else { () };
+      let (rv, cs) = new_rv(cs, ctx_level(ctx));
+      let pctx = ctx_with_eff(ctx, Row([], Some(rv)));
+      let (vid, cs, pctx) = bind_local(cs, pctx, v, ty, vs, ve);
+      let (pt, cs) = infer(env, cs, pred, pctx);
+      let cs = unify_at(env, cs, t_bool(), pt, ex_s(pred), ex_e(pred), Some("a refinement must be true or false"));
+      validate_predicate(cs, pred);
+      (RefineInfo(vid, v, pred, s, e, ex_s(pred), ex_e(pred)), cs)
+    },
+    _ -> internal("refinement"),
+  }
+}
+
+fn validate_predicate(cs, x) {
+  let bad = |msg| fail_at(msg, ex_s(x), ex_e(x), Some("refinements use integer constants, variables, +, -, multiplication by a constant, comparisons, &&, ||, !, array_length and string_length"));
+  let type_name = |y| match cs_ty(cs, ex_id(y)) { Some(t) -> match cs_prune(cs, t) { TC(n, _) -> n, _ -> "" }, None -> "" };
+  let is_lit = |y| match y { EInt(_, _, _, _) -> true, EUnop(_, "-", EInt(_, _, _, _), _, _) -> true, _ -> false };
+  match x {
+    EInt(_, _, _, _) -> (),
+    EBool(_, _, _, _) -> (),
+    EVar(id, name, _, _) -> match cs_ref(cs, id) {
+      RLocal(_) -> if type_name(x) != "Int" && type_name(x) != "Bool" { bad("`" ++ name ++ "` is not an Int; use array_length or string_length for arrays and strings") } else { () },
+      _ -> bad("a refinement can only mention variables, not `" ++ name ++ "`"),
+    },
+    EUnop(_, _, a, _, _) -> validate_predicate(cs, a),
+    EBinop(_, op, l, r, _, _) -> {
+      if op == "/" || op == "%" || op == "++" { bad("`" ++ op ++ "` cannot be used in a refinement") } else { () };
+      if op == "*" && !is_lit(l) && !is_lit(r) { bad("in a refinement, `*` needs a constant on one side") } else { () };
+      if contains_str(["==", "!=", "<", "<=", ">", ">="], op) && type_name(l) != "Int" { bad("a refinement compares integers only") } else { () };
+      validate_predicate(cs, l);
+      validate_predicate(cs, r)
+    },
+    ECall(_, f, args, _, _) -> {
+      let ok = match (f, args) {
+        (EVar(fid, _, _, _), [EVar(aid, _, _, _)]) -> match (cs_ref(cs, fid), cs_ref(cs, aid)) {
+          (RBuiltin(b), RLocal(_)) -> b == "array_length" || b == "string_length",
+          _ -> false,
+        },
+        _ -> false,
+      };
+      if !ok { bad("the only calls allowed in a refinement are array_length(x) and string_length(x) of a variable") } else { () }
+    },
+    _ -> bad("this expression cannot be used in a refinement"),
+  }
+}
+
+// Element refinements: `Array<{x: Int | p}>`, nested to any depth.
+fn strip_elems(te) {
+  match te {
+    TRefine(v, vs, ve, base, pred, s, e) -> TRefine(v, vs, ve, strip_elems(base), pred, s, e),
+    TCon("Array", [a], s, e) -> TCon("Array", [match a { TRefine(_, _, _, base, _, _, _) -> strip_elems(base), _ -> strip_elems(a) }], s, e),
+    _ -> te,
+  }
+}
+fn has_elem_refine(te) {
+  match te {
+    Some(TCon("Array", [a], _, _)) -> match a { TRefine(_, _, _, _, _, _, _) -> true, _ -> has_elem_refine(Some(a)) },
+    _ -> false,
+  }
+}
+fn elem_spec(env, cs, te, ty, ctx) {
+  let arr = match te { Some(TRefine(_, _, _, base, _, _, _)) -> Some(base), other -> other };
+  if !has_elem_refine(arr) { (None, cs) } else {
+    let elem_ty = match cs_prune(cs, ty) { TC(_, [a, .._]) -> cs_prune(cs, a), other -> other };
+    let a = match arr { Some(TCon(_, [x, .._], _, _)) -> x, _ -> internal("elem spec") };
+    let (refine, cs) = match a { TRefine(_, _, _, _, _, _, _) -> { let (ri, cs) = check_refinement(env, cs, a, elem_ty, ctx); (Some(ri), cs) }, _ -> (None, cs) };
+    let inner_te = match a { TRefine(_, _, _, base, _, _, _) -> base, _ -> a };
+    let (sub, cs) = elem_spec(env, cs, Some(inner_te), elem_ty, ctx);
+    (Some(ElemSpec(refine, sub)), cs)
+  }
+}
+
+// A type annotation inside a function, with the declaration's variables.
+fn sig_type_cs(env, cs, te, level) {
+  let (tv, rv) = cs_sig(cs);
+  let d = d_with_store(env_decls(env), cs_st(cs));
+  let (t, d, sc) = sig_type(d, te, SigCtx(level, tv, rv, None));
+  match sc { SigCtx(_, tv2, rv2, _) -> (t, cs_with_sig(cs_with_st(cs, d_store(d)), tv2, rv2)) }
+}
+fn sig_effect_cs(env, cs, eff, level) {
+  let (tv, rv) = cs_sig(cs);
+  let d = d_with_store(env_decls(env), cs_st(cs));
+  let (r, d, sc) = sig_effect(d, eff, SigCtx(level, tv, rv, None));
+  match sc { SigCtx(_, tv2, rv2, _) -> (r, cs_with_sig(cs_with_st(cs, d_store(d)), tv2, rv2)) }
+}
+
+// A local function: monomorphic, may call itself.
+fn infer_local_fn(env, cs, f, ctx) {
+  let level = ctx_level(ctx);
+  let (v, cs) = new_tv(cs, level);
+  let (lid, cs, ctx) = bind_local(cs, ctx, fn_name(f), v, fn_ns(f), fn_ne(f));
+  let cs = cs_set_lid(cs, fn_id(f), lid);
+  let (ty, cs) = fn_type(env, cs, f, ctx, "`" ++ fn_name(f) ++ "`");
+  let cs = unify_at(env, cs, v, ty, fn_ns(f), fn_ne(f), None);
+  (cs_set_ty(cs, fn_id(f), v), ctx)
+}
+
+// A function declaration's type, inferred in its own scope and ambient effect.
+fn fn_type(env, cs, f, ctx, owner) {
+  match f {
+    Fn(fid, name, params, ret, eff, body, _, _, _, _, prop) -> {
+      let level = ctx_level(ctx);
+      let (row0, cs) = match eff {
+        Some(_) -> sig_effect_cs(env, cs, eff, level),
+        None -> match cs_preset(cs, fid) { Some(r) -> (r, cs), None -> { let (rv, cs) = new_rv(cs, level); (Row([], Some(rv)), cs) } },
+      };
+      let is_main = match env { Env(_, _, _, _, _, Some(m), _, _) -> m == fid, _ -> false };
+      let grants = match env_opts(env) { Opts(g, _, _, _, _) -> g };
+      let (row1, granted) = match (is_main, grants, eff) { (true, Some(gs), None) -> (mk_row(append(gs, ["fail"]), None), true), _ -> (row0, ctx_granted(ctx)) };
+      let inner0 = match ctx { Ctx(l, sc, _, _, n, _) -> Ctx(l, sc, row1, owner, n, granted) };
+      let (pts, cs, inner) = fold(params, ([], cs, inner0), |acc, p| match (acc, p) {
+        ((pts, cs, inner), Param(pid, pname, ann, ps, pe)) -> {
+          let a = match ann { Some(TRefine(_, _, _, base, _, _, _)) -> Some(strip_elems(base)), Some(t) -> Some(strip_elems(t)), None -> None };
+          let (ty, cs) = match a { Some(te) -> sig_type_cs(env, cs, te, level), None -> new_tv(cs, level) };
+          let (lid, cs, inner) = bind_local(cs, inner, pname, ty, ps, pe);
+          ([ty, ..pts], cs_set_ty(cs_set_lid(cs, pid, lid), pid, ty), inner)
+        },
+      });
+      let cs = fold(params, cs, |cs, p| match p {
+        Param(pid, _, ann, _, _) -> {
+          let pty = match cs_ty(cs, pid) { Some(t) -> t, None -> internal("param type") };
+          let cs = match ann {
+            Some(TRefine(v, vs, ve, base, pred, s, e)) -> { let (ri, cs) = check_refinement(env, cs, TRefine(v, vs, ve, strip_elems(base), pred, s, e), pty, inner); cs_set_refine(cs, pid, Some(ri)) },
+            _ -> cs,
+          };
+          let (es, cs) = elem_spec(env, cs, ann, pty, inner);
+          cs_set_elem(cs, pid, es)
+        },
+      });
+      let (bt, cs) = infer(env, cs, body, inner);
+      let (rs, re) = match body { EBlock(_, _, Some(r), _, _) -> (ex_s(r), ex_e(r)), _ -> (ex_s(body), ex_e(body)) };
+      let cs = match ret {
+        Some(TRefine(v, vs, ve, base, pred, s, e)) -> {
+          let (t, cs) = sig_type_cs(env, cs, strip_elems(base), level);
+          let cs = unify_at(env, cs, t, bt, rs, re, Some("`" ++ name ++ "` returns"));
+          let (ri, cs) = check_refinement(env, cs, TRefine(v, vs, ve, strip_elems(base), pred, s, e), bt, inner);
+          cs_set_refine(cs, fid, Some(ri))
+        },
+        Some(te) -> { let (t, cs) = sig_type_cs(env, cs, strip_elems(te), level); unify_at(env, cs, t, bt, rs, re, Some("`" ++ name ++ "` returns")) },
+        None -> cs,
+      };
+      let cs = match ret { Some(_) -> { let (es, cs) = elem_spec(env, cs, ret, bt, inner); cs_set_elem(cs, fid, es) }, None -> cs };
+      let cs = if prop { unify_at(env, cs, t_bool(), bt, rs, re, Some("a property must be true or false")) } else { cs };
+      (TF(reverse(pts), bt, ctx_eff(inner)), cs)
+    },
+  }
+}

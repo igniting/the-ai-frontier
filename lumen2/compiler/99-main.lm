@@ -1,0 +1,45 @@
+// ===================================================================== main
+// Input: a first line naming what to do, then the program.
+
+fn split_commas(s) {
+  fn go(i, start, acc) {
+    if i >= string_length(s) { reverse([substring(s, start, i), ..acc]) }
+    else if char_code_at(s, i) == 44 { go(i + 1, i + 1, [substring(s, start, i), ..acc]) }
+    else { go(i + 1, start, acc) }
+  }
+  go(0, 0, [])
+}
+
+// The mode line: a word, then options `key=value` separated by spaces.
+fn split_spaces(s) {
+  fn go(i, start, acc) {
+    if i >= string_length(s) { filter(reverse([substring(s, start, i), ..acc]), |w| w != "") }
+    else if char_code_at(s, i) == 32 { go(i + 1, i + 1, [substring(s, start, i), ..acc]) }
+    else { go(i + 1, start, acc) }
+  }
+  go(0, 0, [])
+}
+fn option(words, key) {
+  match find(words, |w| starts_at(w, 0, key ++ "=")) { Some(w) -> Some(substring(w, string_length(key) + 1, string_length(w))), None -> None }
+}
+
+fn main() {
+  let input = read_input();
+  fn line_end(i) { if i >= string_length(input) || char_code_at(input, i) == 10 { i } else { line_end(i + 1) } }
+  let nl = line_end(0);
+  let words = split_spaces(substring(input, 0, nl));
+  let mode = match words { [w, .._] -> w, [] -> "" };
+  let src = substring(input, nl + 1, string_length(input));
+  let grants = match option(words, "grants") { Some(g) -> Some(filter(split_commas(g), |x| x != "")), None -> None };
+  let entry = match option(words, "entry") { Some(e) -> e, None -> "main" };
+  if mode == "ast" { let (ast, _) = parse(src, 0); println(d_ast(ast)) }
+  else if mode == "check1" {
+    match check_once(src, Opts(grants, entry, true, MEmpty, MEmpty)) {
+      Checked(_, _, _, _, _, _, _, sigs, warns, _) -> {
+        each(sigs, |s| match s { (n, t, _, _) -> println("sig " ++ n ++ ": " ++ t) });
+        each(warns, |w| match w { (m, s, e) -> println("warn " ++ m ++ " @" ++ int_to_string(s) ++ "-" ++ int_to_string(e)) })
+      },
+    }
+  }
+  else { panic("unknown mode " ++ mode) }
+}

@@ -1,0 +1,156 @@
+// =========================================================== exhaustiveness
+// Pattern-match exhaustiveness and redundancy (Maranget, "Warnings for
+// pattern matching", 2007), as in exhaust.js. A pattern vector q is useful
+// after the rows P if some value matches q and no row of P; when the wildcard
+// is useful after a match's unguarded arms, the algorithm builds a witness.
+
+// A constructor of a type: name (a key), arity, field types, display name, of List?
+type XC { XC(String, Int, List<Ty>, String, Bool) }
+type XP { XWild, XCtor(String, List<XP>, Option<XC>), XLit(String) }
+
+fn xc_name(c) { match c { XC(n, _, _, _, _) -> n } }
+fn xc_arity(c) { match c { XC(_, a, _, _, _) -> a } }
+fn xc_fields(c) { match c { XC(_, _, fs, _, _) -> fs } }
+
+fn ctors_of(adts, st, t) {
+  match prune(st, t) {
+    TT(es) -> Some([XC("()tuple", length(es), es, "", false)]),
+    TC("Bool", _) -> Some([XC("true", 0, [], "", false), XC("false", 0, [], "", false)]),
+    TC("Unit", _) -> Some([XC("()", 0, [], "", false)]),
+    TC(n, args) -> match om_get(adts, n) {
+      None -> None,
+      Some(a) -> {
+        let sub = zip(adt_params(a), args);
+        Some(map(adt_ctors(a), |c| XC(ctor_key(c), length(ctor_fields(c)), map(ctor_fields(c), |f| subst_params(f, sub)), ctor_name(c), n == "List")))
+      },
+    },
+    _ -> None,
+  }
+}
+
+fn x_norm(cs, p) {
+  match p {
+    PWild(_, _, _) -> XWild,
+    PVar(_, _, _, _) -> XWild,
+    PBool(_, v, _, _) -> XCtor(if v { "true" } else { "false" }, [], None),
+    PUnit(_, _, _) -> XCtor("()", [], None),
+    PTuple(_, es, _, _) -> XCtor("()tuple", map(es, |q| x_norm(cs, q)), None),
+    PCtor(id, _, args, _, _, _) -> XCtor(match cs_ctor(cs, id) { Some(c) -> ctor_key(c), None -> internal("pattern ctor") }, map(args, |q| x_norm(cs, q)), None),
+    PInt(_, v, _, _) -> XLit("i" ++ int_to_string(v)),
+    PStr(_, v, _, _) -> XLit("s" ++ v),
+  }
+}
+fn x_name(p) { match p { XCtor(n, _, _) -> n, XLit(v) -> v, XWild -> "" } }
+fn x_args(p) { match p { XCtor(_, a, _) -> a, _ -> [] } }
+
+fn x_specialize(rows, name, arity) {
+  flat_map(rows, |r| match r {
+    [XWild, ..rest] -> [append(map(range(0, arity), |_| XWild), rest)],
+    [h, ..rest] -> if x_name(h) == name { [append(x_args(h), rest)] } else { [] },
+    [] -> [],
+  })
+}
+
+fn x_useful(adts, st, rows, q, tys) {
+  match q {
+    [] -> if is_empty(rows) { Some([]) } else { None },
+    [h, ..rest] -> {
+      let (t, rest_t) = match tys { [t, ..r] -> (Some(t), r), [] -> (None, []) };
+      let all_cs = match t { Some(tt) -> ctors_of(adts, st, tt), None -> None };
+      match h {
+        XWild -> {
+          let heads = map(filter(rows, |r| match r { [XWild, .._] -> false, [_, .._] -> true, [] -> false }), |r| x_name(list_get(r, 0)));
+          match all_cs {
+            Some(cs) -> if all(cs, |c| contains_str(heads, xc_name(c))) {
+              fn try_each(cs) {
+                match cs {
+                  [] -> None,
+                  [c, ..more] -> match x_useful(adts, st, x_specialize(rows, xc_name(c), xc_arity(c)), append(map(range(0, xc_arity(c)), |_| XWild), rest), append(xc_fields(c), rest_t)) {
+                    Some(w) -> Some([XCtor(xc_name(c), take(w, xc_arity(c)), Some(c)), ..drop(w, xc_arity(c))]),
+                    None -> try_each(more),
+                  },
+                }
+              }
+              try_each(cs)
+            } else { x_default(adts, st, rows, rest, rest_t, all_cs, heads) },
+            None -> x_default(adts, st, rows, rest, rest_t, all_cs, heads),
+          }
+        },
+        _ -> {
+          let name = x_name(h);
+          let args = x_args(h);
+          let ctor = match all_cs { Some(cs) -> find(cs, |c| xc_name(c) == name), None -> None };
+          let field_tys = match ctor { Some(c) -> xc_fields(c), None -> [] };
+          match x_useful(adts, st, x_specialize(rows, name, length(args)), append(args, rest), append(field_tys, rest_t)) {
+            Some(w) -> Some([XCtor(name, take(w, length(args)), ctor), ..drop(w, length(args))]),
+            None -> None,
+          }
+        },
+      }
+    },
+  }
+}
+fn x_default(adts, st, rows, rest, rest_t, all_cs, heads) {
+  let defaults = flat_map(rows, |r| match r { [XWild, ..more] -> [more], _ -> [] });
+  match x_useful(adts, st, defaults, rest, rest_t) {
+    None -> None,
+    Some(w) -> {
+      let missing = match all_cs { Some(cs) -> find(cs, |c| !contains_str(heads, xc_name(c))), None -> None };
+      let head = match missing { Some(c) -> XCtor(xc_name(c), map(range(0, xc_arity(c)), |_| XWild), Some(c)), None -> XWild };
+      Some([head, ..w])
+    },
+  }
+}
+
+// JSON.stringify of a byte string.
+fn js_stringify(s) {
+  fn piece(c) {
+    if c == 34 { "\\\"" } else if c == 92 { "\\\\" } else if c == 8 { "\\b" } else if c == 9 { "\\t" } else if c == 10 { "\\n" }
+    else if c == 12 { "\\f" } else if c == 13 { "\\r" } else if c < 32 { hex4(c) } else { char_from_code(c) }
+  }
+  "\"" ++ concat_strings(map(range(0, string_length(s)), |i| piece(char_code_at(s, i)))) ++ "\""
+}
+
+fn x_show(p) {
+  match p {
+    XWild -> "_",
+    XLit(v) -> if substring(v, 0, 1) == "i" { substring(v, 1, string_length(v)) } else { js_stringify(substring(v, 1, string_length(v))) },
+    XCtor(name, args, c) -> {
+      if name == "()tuple" { "(" ++ join(map(args, x_show), ", ") ++ ")" }
+      else if name == "()" || name == "true" || name == "false" { name }
+      else {
+        match c {
+          Some(XC(_, _, _, _, true)) -> {
+            fn items(q, acc) {
+              match q {
+                XCtor(_, [a, b], Some(XC(_, _, _, "Cons", true))) -> items(b, [x_show(a), ..acc]),
+                XCtor(_, _, Some(XC(_, _, _, "Nil", _))) -> "[" ++ join(reverse(acc), ", ") ++ "]",
+                _ -> "[" ++ join(reverse(["..", ..acc]), ", ") ++ "]",
+              }
+            }
+            items(p, [])
+          },
+          _ -> {
+            let shown = match c { Some(XC(_, _, _, d, _)) -> if d == "" { name } else { d }, None -> name };
+            if is_empty(args) { shown } else { shown ++ "(" ++ join(map(args, x_show), ", ") ++ ")" }
+          },
+        }
+      }
+    },
+  }
+}
+
+// Returns (missing case or "", redundant arm indices).
+fn check_match(adts, cs, scrut_ty, arms) {
+  let st = cs_st(cs);
+  let (rows, redundant) = fold(enumerate(arms), ([], []), |acc, ia| match (acc, ia) {
+    ((rows, red), (i, Arm(pat, guard, _, _, _))) -> {
+      let q = [x_norm(cs, pat)];
+      let red2 = match x_useful(adts, st, rows, q, [scrut_ty]) { None -> append(red, [i]), Some(_) -> red };
+      let rows2 = match guard { None -> append(rows, [q]), Some(_) -> rows };
+      (rows2, red2)
+    },
+  });
+  let missing = match x_useful(adts, st, rows, [XWild], [scrut_ty]) { Some([w, .._]) -> x_show(w), _ -> "" };
+  (missing, redundant)
+}

@@ -15,6 +15,7 @@ export { makeHost };
 // Returns { ok, program, signatures, warnings } or { ok: false, errors }.
 // options.grants: the capabilities granted to `main`, or null for no restriction.
 export function checkSource(source, options = {}) {
+  globalThis.__lumen2Log?.(source, options);
   try {
     const program = check(source, options);
     return { ok: true, program, signatures: program.signatures, warnings: program.warnings };

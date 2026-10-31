@@ -1,0 +1,388 @@
+// =========================================================== declarations
+// The program's names before inference (the first half of check.js): types
+// and constructors, traits and their methods, impls (with derived Show),
+// functions, and the builtins.
+
+// Maps that remember insertion order (the reference iterates JavaScript Maps).
+type OMap<v> { OMap(List<String>, Map<v>) }
+fn om_empty() { OMap([], MEmpty) }
+fn om_get(m, k) { match m { OMap(_, t) -> m_get(t, k) } }
+fn om_has(m, k) { match m { OMap(_, t) -> m_has(t, k) } }
+fn om_set(m, k, v) { match m { OMap(ks, t) -> if m_has(t, k) { OMap(ks, m_set(t, k, v)) } else { OMap([k, ..ks], m_set(t, k, v)) } } }
+fn om_keys(m) { match m { OMap(ks, _) -> reverse(ks) } }
+fn om_values(m) { match m { OMap(ks, t) -> map(reverse(ks), |k| match m_get(t, k) { Some(v) -> v, None -> internal("omap") }) } }
+fn om_size(m) { match m { OMap(ks, _) -> length(ks) } }
+
+// name, key ("Type.Ctor"), index, type name, field types
+type CtorInfo { CtorInfo(String, String, Int, String, List<Ty>) }
+// name, parameters, constructors, span
+type AdtInfo { AdtInfo(String, List<String>, List<CtorInfo>, Int, Int) }
+// name, trait, scheme, the Self variable
+type MethodInfo { MethodInfo(String, String, Ty, Ty) }
+// name, scope, methods in order
+type TraitInfo { TraitInfo(String, String, List<(String, MethodInfo)>) }
+// trait, head, params, where, scope, display, declaration, method keys
+type ImplInfo { ImplInfo(String, String, List<String>, List<(String, List<String>)>, String, String, ImplDecl, List<(String, String)>) }
+
+fn ctor_name(c) { match c { CtorInfo(n, _, _, _, _) -> n } }
+fn ctor_key(c) { match c { CtorInfo(_, k, _, _, _) -> k } }
+fn ctor_idx(c) { match c { CtorInfo(_, _, i, _, _) -> i } }
+fn ctor_adt(c) { match c { CtorInfo(_, _, _, a, _) -> a } }
+fn ctor_fields(c) { match c { CtorInfo(_, _, _, _, fs) -> fs } }
+fn adt_params(a) { match a { AdtInfo(_, ps, _, _, _) -> ps } }
+fn adt_ctors(a) { match a { AdtInfo(_, _, cs, _, _) -> cs } }
+fn adt_name(a) { match a { AdtInfo(n, _, _, _, _) -> n } }
+fn impl_params(i) { match i { ImplInfo(_, _, ps, _, _, _, _, _) -> ps } }
+fn impl_where(i) { match i { ImplInfo(_, _, _, w, _, _, _, _) -> w } }
+fn impl_head(i) { match i { ImplInfo(_, h, _, _, _, _, _, _) -> h } }
+fn impl_scope(i) { match i { ImplInfo(_, _, _, _, s, _, _, _) -> s } }
+fn impl_trait(i) { match i { ImplInfo(t, _, _, _, _, _, _, _) -> t } }
+fn where_of(w, p) { match find(w, |e| match e { (q, _) -> q == p }) { Some((_, cs)) -> cs, None -> [] } }
+fn method_trait(m) { match m { MethodInfo(_, t, _, _) -> t } }
+
+fn refine_where() { "refinement types can annotate the parameters and results of named functions, and let bindings" }
+fn builtin_types() { [("Int", 0), ("Bool", 0), ("String", 0), ("Unit", 0), ("Array", 1)] }
+fn builtin_type_arity(n) { match find(builtin_types(), |e| match e { (k, _) -> k == n }) { Some((_, a)) -> Some(a), None -> None } }
+
+// Declarations, accumulated: types (in order), constructors by scope,
+// traits, methods by scope, impls by trait (in order) and the store.
+type Decls { Decls(OMap<AdtInfo>, Map<CtorInfo>, Map<CtorInfo>, OMap<TraitInfo>, Map<MethodInfo>, Map<MethodInfo>, OMap<OMap<ImplInfo>>, Store) }
+
+fn d_adts(d) { match d { Decls(a, _, _, _, _, _, _, _) -> a } }
+fn d_store(d) { match d { Decls(_, _, _, _, _, _, _, st) -> st } }
+fn d_with_store(d, st) { match d { Decls(a, b, c, e, f, g, h, _) -> Decls(a, b, c, e, f, g, h, st) } }
+
+fn check_type_name(d, name, args, s, e) {
+  let arity = match builtin_type_arity(name) { Some(a) -> Some(a), None -> match om_get(d_adts(d), name) { Some(a) -> Some(length(adt_params(a))), None -> None } };
+  match arity {
+    None -> fail_span("unknown type `" ++ name ++ "`", s, e),
+    Some(a) -> if a != length(args) {
+      fail_span("type `" ++ name ++ "` takes " ++ int_to_string(a) ++ " type argument" ++ (if a == 1 { "" } else { "s" }) ++ ", found " ++ int_to_string(length(args)), s, e)
+    } else { name },
+  }
+}
+
+// A field type in a type declaration: type variables are its parameters.
+fn decl_type(d, te, params) {
+  match te {
+    TVar(n, s, e) -> if contains_str(params, n) { TP(n) } else { fail_span("unknown type variable `" ++ n ++ "` (declare it as a parameter of the type)", s, e) },
+    TCon(n, args, s, e) -> { let name = check_type_name(d, n, args, s, e); TC(name, map(args, |a| decl_type(d, a, params))) },
+    TTuple(es, _, _) -> TT(map(es, |a| decl_type(d, a, params))),
+    TRefine(_, _, _, _, _, s, e) -> fail_span(refine_where(), s, e),
+    TFun(ps, r, eff, _, _) -> {
+      match eff { Some(Eff(_, Some(_), es, ee)) -> fail_span("effect variables are not allowed in type declarations", es, ee), _ -> () };
+      TF(map(ps, |a| decl_type(d, a, params)), decl_type(d, r, params), mk_row(match eff { Some(Eff(ls, _, _, _)) -> ls, None -> [] }, None))
+    },
+  }
+}
+
+fn declare_types(d, decls, scope) {
+  let d = fold(decls, d, |d, td| match (d, td) {
+    (Decls(adts, cp, cu, tr, mp, mu, im, st), TypeDecl(name, params, _, s, e, ns, ne)) -> {
+      if om_has(adts, name) || builtin_type_arity(name) != None { fail_span("type `" ++ name ++ "` is already defined", ns, ne) }
+      else { Decls(om_set(adts, name, AdtInfo(name, params, [], s, e)), cp, cu, tr, mp, mu, im, st) }
+    },
+  });
+  fold(decls, d, |d, td| match td {
+    TypeDecl(name, params, cds, s, e, _, _) -> {
+      let (infos, d) = fold(enumerate(cds), ([], d), |acc, ic| match (acc, ic) {
+        ((infos, d), (idx, CtorDecl(cn, fields, cs, ce))) -> match d {
+          Decls(adts, cp, cu, tr, mp, mu, im, st) -> {
+            if m_has(cp, cn) || m_has(cu, cn) { fail_span("constructor `" ++ cn ++ "` is already defined", cs, ce) }
+            else {
+              let info = CtorInfo(cn, name ++ "." ++ cn, idx, name, map(fields, |f| decl_type(d, f, params)));
+              let d2 = if scope == "prelude" { Decls(adts, m_set(cp, cn, info), cu, tr, mp, mu, im, st) } else { Decls(adts, cp, m_set(cu, cn, info), tr, mp, mu, im, st) };
+              ([info, ..infos], d2)
+            }
+          },
+        },
+      });
+      match d { Decls(adts, cp, cu, tr, mp, mu, im, st) -> Decls(om_set(adts, name, AdtInfo(name, params, reverse(infos), s, e)), cp, cu, tr, mp, mu, im, st) }
+    },
+  })
+}
+
+// Every effect label written must be a known one (checked in the order the
+// reference visits the syntax tree).
+fn known_label(l) { contains_str(["clock", "fail", "input", "output", "random"], l) }
+fn chk_eff(f) {
+  match f { Eff(ls, _, s, e) -> each(ls, |l| if known_label(l) { () } else { fail_span("unknown effect `" ++ l ++ "` (the effects are input, output, clock, random and fail)", s, e) }) }
+}
+fn chk_te(t) {
+  match t {
+    TRefine(_, _, _, base, pred, _, _) -> { chk_te(base); chk_ex(pred) },
+    TFun(ps, r, eff, _, _) -> { each(ps, chk_te); chk_te(r); match eff { Some(f) -> chk_eff(f), None -> () } },
+    TCon(_, args, _, _) -> each(args, chk_te),
+    TTuple(es, _, _) -> each(es, chk_te),
+    TVar(_, _, _) -> (),
+  }
+}
+fn chk_param(p) { match p { Param(_, _, ann, _, _) -> match ann { Some(t) -> chk_te(t), None -> () } } }
+fn chk_ex(x) {
+  match x {
+    ECtor(_, _, Some(args), _, _, _) -> each(args, chk_ex),
+    ETuple(_, es, _, _) -> each(es, chk_ex),
+    ECall(_, f, args, _, _) -> { chk_ex(f); each(args, chk_ex) },
+    EBinop(_, _, l, r, _, _) -> { chk_ex(l); chk_ex(r) },
+    EUnop(_, _, a, _, _) -> chk_ex(a),
+    ELambda(_, ps, b, _, _) -> { each(ps, chk_param); chk_ex(b) },
+    EIf(_, c, t, el, _, _) -> { chk_ex(c); chk_ex(t); match el { Some(y) -> chk_ex(y), None -> () } },
+    EMatch(_, sc, arms, _, _) -> { chk_ex(sc); each(arms, |a| match a { Arm(_, g, b, _, _) -> { match g { Some(y) -> chk_ex(y), None -> () }; chk_ex(b) } }) },
+    EBlock(_, stmts, r, _, _) -> { each(stmts, chk_stmt); match r { Some(y) -> chk_ex(y), None -> () } },
+    _ -> (),
+  }
+}
+fn chk_stmt(s) {
+  match s {
+    SLet(_, _, ann, v, _, _) -> { match ann { Some(t) -> chk_te(t), None -> () }; chk_ex(v) },
+    SExpr(x) -> chk_ex(x),
+    SFn(f) -> chk_fn(f),
+  }
+}
+fn chk_fn(f) {
+  match f { Fn(_, _, ps, r, eff, body, _, _, _, _, _) -> { each(ps, chk_param); match r { Some(t) -> chk_te(t), None -> () }; match eff { Some(x) -> chk_eff(x), None -> () }; chk_ex(body) } }
+}
+fn check_effect_labels(a) {
+  match a {
+    Ast(types, fns, traits, impls, props) -> {
+      each(types, |t| match t { TypeDecl(_, _, cs, _, _, _, _) -> each(cs, |c| match c { CtorDecl(_, fs, _, _) -> each(fs, chk_te) }) });
+      each(fns, chk_fn);
+      each(traits, |t| match t { TraitDecl(_, ms, _, _, _, _) -> each(ms, |m| match m {
+        MethodDecl(_, ps, r, eff, _, _, _, _) -> { each(ps, chk_param); match r { Some(t) -> chk_te(t), None -> () }; match eff { Some(x) -> chk_eff(x), None -> () } },
+      }) });
+      each(impls, |i| match i { ImplDecl(_, _, _, ft, _, ms, _, _) -> { chk_te(ft); each(ms, chk_fn) } });
+      each(props, chk_fn)
+    },
+  }
+}
+
+// ----------------------------------------------------- signatures' types
+// Inside a declaration, lowercase type names are type variables shared by
+// the whole declaration (tvars), and so are effect variables (rvars).
+type SigCtx { SigCtx(Int, Map<Ty>, Map<Int>, Option<Ty>) }   // level, tvars, rvars, Self
+
+fn sig_type(d, te, sc) {
+  match te {
+    TVar(n, _, _) -> match sc {
+      SigCtx(level, tv, rv, self) -> match m_get(tv, n) {
+        Some(t) -> (t, d, sc),
+        None -> { let (v, st) = new_var(d_store(d), level, []); (v, d_with_store(d, st), SigCtx(level, m_set(tv, n, v), rv, self)) },
+      },
+    },
+    TCon(n, args, s, e) -> if n == "Self" {
+      match sc { SigCtx(_, _, _, Some(t)) -> (t, d, sc), _ -> fail_span("`Self` can only be used in a trait", s, e) }
+    } else {
+      let name = check_type_name(d, n, args, s, e);
+      let (ts, d, sc) = sig_types(d, args, sc);
+      (TC(name, ts), d, sc)
+    },
+    TTuple(es, _, _) -> { let (ts, d, sc) = sig_types(d, es, sc); (TT(ts), d, sc) },
+    TFun(ps, r, eff, _, _) -> {
+      let (pts, d, sc) = sig_types(d, ps, sc);
+      let (rt, d, sc) = sig_type(d, r, sc);
+      let (row, d, sc) = sig_effect(d, eff, sc);
+      (TF(pts, rt, row), d, sc)
+    },
+    TRefine(_, _, _, _, _, s, e) -> fail_span(refine_where(), s, e),
+  }
+}
+fn sig_types(d, ts, sc) {
+  match ts { [] -> ([], d, sc), [t, ..rest] -> { let (u, d, sc) = sig_type(d, t, sc); let (us, d, sc) = sig_types(d, rest, sc); ([u, ..us], d, sc) } }
+}
+fn sig_effect(d, eff, sc) {
+  match eff {
+    None -> (pure_row(), d, sc),
+    Some(Eff(ls, tail, _, _)) -> match tail {
+      None -> (mk_row(ls, None), d, sc),
+      Some(tn) -> match sc {
+        SigCtx(level, tv, rv, self) -> match m_get(rv, tn) {
+          Some(r) -> (mk_row(ls, Some(r)), d, sc),
+          None -> { let (r, st) = new_rvar(d_store(d), level); (mk_row(ls, Some(r)), d_with_store(d, st), SigCtx(level, tv, m_set(rv, tn, r), self)) },
+        },
+      },
+    },
+  }
+}
+
+// ------------------------------------------------------------------ traits
+fn declare_trait(d, td, scope) {
+  match td {
+    TraitDecl(name, ms, _, _, ns, ne) -> {
+      if om_has(match d { Decls(_, _, _, tr, _, _, _, _) -> tr }, name) { fail_span("trait `" ++ name ++ "` is already defined", ns, ne) } else { () };
+      let d = match d { Decls(a, b, c, tr, mp, mu, im, st) -> Decls(a, b, c, om_set(tr, name, TraitInfo(name, scope, [])), mp, mu, om_set(im, name, om_empty()), st) };
+      fold(ms, d, |d, m| match m {
+        MethodDecl(mname, params, ret, eff, _, _, mns, mne) -> {
+          match d { Decls(_, _, _, _, mp, mu, _, _) -> if m_has(mp, mname) || m_has(mu, mname) { fail_span("`" ++ mname ++ "` is already a trait method", mns, mne) } else { () } };
+          let (self, st) = new_var(d_store(d), 1, [name]);
+          let d = d_with_store(d, st);
+          let sc = SigCtx(1, MEmpty, MEmpty, Some(self));
+          if is_empty(params) || any(params, |p| match p { Param(_, _, ann, _, _) -> ann == None }) {
+            fail_span("the parameters of trait method `" ++ mname ++ "` need types, and the first must be `Self`", mns, mne)
+          } else { () };
+          let (pts, d, sc) = sig_types(d, map(params, |p| match p { Param(_, _, Some(t), _, _) -> t, _ -> internal("param") }), sc);
+          match (list_get(pts, 0), self, list_get(params, 0)) {
+            (TV(a), TV(b), _) -> if a == b { () } else { match list_get(params, 0) { Param(_, _, _, s, e) -> fail_span("the first parameter of trait method `" ++ mname ++ "` must have type `Self`", s, e) } },
+            (_, _, Param(_, _, _, s, e)) -> fail_span("the first parameter of trait method `" ++ mname ++ "` must have type `Self`", s, e),
+          };
+          let (rt, d, sc) = match ret { Some(t) -> sig_type(d, t, sc), None -> (t_unit(), d, sc) };
+          let (row, d, _) = sig_effect(d, eff, sc);
+          let ty = TF(pts, rt, row);
+          let d = d_with_store(d, generalize(d_store(d), ty, 0));
+          let mi = MethodInfo(mname, name, ty, self);
+          match d {
+            Decls(a, b, c, tr, mp, mu, im, st) -> {
+              let tr2 = match om_get(tr, name) { Some(TraitInfo(n, s, list)) -> om_set(tr, name, TraitInfo(n, s, append(list, [(mname, mi)]))), None -> tr };
+              if scope == "prelude" { Decls(a, b, c, tr2, m_set(mp, mname, mi), mu, im, st) } else { Decls(a, b, c, tr2, mp, m_set(mu, mname, mi), im, st) }
+            },
+          }
+        },
+      })
+    },
+  }
+}
+
+fn te_tvar_name(t) { match t { TVar(n, _, _) -> n, _ -> "" } }
+fn ctors_declared_in(user_ast, name) {
+  match user_ast { Ast(types, _, _, _, _) -> if any(types, |t| match t { TypeDecl(n, _, _, _, _, _, _) -> n == name }) { "user" } else { "prelude" } }
+}
+
+// An impl: its trait, type head and parameters, and its `where` constraints.
+fn declare_impl(d, idecl, scope, user_ast) {
+  match idecl {
+    ImplDecl(trn, ts, tend, te, where_cs, methods, _, _) -> {
+      let tr = match d { Decls(_, _, _, trs, _, _, _, _) -> match om_get(trs, trn) { Some(t) -> t, None -> fail_span("unknown trait `" ++ trn ++ "`", ts, tend) } };
+      let (head, args, display0) = match te {
+        TCon(n, as, s, e) -> {
+          if n != "Self" { let _ = check_type_name(d, n, as, s, e); () } else { () };
+          (n, as, if is_empty(as) { n } else { n ++ "<" ++ join(map(as, te_tvar_name), ", ") ++ ">" })
+        },
+        TTuple(es, _, _) -> ("(" ++ int_to_string(length(es)) ++ ")", es, "(" ++ join(map(es, te_tvar_name), ", ") ++ ")"),
+        _ -> fail_span("an impl is for a named type or a tuple type", te_s(te), te_e(te)),
+      };
+      let display = if head == "Unit" { "()" } else { display0 };
+      let params = map(args, |a| match a { TVar(n, _, _) -> n, _ -> fail_span("the type in an impl takes distinct type variables as arguments, like `List<a>`", te_s(a), te_e(a)) });
+      if length(uniq_sorted(sort_strings(params))) != length(params) { fail_span("the type variables of an impl must be distinct", te_s(te), te_e(te)) } else { () };
+      let tscope = match tr { TraitInfo(_, s, _) -> s };
+      let has_adt = match d { Decls(adts, _, _, _, _, _, _, _) -> om_has(adts, head) };
+      let builtin = tscope == "prelude" && scope == "user" && !(has_adt && ctors_declared_in(user_ast, head) == "user");
+      if builtin { fail_at("only types declared in this program can have their own `impl " ++ trn ++ "`", te_s(te), te_e(te), Some(display ++ " already has one")) } else { () };
+      let impls_of = match d { Decls(_, _, _, _, _, _, im, _) -> match om_get(im, trn) { Some(m) -> m, None -> om_empty() } };
+      if om_has(impls_of, head) { fail_span("`" ++ display ++ "` already implements `" ++ trn ++ "`", te_s(te), te_e(te)) } else { () };
+      let wh = fold(where_cs, [], |acc, w| match w {
+        WhereC(p, cs, vs, ve) -> {
+          if !contains_str(params, p) { fail_span("`" ++ p ++ "` is not a type variable of this impl", vs, ve) } else { () };
+          each(cs, |c| match c { (cn, cs2, ce) -> match d { Decls(_, _, _, trs, _, _, _, _) -> if om_has(trs, cn) { () } else { fail_span("unknown trait `" ++ cn ++ "`", cs2, ce) } } });
+          let names = map(cs, |c| match c { (cn, _, _) -> cn });
+          match find(acc, |e| match e { (q, _) -> q == p }) {
+            Some((_, old)) -> map(acc, |e| match e { (q, ts2) -> if q == p { (q, append(ts2, names)) } else { e } }),
+            None -> append(acc, [(p, names)]),
+          }
+        },
+      });
+      let tmethods = match tr { TraitInfo(_, _, ms) -> ms };
+      let given = fold(methods, [], |acc, f| match f {
+        Fn(_, fname, _, _, _, _, _, _, fns, fne, _) -> {
+          if !any(tmethods, |m| match m { (n, _) -> n == fname }) { fail_span("`" ++ fname ++ "` is not a method of `" ++ trn ++ "`", fns, fne) } else { () };
+          if contains_str(acc, fname) { fail_span("`" ++ fname ++ "` is defined twice in this impl", fns, fne) } else { () };
+          append(acc, [fname])
+        },
+      });
+      each(tmethods, |m| match m { (n, _) -> if contains_str(given, n) { () } else { fail_span("`impl " ++ trn ++ " for " ++ display ++ "` is missing the method `" ++ n ++ "`", te_s(te), te_e(te)) } });
+      let keys = map(given, |m| (m, "impl:" ++ trn ++ ":" ++ head ++ ":" ++ m));
+      let info = ImplInfo(trn, head, params, wh, scope, display, idecl, keys);
+      match d { Decls(a, b, c, trs, mp, mu, im, st) -> Decls(a, b, c, trs, mp, mu, om_set(im, trn, om_set(impls_of, head, info)), st) }
+    },
+  }
+}
+
+// Derived `impl Show` for every type without functions in it that has none,
+// written as source text and parsed (a greatest fixed point decides which
+// types qualify). Returns the declarations and the derived impls' trees.
+fn derive_shows(d, next_id, user_ast) {
+  let adts = d_adts(d);
+  let shows = match d { Decls(_, _, _, _, _, _, im, _) -> match om_get(im, "Show") { Some(m) -> m, None -> om_empty() } };
+  let start = filter(om_keys(adts), |n| !om_has(shows, n));
+  fn showable(derive, t) {
+    match t {
+      TP(_) -> true,
+      TF(_, _, _) -> false,
+      TT(es) -> match om_get(shows, "(" ++ int_to_string(length(es)) ++ ")") { Some(_) -> all(es, |e| showable(derive, e)), None -> false },
+      TC(n, args) -> match om_get(shows, n) {
+        Some(im) -> all(enumerate(impl_params(im)), |ip| match ip { (i, p) -> all(where_of(impl_where(im), p), |c| c == "Show") && showable(derive, list_get(args, i)) }),
+        None -> contains_str(derive, n) && all(args, |a| showable(derive, a)),
+      },
+      _ -> false,
+    }
+  }
+  fn fix(derive) {
+    // One pass over the set in order, removing as the reference's loop does.
+    fn pass(rest, derive, changed) {
+      match rest {
+        [] -> (derive, changed),
+        [n, ..more] -> match om_get(adts, n) {
+          Some(a) -> if any(adt_ctors(a), |c| any(ctor_fields(c), |f| !showable(derive, f))) { pass(more, filter(derive, |x| x != n), true) } else { pass(more, derive, changed) },
+          None -> pass(more, derive, changed),
+        },
+      }
+    }
+    let (d2, changed) = pass(derive, derive, false);
+    if changed { fix(d2) } else { d2 }
+  }
+  let derive = fix(start);
+  fold(derive, (d, next_id, []), |acc, n| match acc {
+    (d, next_id, asts) -> match om_get(adts, n) {
+      Some(a) -> {
+        let ps = adt_params(a);
+        let ty = if is_empty(ps) { n } else { n ++ "<" ++ join(ps, ", ") ++ ">" };
+        let wh = if is_empty(ps) { "" } else { " where " ++ join(map(ps, |p| p ++ ": Show"), ", ") };
+        let arms = map(adt_ctors(a), |c| {
+          let cn = ctor_name(c);
+          let fs = ctor_fields(c);
+          if is_empty(fs) { cn ++ " -> \"" ++ cn ++ "\"" } else {
+            let xs = map(range(0, length(fs)), |i| "a" ++ int_to_string(i));
+            cn ++ "(" ++ join(xs, ", ") ++ ") -> \"" ++ cn ++ "(\" ++ " ++ join(map(xs, |x| "show(" ++ x ++ ")"), " ++ \", \" ++ ") ++ " ++ \")\""
+          }
+        });
+        let text = "impl Show for " ++ ty ++ wh ++ " { fn show(x) { match x { " ++ join(arms, ", ") ++ " } } }";
+        let (ast, nid) = parse(text, next_id);
+        let idecl = match ast { Ast(_, _, _, [i, .._], _) -> i, _ -> internal("derived impl") };
+        (declare_impl(d, idecl, "derived", user_ast), nid, append(asts, [(idecl, text)]))
+      },
+      None -> acc,
+    },
+  })
+}
+
+// ---------------------------------------------------------------- builtins
+fn builtin_names() {
+  ["print", "println", "read_input", "read_line", "clock_ms", "random_int", "int_to_string", "concat_strings", "string_length",
+   "substring", "char_code_at", "char_from_code", "panic", "array_make", "array_empty", "array_get", "array_set", "array_length", "array_push"]
+}
+// Names a JavaScript object has without being given them (`name in builtins`
+// is true for these in the reference, which affects function keys).
+fn js_object_names() {
+  ["constructor", "hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable", "toLocaleString", "toString", "valueOf",
+   "__proto__", "__defineGetter__", "__defineSetter__", "__lookupGetter__", "__lookupSetter__"]
+}
+fn builtin_table(st) {
+  let (a, st) = new_var(st, generic(), []);
+  let f = |ps, r, ls| TF(ps, r, mk_row(ls, None));
+  let s = t_string();
+  let i = t_int();
+  let t = [("print", f([s], t_unit(), ["output"])), ("println", f([s], t_unit(), ["output"])), ("read_input", f([], s, ["input"])),
+    ("read_line", f([], s, ["input"])), ("clock_ms", f([], i, ["clock"])), ("random_int", f([i, i], i, ["random"])),
+    ("int_to_string", f([i], s, [])), ("concat_strings", f([TC("List", [s])], s, [])), ("string_length", f([s], i, [])),
+    ("substring", f([s, i, i], s, [])), ("char_code_at", f([s, i], i, ["fail"])), ("char_from_code", f([i], s, [])),
+    ("panic", f([s], a, ["fail"]))];
+  let (b, st) = new_var(st, generic(), []);
+  let (c, st) = new_var(st, generic(), []);
+  let (dd, st) = new_var(st, generic(), []);
+  let (e, st) = new_var(st, generic(), []);
+  let (ff, st) = new_var(st, generic(), []);
+  let (g, st) = new_var(st, generic(), []);
+  let arr = |x| TC("Array", [x]);
+  let t2 = append(t, [("array_make", f([i, b], arr(b), ["fail"])), ("array_empty", f([], arr(c), [])), ("array_get", f([arr(dd), i], dd, ["fail"])),
+    ("array_set", f([arr(e), i, e], arr(e), ["fail"])), ("array_length", f([arr(ff)], i, [])), ("array_push", f([arr(g), g], arr(g), []))]);
+  (fold(t2, MEmpty, |m, kv| match kv { (k, v) -> m_set(m, k, v) }), st)
+}
+fn partial_builtin(n) { n == "array_get" || n == "array_set" || n == "char_code_at" || n == "array_make" }

@@ -1,0 +1,86 @@
+// ===================================================== debugging dumps
+// Canonical text for intermediate results, which the port's parity tests
+// compare with the reference compiler's (compiler/parity.mjs).
+
+fn d_sp(s, e) { "@" ++ int_to_string(s) ++ "-" ++ int_to_string(e) }
+fn d_list(xs, f) { "(" ++ join(map(xs, f), " ") ++ ")" }
+fn d_opt(o, f) { match o { Some(x) -> f(x), None -> "_" } }
+
+fn d_eff(f) {
+  match f { Eff(ls, tail, s, e) -> "(eff " ++ d_list(ls, |l| l) ++ " " ++ d_opt(tail, |t| t) ++ " " ++ d_sp(s, e) ++ ")" }
+}
+fn d_te(t) {
+  match t {
+    TRefine(v, vs, ve, base, pred, s, e) -> "(refine " ++ v ++ " " ++ d_sp(vs, ve) ++ " " ++ d_te(base) ++ " " ++ d_ex(pred) ++ " " ++ d_sp(s, e) ++ ")",
+    TFun(ps, r, eff, s, e) -> "(tfun " ++ d_list(ps, d_te) ++ " " ++ d_te(r) ++ " " ++ d_opt(eff, d_eff) ++ " " ++ d_sp(s, e) ++ ")",
+    TCon(n, args, s, e) -> "(tcon " ++ n ++ " " ++ d_list(args, d_te) ++ " " ++ d_sp(s, e) ++ ")",
+    TTuple(es, s, e) -> "(ttuple " ++ d_list(es, d_te) ++ " " ++ d_sp(s, e) ++ ")",
+    TVar(n, s, e) -> "(tvar " ++ n ++ " " ++ d_sp(s, e) ++ ")",
+  }
+}
+fn d_pat(p) {
+  match p {
+    PWild(_, s, e) -> "(pwild " ++ d_sp(s, e) ++ ")",
+    PVar(_, n, s, e) -> "(pvar " ++ n ++ " " ++ d_sp(s, e) ++ ")",
+    PInt(_, v, s, e) -> "(pint " ++ int_to_string(v) ++ " " ++ d_sp(s, e) ++ ")",
+    PStr(_, v, s, e) -> "(pstr " ++ json_str(v) ++ " " ++ d_sp(s, e) ++ ")",
+    PBool(_, v, s, e) -> "(pbool " ++ (if v { "true" } else { "false" }) ++ " " ++ d_sp(s, e) ++ ")",
+    PUnit(_, s, e) -> "(punit " ++ d_sp(s, e) ++ ")",
+    PTuple(_, es, s, e) -> "(ptuple " ++ d_list(es, d_pat) ++ " " ++ d_sp(s, e) ++ ")",
+    PCtor(_, n, args, l, s, e) -> "(pctor " ++ n ++ (if l { " list " } else { " " }) ++ d_list(args, d_pat) ++ " " ++ d_sp(s, e) ++ ")",
+  }
+}
+fn d_param(p) { match p { Param(_, n, ann, s, e) -> "(param " ++ n ++ " " ++ d_opt(ann, d_te) ++ " " ++ d_sp(s, e) ++ ")" } }
+fn d_ex(x) {
+  match x {
+    EInt(_, v, s, e) -> "(int " ++ int_to_string(v) ++ " " ++ d_sp(s, e) ++ ")",
+    EStr(_, v, s, e) -> "(str " ++ json_str(v) ++ " " ++ d_sp(s, e) ++ ")",
+    EBool(_, v, s, e) -> "(bool " ++ (if v { "true" } else { "false" }) ++ " " ++ d_sp(s, e) ++ ")",
+    EVar(_, n, s, e) -> "(var " ++ n ++ " " ++ d_sp(s, e) ++ ")",
+    ECtor(_, n, args, l, s, e) -> "(ctor " ++ n ++ (if l { " list " } else { " " }) ++ d_opt(args, |a| d_list(a, d_ex)) ++ " " ++ d_sp(s, e) ++ ")",
+    EUnit(_, s, e) -> "(unit " ++ d_sp(s, e) ++ ")",
+    ETuple(_, es, s, e) -> "(tuple " ++ d_list(es, d_ex) ++ " " ++ d_sp(s, e) ++ ")",
+    ECall(_, f, args, s, e) -> "(call " ++ d_ex(f) ++ " " ++ d_list(args, d_ex) ++ " " ++ d_sp(s, e) ++ ")",
+    EBinop(_, op, l, r, s, e) -> "(binop " ++ op ++ " " ++ d_ex(l) ++ " " ++ d_ex(r) ++ " " ++ d_sp(s, e) ++ ")",
+    EUnop(_, op, a, s, e) -> "(unop " ++ op ++ " " ++ d_ex(a) ++ " " ++ d_sp(s, e) ++ ")",
+    ELambda(_, ps, body, s, e) -> "(lambda " ++ d_list(ps, d_param) ++ " " ++ d_ex(body) ++ " " ++ d_sp(s, e) ++ ")",
+    EIf(_, c, t, el, s, e) -> "(if " ++ d_ex(c) ++ " " ++ d_ex(t) ++ " " ++ d_opt(el, d_ex) ++ " " ++ d_sp(s, e) ++ ")",
+    EMatch(_, sc, arms, s, e) -> "(match " ++ d_ex(sc) ++ " " ++ d_list(arms, d_arm) ++ " " ++ d_sp(s, e) ++ ")",
+    EBlock(_, stmts, r, s, e) -> "(block " ++ d_list(stmts, d_stmt) ++ " " ++ d_opt(r, d_ex) ++ " " ++ d_sp(s, e) ++ ")",
+  }
+}
+fn d_arm(a) { match a { Arm(p, g, b, s, e) -> "(arm " ++ d_pat(p) ++ " " ++ d_opt(g, d_ex) ++ " " ++ d_ex(b) ++ " " ++ d_sp(s, e) ++ ")" } }
+fn d_stmt(st) {
+  match st {
+    SLet(_, p, ann, v, s, e) -> "(let " ++ d_pat(p) ++ " " ++ d_opt(ann, d_te) ++ " " ++ d_ex(v) ++ " " ++ d_sp(s, e) ++ ")",
+    SExpr(x) -> "(expr " ++ d_ex(x) ++ ")",
+    SFn(f) -> "(fndecl " ++ d_fn(f) ++ ")",
+  }
+}
+fn d_fn(f) {
+  match f {
+    Fn(_, n, ps, r, eff, body, s, e, ns, ne, prop) ->
+      "(fn " ++ n ++ (if prop { " property " } else { " " }) ++ d_list(ps, d_param) ++ " " ++ d_opt(r, d_te) ++ " " ++ d_opt(eff, d_eff) ++ " " ++ d_ex(body) ++ " " ++ d_sp(s, e) ++ " " ++ d_sp(ns, ne) ++ ")",
+  }
+}
+fn d_ast(a) {
+  match a {
+    Ast(types, fns, traits, impls, props) -> join([
+      join(map(types, |t| match t {
+        TypeDecl(n, ps, cs, s, e, ns, ne) -> "(type " ++ n ++ " " ++ d_list(ps, |x| x) ++ " " ++ d_list(cs, |c| match c { CtorDecl(cn, fs, cs2, ce) -> "(ctor " ++ cn ++ " " ++ d_list(fs, d_te) ++ " " ++ d_sp(cs2, ce) ++ ")" }) ++ " " ++ d_sp(s, e) ++ " " ++ d_sp(ns, ne) ++ ")",
+      }), "\n"),
+      join(map(fns, d_fn), "\n"),
+      join(map(traits, |t| match t {
+        TraitDecl(n, ms, s, e, ns, ne) -> "(trait " ++ n ++ " " ++ d_list(ms, |m| match m {
+          MethodDecl(mn, ps, r, eff, ms2, me, mns, mne) -> "(method " ++ mn ++ " " ++ d_list(ps, d_param) ++ " " ++ d_opt(r, d_te) ++ " " ++ d_opt(eff, d_eff) ++ " " ++ d_sp(ms2, me) ++ " " ++ d_sp(mns, mne) ++ ")",
+        }) ++ " " ++ d_sp(s, e) ++ " " ++ d_sp(ns, ne) ++ ")",
+      }), "\n"),
+      join(map(impls, |i| match i {
+        ImplDecl(tr, ts, tend, ft, ws, ms, s, e) -> "(impl " ++ tr ++ " " ++ d_sp(ts, tend) ++ " " ++ d_te(ft) ++ " " ++ d_list(ws, |w| match w {
+          WhereC(v, cs, vs, ve) -> "(where " ++ v ++ " " ++ d_list(cs, |c| match c { (cn, cs2, ce) -> cn ++ d_sp(cs2, ce) }) ++ " " ++ d_sp(vs, ve) ++ ")",
+        }) ++ " " ++ d_list(ms, d_fn) ++ " " ++ d_sp(s, e) ++ ")",
+      }), "\n"),
+      join(map(props, d_fn), "\n"),
+    ], "\n--\n")
+  }
+}

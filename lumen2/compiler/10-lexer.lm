@@ -1,0 +1,117 @@
+// ==================================================================== lexer
+// Source text (bytes) -> tokens with spans. A string literal's value is its
+// bytes (the source is UTF-8, so a literal's characters arrive encoded).
+
+// A token: kind ("int", "str", "lower", "upper", "eof", a keyword or a
+// punctuation mark), value (a literal's digits or bytes, or a name), span.
+type Tok { Tok(String, String, Int, Int) }
+
+fn tok_kind(t) { match t { Tok(k, _, _, _) -> k } }
+fn tok_val(t) { match t { Tok(_, v, _, _) -> v } }
+fn tok_s(t) { match t { Tok(_, _, s, _) -> s } }
+fn tok_e(t) { match t { Tok(_, _, _, e) -> e } }
+
+fn is_keyword(s) {
+  s == "fn" || s == "let" || s == "if" || s == "else" || s == "match" || s == "type" || s == "true" || s == "false"
+    || s == "trait" || s == "impl" || s == "for" || s == "where" || s == "property"
+}
+
+// Longest first, so that `|>` wins over `|`.
+fn puncts() {
+  ["|>", "->", "=>", "==", "!=", "<=", ">=", "&&", "||", "++", "..",
+   "(", ")", "{", "}", "[", "]", ",", ";", ":", "<", ">", "+", "-", "*", "/", "%", "!", "=", "|"]
+}
+
+fn hex_value(c) { if digit(c) { c - 48 } else if c >= 97 && c <= 102 { c - 87 } else if c >= 65 && c <= 70 { c - 55 } else { 0 - 1 } }
+
+// The length in bytes of the whitespace character at i (JavaScript's \s,
+// including the Unicode spaces, as UTF-8), or 0.
+fn space_len(src, i) {
+  let c = code_at(src, i);
+  if c == 32 || (c >= 9 && c <= 13) { 1 }
+  else if c == 194 && code_at(src, i + 1) == 160 { 2 }
+  else if c == 225 && code_at(src, i + 1) == 154 && code_at(src, i + 2) == 128 { 3 }
+  else if c == 226 && code_at(src, i + 1) == 128 && ((code_at(src, i + 2) >= 128 && code_at(src, i + 2) <= 138) || code_at(src, i + 2) == 168 || code_at(src, i + 2) == 169 || code_at(src, i + 2) == 175) { 3 }
+  else if c == 226 && code_at(src, i + 1) == 129 && code_at(src, i + 2) == 159 { 3 }
+  else if c == 227 && code_at(src, i + 1) == 128 && code_at(src, i + 2) == 128 { 3 }
+  else if c == 239 && code_at(src, i + 1) == 187 && code_at(src, i + 2) == 191 { 3 }
+  else { 0 }
+}
+
+// The UTF-8 character at i: its byte length.
+fn utf8_len(src, i) {
+  let c = code_at(src, i);
+  if c < 128 { 1 } else if c >= 240 { 4 } else if c >= 224 { 3 } else if c >= 192 { 2 } else { 1 }
+}
+
+fn lex(src) {
+  let n = string_length(src);
+  fn skip_line(i) { if i >= n || code_at(src, i) == 10 { i } else { skip_line(i + 1) } }
+  fn skip_block(start, i, depth) {
+    let (i2, d2) = if starts_at(src, i, "/*") { (i + 2, depth + 1) } else if starts_at(src, i, "*/") { (i + 2, depth - 1) } else { (i + 1, depth) };
+    if i2 >= n && d2 > 0 { fail_span("unterminated comment", start, start + 2) }
+    else if d2 > 0 { skip_block(start, i2, d2) } else { i2 }
+  }
+  fn scan_while(i, p) { if i < n && p(code_at(src, i)) { scan_while(i + 1, p) } else { i } }
+  fn scan_string(start, i, acc) {
+    let c = code_at(src, i);
+    if i >= n || c == 10 { fail_span("unterminated string literal", start, i) }
+    else if c == 34 { (i + 1, cat_rev(acc)) }
+    else if c == 92 {
+      let e = code_at(src, i + 1);
+      if e == 110 { scan_string(start, i + 2, ["\n", ..acc]) }
+      else if e == 116 { scan_string(start, i + 2, ["\t", ..acc]) }
+      else if e == 114 { scan_string(start, i + 2, [char_from_code(13), ..acc]) }
+      else if e == 48 { scan_string(start, i + 2, [char_from_code(0), ..acc]) }
+      else if e == 92 || e == 34 || e == 39 { scan_string(start, i + 2, [char_from_code(e), ..acc]) }
+      else if e == 120 && i + 3 < n && hex_value(code_at(src, i + 2)) >= 0 && hex_value(code_at(src, i + 3)) >= 0 {
+        scan_string(start, i + 4, [char_from_code(hex_value(code_at(src, i + 2)) * 16 + hex_value(code_at(src, i + 3))), ..acc])
+      }
+      else { fail_span("unknown escape sequence", i, i + 2) }
+    } else {
+      let j = scan_while(i, |d| d != 34 && d != 92 && d != 10);
+      scan_string(start, j, [substring(src, i, j), ..acc])
+    }
+  }
+  fn no_underscores(s) {
+    fn go(k, start, acc) {
+      if k >= string_length(s) { cat_rev([substring(s, start, k), ..acc]) }
+      else if char_code_at(s, k) == 95 { go(k + 1, k + 1, [substring(s, start, k), ..acc]) }
+      else { go(k + 1, start, acc) }
+    }
+    go(0, 0, [])
+  }
+  fn punct(i, ps) {
+    match ps { [] -> "", [p, ..rest] -> if starts_at(src, i, p) { p } else { punct(i, rest) } }
+  }
+  fn go(i, toks) {
+    if i >= n { array_push(toks, Tok("eof", "", n, n)) }
+    else {
+      let c = code_at(src, i);
+      let sp = space_len(src, i);
+      if sp > 0 { go(i + sp, toks) }
+      else if starts_at(src, i, "//") { go(skip_line(i), toks) }
+      else if starts_at(src, i, "/*") { go(skip_block(i, i, 0), toks) }
+      else if digit(c) {
+        let j = scan_while(i, |d| digit(d) || d == 95);
+        if j < n && (upper(code_at(src, j)) || (code_at(src, j) >= 97 && code_at(src, j) <= 122)) { fail_span("invalid number literal", i, j + 1) }
+        else { go(j, array_push(toks, Tok("int", no_underscores(substring(src, i, j)), i, j))) }
+      }
+      else if alpha(c) {
+        let j = scan_while(i, alnum);
+        let s = substring(src, i, j);
+        if is_keyword(s) { go(j, array_push(toks, Tok(s, "", i, j))) }
+        else { go(j, array_push(toks, Tok(if upper(c) { "upper" } else { "lower" }, s, i, j))) }
+      }
+      else if c == 34 { let (j, s) = scan_string(i, i + 1, []); go(j, array_push(toks, Tok("str", s, i, j))) }
+      else {
+        let p = punct(i, puncts());
+        if p == "" {
+          let w = utf8_len(src, i);
+          fail_span("unexpected character `" ++ substring(src, i, i + w) ++ "`", i, i + w)
+        } else { go(i + string_length(p), array_push(toks, Tok(p, "", i, i + string_length(p)))) }
+      }
+    }
+  }
+  go(0, array_empty())
+}

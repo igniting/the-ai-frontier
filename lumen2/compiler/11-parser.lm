@@ -1,0 +1,652 @@
+// =================================================================== parser
+// Recursive descent, producing a syntax tree with spans. Desugarings done
+// here, so later phases see a smaller language:
+//   [a, b, ..rest]  ->  Cons(a, Cons(b, rest))   (expressions and patterns)
+//   x |> f(a)       ->  f(x, a)        x |> f  ->  f(x)
+//   -<int literal>  ->  negative literal
+// Every expression, pattern, parameter and function carries a node id (the
+// first field), unique within a compile, which the checker's tables key by.
+
+type Eff { Eff(List<String>, Option<String>, Int, Int) }   // labels, tail, span
+type TE {
+  TRefine(String, Int, Int, TE, Ex, Int, Int),   // name, its span, base, predicate, span
+  TFun(List<TE>, TE, Option<Eff>, Int, Int),
+  TCon(String, List<TE>, Int, Int),
+  TTuple(List<TE>, Int, Int),
+  TVar(String, Int, Int)
+}
+type Pat {
+  PWild(Int, Int, Int), PVar(Int, String, Int, Int), PInt(Int, Int, Int, Int), PStr(Int, String, Int, Int),
+  PBool(Int, Bool, Int, Int), PUnit(Int, Int, Int), PTuple(Int, List<Pat>, Int, Int),
+  PCtor(Int, String, List<Pat>, Bool, Int, Int)   // the Bool: from list syntax
+}
+type Ex {
+  EInt(Int, Int, Int, Int), EStr(Int, String, Int, Int), EBool(Int, Bool, Int, Int), EVar(Int, String, Int, Int),
+  ECtor(Int, String, Option<List<Ex>>, Bool, Int, Int), EUnit(Int, Int, Int), ETuple(Int, List<Ex>, Int, Int),
+  ECall(Int, Ex, List<Ex>, Int, Int), EBinop(Int, String, Ex, Ex, Int, Int), EUnop(Int, String, Ex, Int, Int),
+  ELambda(Int, List<Param>, Ex, Int, Int), EIf(Int, Ex, Ex, Option<Ex>, Int, Int), EMatch(Int, Ex, List<Arm>, Int, Int),
+  EBlock(Int, List<Stmt>, Option<Ex>, Int, Int)
+}
+type Param { Param(Int, String, Option<TE>, Int, Int) }
+type Arm { Arm(Pat, Option<Ex>, Ex, Int, Int) }
+type Stmt { SLet(Int, Pat, Option<TE>, Ex, Int, Int), SExpr(Ex), SFn(Fn) }
+// id, name, params, result, effect, body, span, name span, property?
+type Fn { Fn(Int, String, List<Param>, Option<TE>, Option<Eff>, Ex, Int, Int, Int, Int, Bool) }
+type CtorDecl { CtorDecl(String, List<TE>, Int, Int) }
+type TypeDecl { TypeDecl(String, List<String>, List<CtorDecl>, Int, Int, Int, Int) }
+// name, params, result, effect, span, name span
+type MethodDecl { MethodDecl(String, List<Param>, Option<TE>, Option<Eff>, Int, Int, Int, Int) }
+type TraitDecl { TraitDecl(String, List<MethodDecl>, Int, Int, Int, Int) }
+type WhereC { WhereC(String, List<(String, Int, Int)>, Int, Int) }
+// trait, its span, for type, where, methods, span
+type ImplDecl { ImplDecl(String, Int, Int, TE, List<WhereC>, List<Fn>, Int, Int) }
+type Ast { Ast(List<TypeDecl>, List<Fn>, List<TraitDecl>, List<ImplDecl>, List<Fn>) }
+
+fn ex_id(e) {
+  match e {
+    EInt(i, _, _, _) -> i, EStr(i, _, _, _) -> i, EBool(i, _, _, _) -> i, EVar(i, _, _, _) -> i, ECtor(i, _, _, _, _, _) -> i,
+    EUnit(i, _, _) -> i, ETuple(i, _, _, _) -> i, ECall(i, _, _, _, _) -> i, EBinop(i, _, _, _, _, _) -> i, EUnop(i, _, _, _, _) -> i,
+    ELambda(i, _, _, _, _) -> i, EIf(i, _, _, _, _, _) -> i, EMatch(i, _, _, _, _) -> i, EBlock(i, _, _, _, _) -> i,
+  }
+}
+fn ex_s(e) {
+  match e {
+    EInt(_, _, s, _) -> s, EStr(_, _, s, _) -> s, EBool(_, _, s, _) -> s, EVar(_, _, s, _) -> s, ECtor(_, _, _, _, s, _) -> s,
+    EUnit(_, s, _) -> s, ETuple(_, _, s, _) -> s, ECall(_, _, _, s, _) -> s, EBinop(_, _, _, _, s, _) -> s, EUnop(_, _, _, s, _) -> s,
+    ELambda(_, _, _, s, _) -> s, EIf(_, _, _, _, s, _) -> s, EMatch(_, _, _, s, _) -> s, EBlock(_, _, _, s, _) -> s,
+  }
+}
+fn ex_e(e) {
+  match e {
+    EInt(_, _, _, x) -> x, EStr(_, _, _, x) -> x, EBool(_, _, _, x) -> x, EVar(_, _, _, x) -> x, ECtor(_, _, _, _, _, x) -> x,
+    EUnit(_, _, x) -> x, ETuple(_, _, _, x) -> x, ECall(_, _, _, _, x) -> x, EBinop(_, _, _, _, _, x) -> x, EUnop(_, _, _, _, x) -> x,
+    ELambda(_, _, _, _, x) -> x, EIf(_, _, _, _, _, x) -> x, EMatch(_, _, _, _, x) -> x, EBlock(_, _, _, _, x) -> x,
+  }
+}
+fn pat_id(p) {
+  match p {
+    PWild(i, _, _) -> i, PVar(i, _, _, _) -> i, PInt(i, _, _, _) -> i, PStr(i, _, _, _) -> i, PBool(i, _, _, _) -> i,
+    PUnit(i, _, _) -> i, PTuple(i, _, _, _) -> i, PCtor(i, _, _, _, _, _) -> i,
+  }
+}
+fn pat_s(p) {
+  match p {
+    PWild(_, s, _) -> s, PVar(_, _, s, _) -> s, PInt(_, _, s, _) -> s, PStr(_, _, s, _) -> s, PBool(_, _, s, _) -> s,
+    PUnit(_, s, _) -> s, PTuple(_, _, s, _) -> s, PCtor(_, _, _, _, s, _) -> s,
+  }
+}
+fn pat_e(p) {
+  match p {
+    PWild(_, _, e) -> e, PVar(_, _, _, e) -> e, PInt(_, _, _, e) -> e, PStr(_, _, _, e) -> e, PBool(_, _, _, e) -> e,
+    PUnit(_, _, e) -> e, PTuple(_, _, _, e) -> e, PCtor(_, _, _, _, _, e) -> e,
+  }
+}
+fn te_s(t) { match t { TRefine(_, _, _, _, _, s, _) -> s, TFun(_, _, _, s, _) -> s, TCon(_, _, s, _) -> s, TTuple(_, s, _) -> s, TVar(_, s, _) -> s } }
+fn te_e(t) { match t { TRefine(_, _, _, _, _, _, e) -> e, TFun(_, _, _, _, e) -> e, TCon(_, _, _, e) -> e, TTuple(_, _, e) -> e, TVar(_, _, e) -> e } }
+
+// The parser's state: the tokens, the position and the next node id.
+type P { P(Array<Tok>, Int, Int) }
+
+fn p_tok(p) { match p { P(toks, pos, _) -> array_get(toks, pos) } }
+fn p_peek(p, o) { match p { P(toks, pos, _) -> array_get(toks, min(pos + o, array_length(toks) - 1)) } }
+fn p_prev(p) { match p { P(toks, pos, _) -> array_get(toks, pos - 1) } }
+fn p_kind(p) { tok_kind(p_tok(p)) }
+fn p_at(p, k) { p_kind(p) == k }
+fn p_next(p) { match p { P(toks, pos, id) -> (array_get(toks, pos), P(toks, pos + 1, id)) } }
+fn p_skip(p) { match p { P(toks, pos, id) -> P(toks, pos + 1, id) } }
+fn p_id(p) { match p { P(toks, pos, id) -> (id, P(toks, pos, id + 1)) } }
+fn describe(t) {
+  match t {
+    Tok("eof", _, _, _) -> "end of input", Tok("lower", v, _, _) -> "`" ++ v ++ "`", Tok("upper", v, _, _) -> "`" ++ v ++ "`",
+    Tok("int", _, _, _) -> "a number", Tok("str", _, _, _) -> "a string", Tok(k, _, _, _) -> "`" ++ k ++ "`",
+  }
+}
+fn p_fail(p, msg) { let t = p_tok(p); fail_span(msg, tok_s(t), tok_e(t)) }
+fn p_expect_what(p, k, what) { if p_at(p, k) { p_next(p) } else { p_fail(p, "expected " ++ what ++ ", found " ++ describe(p_tok(p))) } }
+fn p_expect(p, k) { p_expect_what(p, k, "`" ++ k ++ "`") }
+fn p_accept(p, k) { if p_at(p, k) { (true, p_skip(p)) } else { (false, p) } }
+
+// Digits to an Int if it fits in 64 bits (negated if neg).
+fn int_literal(digits, neg) {
+  let limit = if neg { 0 - 922337203685477580 } else { 922337203685477580 };
+  fn go(i, acc) {
+    if i >= string_length(digits) { Some(acc) }
+    else {
+      let d = char_code_at(digits, i) - 48;
+      if neg {
+        if acc < limit || (acc == limit && d > 8) { None } else { go(i + 1, acc * 10 - d) }
+      } else {
+        if acc > limit || (acc == limit && d > 7) { None } else { go(i + 1, acc * 10 + d) }
+      }
+    }
+  }
+  go(0, 0)
+}
+fn check_int(t, neg) {
+  match int_literal(tok_val(t), neg) { Some(v) -> v, None -> fail_span("integer literal out of range (64-bit integers)", tok_s(t), tok_e(t)) }
+}
+
+// Items up to `close`, separated by commas (a trailing comma allowed).
+fn p_items(p, close, item) {
+  fn go(p, acc) {
+    if p_at(p, close) { (reverse(acc), p) }
+    else {
+      let (x, p) = item(p);
+      let (more, p) = p_accept(p, ",");
+      if more { go(p, [x, ..acc]) } else { (reverse([x, ..acc]), p) }
+    }
+  }
+  go(p, [])
+}
+
+// ------------------------------------------------------------------- types
+fn io_labels() { ["input", "output", "clock", "random"] }
+fn expand_label(l) { if l == "io" { io_labels() } else { [l] } }
+
+fn parse_effect(p) {
+  let (start, p) = p_expect(p, "!");
+  if p_at(p, "{") {
+    let p = p_skip(p);
+    fn labels(p, acc) {
+      if p_at(p, "}") || p_at(p, "|") { (acc, p) }
+      else {
+        let (t, p) = p_expect_what(p, "lower", "an effect name");
+        let acc = append(acc, expand_label(tok_val(t)));
+        let (more, p) = p_accept(p, ",");
+        if more { labels(p, acc) } else { (acc, p) }
+      }
+    }
+    let (ls, p) = labels(p, []);
+    let (bar, p) = p_accept(p, "|");
+    let (tail, p) = if bar { let (t, p) = p_expect_what(p, "lower", "an effect variable"); (Some(tok_val(t)), p) } else { (None, p) };
+    let (end, p) = p_expect(p, "}");
+    (Eff(ls, tail, tok_s(start), tok_e(end)), p)
+  } else {
+    let (t, p) = p_expect_what(p, "lower", "an effect");
+    let v = tok_val(t);
+    if v == "io" || contains_str(["input", "output", "clock", "random", "fail"], v) { (Eff(expand_label(v), None, tok_s(start), tok_e(t)), p) }
+    else { (Eff([], Some(v), tok_s(start), tok_e(t)), p) }
+  }
+}
+
+fn eff_e(f) { match f { Eff(_, _, _, e) -> e } }
+
+fn parse_type(p) {
+  let t = p_tok(p);
+  if p_at(p, "{") {
+    let p = p_skip(p);
+    let (v, p) = p_expect_what(p, "lower", "a name for the refined value");
+    let (_, p) = p_expect(p, ":");
+    let (base, p) = parse_type(p);
+    let (_, p) = p_expect(p, "|");
+    let (pred, p) = parse_expr(p);
+    let (end, p) = p_expect(p, "}");
+    (TRefine(tok_val(v), tok_s(v), tok_e(v), base, pred, tok_s(t), tok_e(end)), p)
+  } else if p_at(p, "fn") {
+    let p = p_skip(p);
+    let (_, p) = p_expect(p, "(");
+    let (params, p) = p_items(p, ")", parse_type);
+    let (_, p) = p_expect(p, ")");
+    let (_, p) = p_expect(p, "->");
+    let (ret, p) = parse_type(p);
+    if p_at(p, "!") { let (eff, p) = parse_effect(p); (TFun(params, ret, Some(eff), tok_s(t), eff_e(eff)), p) }
+    else { (TFun(params, ret, None, tok_s(t), te_e(ret)), p) }
+  } else if p_at(p, "(") {
+    let p = p_skip(p);
+    let (unit, p) = p_accept(p, ")");
+    if unit { (TCon("Unit", [], tok_s(t), tok_e(p_prev(p))), p) }
+    else {
+      let (first, p) = parse_type(p);
+      let (close, p) = p_accept(p, ")");
+      if close { (first, p) }
+      else {
+        fn more(p, acc) {
+          let (comma, p) = p_accept(p, ",");
+          if !comma || p_at(p, ")") { (reverse(acc), p) } else { let (x, p) = parse_type(p); more(p, [x, ..acc]) }
+        }
+        let (elems, p) = more(p, [first]);
+        let (end, p) = p_expect(p, ")");
+        (TTuple(elems, tok_s(t), tok_e(end)), p)
+      }
+    }
+  } else if p_at(p, "lower") { (TVar(tok_val(t), tok_s(t), tok_e(t)), p_skip(p)) }
+  else if p_at(p, "upper") {
+    let p = p_skip(p);
+    let (lt, p) = p_accept(p, "<");
+    if lt {
+      let (args, p) = p_items(p, ">", parse_type);
+      let (end, p) = p_expect(p, ">");
+      (TCon(tok_val(t), args, tok_s(t), tok_e(end)), p)
+    } else { (TCon(tok_val(t), [], tok_s(t), tok_e(t)), p) }
+  } else { p_fail(p, "expected a type, found " ++ describe(t)) }
+}
+
+// ---------------------------------------------------------------- patterns
+fn parse_pattern(p) {
+  let t = p_tok(p);
+  let (id, p) = p_id(p);
+  let k = p_kind(p);
+  if k == "lower" {
+    let p = p_skip(p);
+    if tok_val(t) == "_" { (PWild(id, tok_s(t), tok_e(t)), p) } else { (PVar(id, tok_val(t), tok_s(t), tok_e(t)), p) }
+  } else if k == "int" { (PInt(id, check_int(t, false), tok_s(t), tok_e(t)), p_skip(p)) }
+  else if k == "-" && tok_kind(p_peek(p, 1)) == "int" {
+    let p = p_skip(p);
+    let (n, p) = p_next(p);
+    (PInt(id, check_int(n, true), tok_s(t), tok_e(n)), p)
+  } else if k == "str" { (PStr(id, tok_val(t), tok_s(t), tok_e(t)), p_skip(p)) }
+  else if k == "true" || k == "false" { (PBool(id, k == "true", tok_s(t), tok_e(t)), p_skip(p)) }
+  else if k == "(" {
+    let p = p_skip(p);
+    let (unit, p) = p_accept(p, ")");
+    if unit { (PUnit(id, tok_s(t), tok_e(p_prev(p))), p) }
+    else {
+      let (first, p) = parse_pattern(p);
+      let (close, p) = p_accept(p, ")");
+      if close { (first, p) }
+      else {
+        fn more(p, acc) {
+          let (comma, p) = p_accept(p, ",");
+          if !comma || p_at(p, ")") { (reverse(acc), p) } else { let (x, p) = parse_pattern(p); more(p, [x, ..acc]) }
+        }
+        let (elems, p) = more(p, [first]);
+        let (end, p) = p_expect(p, ")");
+        (PTuple(id, elems, tok_s(t), tok_e(end)), p)
+      }
+    }
+  } else if k == "[" {
+    let p = p_skip(p);
+    fn items(p, acc) {
+      if p_at(p, "]") { (reverse(acc), None, p) }
+      else if p_at(p, "..") {
+        let (dots, p) = p_next(p);
+        if p_at(p, "]") { let (wid, p) = p_id(p); (reverse(acc), Some(PWild(wid, tok_s(dots), tok_e(dots))), p) }
+        else { let (r, p) = parse_pattern(p); (reverse(acc), Some(r), p) }
+      } else {
+        let (x, p) = parse_pattern(p);
+        let (more, p) = p_accept(p, ",");
+        if more { items(p, [x, ..acc]) } else { (reverse([x, ..acc]), None, p) }
+      }
+    }
+    let (elems, rest, p) = items(p, []);
+    let (end, p) = p_expect(p, "]");
+    // (The Nil at the end of `[a, b]` has the span of `[`; only `[]` spans the brackets.)
+    let nil_end = if is_empty(elems) { tok_e(end) } else { tok_e(t) };
+    let (base, p) = match rest { Some(r) -> (r, p), None -> { let (nid, p) = p_id(p); (PCtor(nid, "Nil", [], true, tok_s(t), nil_end), p) } };
+    fn build(es, p) {
+      match es {
+        [] -> (base, p),
+        [x, ..xs] -> { let (tail, p) = build(xs, p); let (cid, p) = p_id(p); (PCtor(cid, "Cons", [x, tail], true, pat_s(x), tok_e(end)), p) },
+      }
+    }
+    build(elems, p)
+  } else if k == "upper" {
+    let p = p_skip(p);
+    let (paren, p) = p_accept(p, "(");
+    if paren {
+      let (args, p) = p_items(p, ")", parse_pattern);
+      let (end, p) = p_expect(p, ")");
+      (PCtor(id, tok_val(t), args, false, tok_s(t), tok_e(end)), p)
+    } else { (PCtor(id, tok_val(t), [], false, tok_s(t), tok_e(t)), p) }
+  } else { p_fail(p, "expected a pattern, found " ++ describe(t)) }
+}
+
+// ------------------------------------------------------------- expressions
+fn parse_expr(p) {
+  let (e, p) = parse_binary(p, 0);
+  fn pipes(e, p) {
+    if p_at(p, "|>") {
+      let p = p_skip(p);
+      let (rhs, p) = parse_binary(p, 0);
+      let (id, p) = p_id(p);
+      match rhs {
+        ECall(_, f, args, _, re) -> pipes(ECall(id, f, [e, ..args], ex_s(e), re), p),
+        _ -> pipes(ECall(id, rhs, [e], ex_s(e), ex_e(rhs)), p),
+      }
+    } else { (e, p) }
+  }
+  pipes(e, p)
+}
+
+fn level_ops(level) {
+  if level == 0 { ["||"] } else if level == 1 { ["&&"] } else if level == 2 { ["==", "!=", "<", "<=", ">", ">="] }
+  else if level == 3 { ["++"] } else if level == 4 { ["+", "-"] } else { ["*", "/", "%"] }
+}
+
+fn parse_binary(p, level) {
+  if level == 6 { parse_unary(p) }
+  else {
+    let ops = level_ops(level);
+    let (l, p) = parse_binary(p, level + 1);
+    if level == 2 {
+      if contains_str(ops, p_kind(p)) {
+        let (op, p) = p_next(p);
+        let (r, p) = parse_binary(p, level + 1);
+        let (id, p) = p_id(p);
+        let e = EBinop(id, tok_kind(op), l, r, ex_s(l), ex_e(r));
+        if contains_str(ops, p_kind(p)) { p_fail(p, "comparison operators cannot be chained; use parentheses") } else { (e, p) }
+      } else { (l, p) }
+    } else if level == 3 {
+      if p_at(p, "++") {
+        let p = p_skip(p);
+        let (r, p) = parse_binary(p, level);
+        let (id, p) = p_id(p);
+        (EBinop(id, "++", l, r, ex_s(l), ex_e(r)), p)
+      } else { (l, p) }
+    } else {
+      fn go(l, p) {
+        if contains_str(ops, p_kind(p)) {
+          let (op, p) = p_next(p);
+          let (r, p) = parse_binary(p, level + 1);
+          let (id, p) = p_id(p);
+          go(EBinop(id, tok_kind(op), l, r, ex_s(l), ex_e(r)), p)
+        } else { (l, p) }
+      }
+      go(l, p)
+    }
+  }
+}
+
+fn parse_unary(p) {
+  let t = p_tok(p);
+  if p_at(p, "-") {
+    let p = p_skip(p);
+    if p_at(p, "int") {
+      let (n, p) = p_next(p);
+      let (id, p) = p_id(p);
+      parse_postfix(EInt(id, check_int(n, true), tok_s(t), tok_e(n)), p)
+    } else {
+      let (e, p) = parse_unary(p);
+      let (id, p) = p_id(p);
+      (EUnop(id, "-", e, tok_s(t), ex_e(e)), p)
+    }
+  } else if p_at(p, "!") {
+    let p = p_skip(p);
+    let (e, p) = parse_unary(p);
+    let (id, p) = p_id(p);
+    (EUnop(id, "!", e, tok_s(t), ex_e(e)), p)
+  } else { let (e, p) = parse_primary(p); parse_postfix(e, p) }
+}
+
+fn parse_postfix(e, p) {
+  if p_at(p, "(") {
+    let p = p_skip(p);
+    let (args, p) = p_items(p, ")", parse_expr);
+    let (end, p) = p_expect(p, ")");
+    let (id, p) = p_id(p);
+    parse_postfix(ECall(id, e, args, ex_s(e), tok_e(end)), p)
+  } else { (e, p) }
+}
+
+fn parse_primary(p) {
+  let t = p_tok(p);
+  let k = tok_kind(t);
+  if k == "int" { let (id, p) = p_id(p); (EInt(id, check_int(t, false), tok_s(t), tok_e(t)), p_skip(p)) }
+  else if k == "str" { let (id, p) = p_id(p); (EStr(id, tok_val(t), tok_s(t), tok_e(t)), p_skip(p)) }
+  else if k == "true" || k == "false" { let (id, p) = p_id(p); (EBool(id, k == "true", tok_s(t), tok_e(t)), p_skip(p)) }
+  else if k == "lower" { let (id, p) = p_id(p); (EVar(id, tok_val(t), tok_s(t), tok_e(t)), p_skip(p)) }
+  else if k == "upper" {
+    let p = p_skip(p);
+    if p_at(p, "(") {
+      let p = p_skip(p);
+      let (args, p) = p_items(p, ")", parse_expr);
+      let (end, p) = p_expect(p, ")");
+      let (id, p) = p_id(p);
+      (ECtor(id, tok_val(t), Some(args), false, tok_s(t), tok_e(end)), p)
+    } else { let (id, p) = p_id(p); (ECtor(id, tok_val(t), None, false, tok_s(t), tok_e(t)), p) }
+  } else if k == "(" {
+    let p = p_skip(p);
+    let (unit, p) = p_accept(p, ")");
+    if unit { let (id, p) = p_id(p); (EUnit(id, tok_s(t), tok_e(p_prev(p))), p) }
+    else {
+      let (first, p) = parse_expr(p);
+      let (close, p) = p_accept(p, ")");
+      if close { (first, p) }
+      else {
+        fn more(p, acc) {
+          let (comma, p) = p_accept(p, ",");
+          if !comma || p_at(p, ")") { (reverse(acc), p) } else { let (x, p) = parse_expr(p); more(p, [x, ..acc]) }
+        }
+        let (elems, p) = more(p, [first]);
+        let (end, p) = p_expect(p, ")");
+        let (id, p) = p_id(p);
+        (ETuple(id, elems, tok_s(t), tok_e(end)), p)
+      }
+    }
+  } else if k == "[" {
+    let p = p_skip(p);
+    fn items(p, acc) {
+      if p_at(p, "]") { (reverse(acc), None, p) }
+      else {
+        let (dots, p) = p_accept(p, "..");
+        if dots { let (r, p) = parse_expr(p); (reverse(acc), Some(r), p) }
+        else {
+          let (x, p) = parse_expr(p);
+          let (more, p) = p_accept(p, ",");
+          if more { items(p, [x, ..acc]) } else { (reverse([x, ..acc]), None, p) }
+        }
+      }
+    }
+    let (elems, rest, p) = items(p, []);
+    let (end, p) = p_expect(p, "]");
+    let (base, p) = match rest { Some(r) -> (r, p), None -> { let (id, p) = p_id(p); (ECtor(id, "Nil", Some([]), true, tok_s(t), tok_e(end)), p) } };
+    fn build(es, p) {
+      match es {
+        [] -> (base, p),
+        [x, ..xs] -> { let (tail, p) = build(xs, p); let (id, p) = p_id(p); (ECtor(id, "Cons", Some([x, tail]), true, ex_s(x), tok_e(end)), p) },
+      }
+    }
+    build(elems, p)
+  } else if k == "{" { parse_block(p) }
+  else if k == "if" { parse_if(p) }
+  else if k == "match" { parse_match(p) }
+  else if k == "|" || k == "||" { parse_lambda(p) }
+  else { p_fail(p, "expected an expression, found " ++ describe(t)) }
+}
+
+fn parse_param(p) {
+  let (t, p) = p_expect_what(p, "lower", "a parameter name");
+  let (colon, p) = p_accept(p, ":");
+  let (ann, p) = if colon { let (te, p) = parse_type(p); (Some(te), p) } else { (None, p) };
+  let (id, p) = p_id(p);
+  (Param(id, tok_val(t), ann, tok_s(t), tok_e(t)), p)
+}
+
+fn parse_lambda(p) {
+  let (t, p) = p_next(p);
+  let (params, p) = if tok_kind(t) == "|" {
+    let (ps, p) = p_items(p, "|", parse_param);
+    let (_, p) = p_expect(p, "|");
+    (ps, p)
+  } else { ([], p) };
+  let (body, p) = parse_expr(p);
+  let (id, p) = p_id(p);
+  (ELambda(id, params, body, tok_s(t), ex_e(body)), p)
+}
+
+fn parse_if(p) {
+  let (t, p) = p_expect(p, "if");
+  let (cond, p) = parse_expr(p);
+  let (then, p) = parse_block(p);
+  let (els, p) = p_accept(p, "else");
+  let (other, p) = if els { let (x, p) = if p_at(p, "if") { parse_if(p) } else { parse_block(p) }; (Some(x), p) } else { (None, p) };
+  let (id, p) = p_id(p);
+  let end = match other { Some(x) -> ex_e(x), None -> ex_e(then) };
+  (EIf(id, cond, then, other, tok_s(t), end), p)
+}
+
+fn ends_without_comma(e) { match e { EBlock(_, _, _, _, _) -> true, EIf(_, _, _, _, _, _) -> true, EMatch(_, _, _, _, _) -> true, _ -> false } }
+
+fn parse_match(p) {
+  let (t, p) = p_expect(p, "match");
+  let (scrut, p) = parse_expr(p);
+  let (_, p) = p_expect(p, "{");
+  fn arms(p, acc) {
+    if p_at(p, "}") { (reverse(acc), p) }
+    else {
+      let (pat, p) = parse_pattern(p);
+      let (g, p) = p_accept(p, "if");
+      let (guard, p) = if g { let (x, p) = parse_expr(p); (Some(x), p) } else { (None, p) };
+      let (_, p) = p_expect(p, "->");
+      let (body, p) = parse_expr(p);
+      let arm = Arm(pat, guard, body, pat_s(pat), ex_e(body));
+      let (comma, p) = p_accept(p, ",");
+      if !comma && !p_at(p, "}") && !ends_without_comma(body) { p_fail(p, "expected `,` or `}`, found " ++ describe(p_tok(p))) }
+      else { arms(p, [arm, ..acc]) }
+    }
+  }
+  let (as, p) = arms(p, []);
+  let (end, p) = p_expect(p, "}");
+  let (id, p) = p_id(p);
+  (EMatch(id, scrut, as, tok_s(t), tok_e(end)), p)
+}
+
+fn parse_block(p) {
+  let (t, p) = p_expect(p, "{");
+  fn go(p, acc) {
+    if p_at(p, "}") { (reverse(acc), None, p) }
+    else if p_at(p, "let") {
+      let (l, p) = p_next(p);
+      let (pat, p) = parse_pattern(p);
+      let (colon, p) = p_accept(p, ":");
+      let (ann, p) = if colon { let (te, p) = parse_type(p); (Some(te), p) } else { (None, p) };
+      let (_, p) = p_expect(p, "=");
+      let (value, p) = parse_expr(p);
+      let (_, p) = p_expect(p, ";");
+      let (id, p) = p_id(p);
+      go(p, [SLet(id, pat, ann, value, tok_s(l), ex_e(value)), ..acc])
+    } else if p_at(p, "fn") && tok_kind(p_peek(p, 1)) == "lower" {
+      let (f, p) = parse_fn(p);
+      go(p, [SFn(f), ..acc])
+    } else {
+      let (e, p) = parse_expr(p);
+      let (semi, p) = p_accept(p, ";");
+      if semi { go(p, [SExpr(e), ..acc]) }
+      else if p_at(p, "}") { (reverse(acc), Some(e), p) }
+      else if ends_without_comma(e) { go(p, [SExpr(e), ..acc]) }
+      else { p_fail(p, "expected `;` or `}`, found " ++ describe(p_tok(p))) }
+    }
+  }
+  let (stmts, result, p) = go(p, []);
+  let (end, p) = p_expect(p, "}");
+  let (id, p) = p_id(p);
+  (EBlock(id, stmts, result, tok_s(t), tok_e(end)), p)
+}
+
+fn parse_fn(p) {
+  let (t, p) = p_expect(p, "fn");
+  let (name, p) = p_expect_what(p, "lower", "a function name");
+  let (_, p) = p_expect(p, "(");
+  let (params, p) = p_items(p, ")", parse_param);
+  let (_, p) = p_expect(p, ")");
+  let (arrow, p) = p_accept(p, "->");
+  let (ret, p) = if arrow { let (te, p) = parse_type(p); (Some(te), p) } else { (None, p) };
+  let (eff, p) = if p_at(p, "!") { let (f, p) = parse_effect(p); (Some(f), p) } else { (None, p) };
+  let (body, p) = parse_block(p);
+  let (id, p) = p_id(p);
+  (Fn(id, tok_val(name), params, ret, eff, body, tok_s(t), ex_e(body), tok_s(name), tok_e(name), false), p)
+}
+
+fn parse_type_decl(p) {
+  let (t, p) = p_expect(p, "type");
+  let (name, p) = p_expect_what(p, "upper", "a type name");
+  let (lt, p) = p_accept(p, "<");
+  let (params, p) = if lt {
+    let (ps, p) = p_items(p, ">", |p| { let (x, p) = p_expect_what(p, "lower", "a type parameter"); (tok_val(x), p) });
+    let (_, p) = p_expect(p, ">");
+    (ps, p)
+  } else { ([], p) };
+  let (_, p) = p_expect(p, "{");
+  fn ctor(p) {
+    let (c, p) = p_expect_what(p, "upper", "a constructor name");
+    let (paren, p) = p_accept(p, "(");
+    if paren {
+      let (fields, p) = p_items(p, ")", parse_type);
+      let (end, p) = p_expect(p, ")");
+      (CtorDecl(tok_val(c), fields, tok_s(c), tok_e(end)), p)
+    } else { (CtorDecl(tok_val(c), [], tok_s(c), tok_e(c)), p) }
+  }
+  let (ctors, p) = p_items(p, "}", ctor);
+  let (end, p) = p_expect(p, "}");
+  (TypeDecl(tok_val(name), params, ctors, tok_s(t), tok_e(end), tok_s(name), tok_e(name)), p)
+}
+
+fn parse_trait(p) {
+  let (t, p) = p_expect(p, "trait");
+  let (name, p) = p_expect_what(p, "upper", "a trait name");
+  let (_, p) = p_expect(p, "{");
+  fn methods(p, acc) {
+    if p_at(p, "}") { (reverse(acc), p) }
+    else {
+      let (f, p) = p_expect(p, "fn");
+      let (mname, p) = p_expect_what(p, "lower", "a method name");
+      let (_, p) = p_expect(p, "(");
+      let (params, p) = p_items(p, ")", parse_param);
+      let (close, p) = p_expect(p, ")");
+      let (arrow, p) = p_accept(p, "->");
+      let (ret, p) = if arrow { let (te, p) = parse_type(p); (Some(te), p) } else { (None, p) };
+      let (eff, p) = if p_at(p, "!") { let (x, p) = parse_effect(p); (Some(x), p) } else { (None, p) };
+      let end = match eff { Some(x) -> eff_e(x), None -> match ret { Some(r) -> te_e(r), None -> tok_e(close) } };
+      let m = MethodDecl(tok_val(mname), params, ret, eff, tok_s(f), end, tok_s(mname), tok_e(mname));
+      let (_, p) = p_accept(p, ";");
+      let (_, p) = p_accept(p, ",");
+      methods(p, [m, ..acc])
+    }
+  }
+  let (ms, p) = methods(p, []);
+  let (end, p) = p_expect(p, "}");
+  (TraitDecl(tok_val(name), ms, tok_s(t), tok_e(end), tok_s(name), tok_e(name)), p)
+}
+
+fn parse_impl(p) {
+  let (t, p) = p_expect(p, "impl");
+  let (tr, p) = p_expect_what(p, "upper", "a trait name");
+  let (_, p) = p_expect(p, "for");
+  let (for_type, p) = parse_type(p);
+  let (w, p) = p_accept(p, "where");
+  fn wheres(p, acc) {
+    let (v, p) = p_expect_what(p, "lower", "a type parameter");
+    let (_, p) = p_expect(p, ":");
+    let (first, p) = p_expect_what(p, "upper", "a trait name");
+    fn plus(p, ts) {
+      let (more, p) = p_accept(p, "+");
+      if more { let (x, p) = p_expect_what(p, "upper", "a trait name"); plus(p, [x, ..ts]) } else { (reverse(ts), p) }
+    }
+    let (ts, p) = plus(p, [first]);
+    let wc = WhereC(tok_val(v), map(ts, |x| (tok_val(x), tok_s(x), tok_e(x))), tok_s(v), tok_e(v));
+    let (comma, p) = p_accept(p, ",");
+    if comma { wheres(p, [wc, ..acc]) } else { (reverse([wc, ..acc]), p) }
+  }
+  let (where_cs, p) = if w { wheres(p, []) } else { ([], p) };
+  let (_, p) = p_expect(p, "{");
+  fn methods(p, acc) { if p_at(p, "}") { (reverse(acc), p) } else { let (f, p) = parse_fn(p); methods(p, [f, ..acc]) } }
+  let (ms, p) = methods(p, []);
+  let (end, p) = p_expect(p, "}");
+  (ImplDecl(tok_val(tr), tok_s(tr), tok_e(tr), for_type, where_cs, ms, tok_s(t), tok_e(end)), p)
+}
+
+fn parse_property(p) {
+  let (t, p) = p_expect(p, "property");
+  let (name, p) = p_expect_what(p, "lower", "a property name");
+  let (_, p) = p_expect(p, "(");
+  let (params, p) = p_items(p, ")", parse_param);
+  let (_, p) = p_expect(p, ")");
+  let (body, p) = parse_block(p);
+  let (id, p) = p_id(p);
+  (Fn(id, tok_val(name), params, None, None, body, tok_s(t), ex_e(body), tok_s(name), tok_e(name), true), p)
+}
+
+// A whole source text; node ids start at `first`. Returns the tree and the next id.
+fn parse(src, first) {
+  let p = P(lex(src), 0, first);
+  fn go(p, types, fns, traits, impls, props) {
+    if p_at(p, "eof") { match p { P(_, _, id) -> (Ast(reverse(types), reverse(fns), reverse(traits), reverse(impls), reverse(props)), id) } }
+    else if p_at(p, "type") { let (d, p) = parse_type_decl(p); go(p, [d, ..types], fns, traits, impls, props) }
+    else if p_at(p, "fn") { let (d, p) = parse_fn(p); go(p, types, [d, ..fns], traits, impls, props) }
+    else if p_at(p, "trait") { let (d, p) = parse_trait(p); go(p, types, fns, [d, ..traits], impls, props) }
+    else if p_at(p, "impl") { let (d, p) = parse_impl(p); go(p, types, fns, traits, [d, ..impls], props) }
+    else if p_at(p, "property") { let (d, p) = parse_property(p); go(p, types, fns, traits, impls, [d, ..props]) }
+    else { p_fail(p, "expected `fn`, `type`, `trait`, `impl` or `property` at the top level, found " ++ describe(p_tok(p))) }
+  }
+  go(p, [], [], [], [], [])
+}

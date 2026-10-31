@@ -1,0 +1,314 @@
+// =================================================================== check
+// One pass of the checker over a program (checkOnce in check.js).
+
+// Names a function body uses, in the order the reference's generic walk
+// meets them (the call graph's edges follow this order).
+fn nu_te(t, acc) {
+  match t {
+    TRefine(_, _, _, base, pred, _, _) -> nu_ex(pred, nu_te(base, acc)),
+    TFun(ps, r, _, _, _) -> nu_te(r, fold(ps, acc, |a, p| nu_te(p, a))),
+    TCon(_, args, _, _) -> fold(args, acc, |a, x| nu_te(x, a)),
+    TTuple(es, _, _) -> fold(es, acc, |a, x| nu_te(x, a)),
+    TVar(_, _, _) -> acc,
+  }
+}
+fn nu_param(p, acc) { match p { Param(_, _, ann, _, _) -> match ann { Some(t) -> nu_te(t, acc), None -> acc } } }
+fn nu_add(acc, n) { if contains_str(acc, n) { acc } else { [n, ..acc] } }
+fn nu_ex(x, acc) {
+  match x {
+    EVar(_, n, _, _) -> nu_add(acc, n),
+    ECtor(_, _, Some(args), _, _, _) -> fold(args, acc, |a, y| nu_ex(y, a)),
+    ETuple(_, es, _, _) -> fold(es, acc, |a, y| nu_ex(y, a)),
+    ECall(_, f, args, _, _) -> fold(args, nu_ex(f, acc), |a, y| nu_ex(y, a)),
+    EBinop(_, _, l, r, _, _) -> nu_ex(r, nu_ex(l, acc)),
+    EUnop(_, _, a, _, _) -> nu_ex(a, acc),
+    ELambda(_, ps, b, _, _) -> nu_ex(b, fold(ps, acc, |a, p| nu_param(p, a))),
+    EIf(_, c, t, el, _, _) -> { let a = nu_ex(t, nu_ex(c, acc)); match el { Some(y) -> nu_ex(y, a), None -> a } },
+    EMatch(_, sc, arms, _, _) -> fold(arms, nu_ex(sc, acc), |a, arm| match arm { Arm(_, g, b, _, _) -> nu_ex(b, match g { Some(y) -> nu_ex(y, a), None -> a }) }),
+    EBlock(_, stmts, r, _, _) -> { let a = fold(stmts, acc, |a, s| nu_stmt(s, a)); match r { Some(y) -> nu_ex(y, a), None -> a } },
+    _ -> acc,
+  }
+}
+fn nu_stmt(s, acc) {
+  match s {
+    SLet(_, _, ann, v, _, _) -> nu_ex(v, match ann { Some(t) -> nu_te(t, acc), None -> acc }),
+    SExpr(x) -> nu_ex(x, acc),
+    SFn(Fn(_, _, ps, r, _, body, _, _, _, _, _)) -> nu_ex(body, match r { Some(t) -> nu_te(t, fold(ps, acc, |a, p| nu_param(p, a))), None -> fold(ps, acc, |a, p| nu_param(p, a)) }),
+  }
+}
+fn names_used(body) { reverse(nu_ex(body, [])) }
+
+// Tarjan's strongly connected components over function positions 0..n-1, in
+// dependency order (callees first). succ: successors of each position.
+fn tarjan(n, succ) {
+  // state: next index, stack, on-stack flags, index (-1: unvisited), low link, components
+  fn visit(v, s) {
+    match s {
+      (index, stack, on, idx, low, out) -> {
+        let s1 = (index + 1, [v, ..stack], array_set(on, v, true), array_set(idx, v, index), array_set(low, v, index), out);
+        let s2 = fold(array_get(succ, v), s1, |s, w| match s {
+          (index, stack, on, idx, low, out) -> if array_get(idx, w) < 0 {
+            match visit(w, (index, stack, on, idx, low, out)) {
+              (index, stack, on, idx, low, out) -> (index, stack, on, idx, array_set(low, v, min(array_get(low, v), array_get(low, w))), out),
+            }
+          } else if array_get(on, w) { (index, stack, on, idx, array_set(low, v, min(array_get(low, v), array_get(idx, w))), out) } else { s },
+        });
+        match s2 {
+          (index, stack, on, idx, low, out) -> if array_get(low, v) == array_get(idx, v) {
+            fn pop(stack, on, comp) {
+              match stack { [w, ..rest] -> { let on = array_set(on, w, false); if w == v { (rest, on, reverse([w, ..comp])) } else { pop(rest, on, [w, ..comp]) } }, [] -> (stack, on, comp) }
+            }
+            let (stack, on, comp) = pop(stack, on, []);
+            (index, stack, on, idx, low, [comp, ..out])
+          } else { s2 },
+        }
+      },
+    }
+  }
+  let init = (0, [], array_make(n, false), array_make(n, 0 - 1), array_make(n, 0), []);
+  let (_, _, _, _, _, out) = fold(range(0, n), init, |s, v| match s { (_, _, _, idx, _, _) -> if array_get(idx, v) < 0 { visit(v, s) } else { s } });
+  reverse(out)
+}
+
+// The result of a check: the declarations, the parsed trees, the functions
+// in order (all of them, impl methods last), the entry, the checker state,
+// the derived impls, signatures (name, type, name span) and warnings.
+type Checked { Checked(Decls, Ast, Ast, List<Fn>, Option<Fn>, CS, List<(ImplDecl, String)>, List<(String, String, Int, Int)>, List<(String, Int, Int)>, Env) }
+
+fn tenv_of(d) {
+  match d {
+    Decls(adts, _, _, _, _, _, impls, _) -> {
+      let am = fold(om_values(adts), MEmpty, |m, a| m_set(m, adt_name(a), (adt_params(a), map(adt_ctors(a), ctor_fields))));
+      let im = fold(om_keys(impls), MEmpty, |m, tr| match om_get(impls, tr) {
+        Some(per) -> m_set(m, tr, fold(om_values(per), MEmpty, |m2, i| m_set(m2, impl_head(i), ImplHead(impl_params(i), impl_where(i))))),
+        None -> m,
+      });
+      TEnv(am, im)
+    },
+  }
+}
+
+fn ast_fns(a) { match a { Ast(_, fns, _, _, _) -> fns } }
+fn ast_props(a) { match a { Ast(_, _, _, _, ps) -> ps } }
+fn ast_traits(a) { match a { Ast(_, _, ts, _, _) -> ts } }
+fn ast_impls(a) { match a { Ast(_, _, _, is, _) -> is } }
+fn ast_types(a) { match a { Ast(ts, _, _, _, _) -> ts } }
+
+fn check_once(src, opts) {
+  let (pre_ast, n1) = parse(prelude_source(), 0);
+  let (user_ast, n2) = parse(src, n1);
+  let (builtins, st) = builtin_table(store_new());
+  check_effect_labels(pre_ast);
+  check_effect_labels(user_ast);
+  let d = Decls(om_empty(), MEmpty, MEmpty, om_empty(), MEmpty, MEmpty, om_empty(), st);
+  let d = declare_types(d, ast_types(pre_ast), "prelude");
+  let d = declare_types(d, ast_types(user_ast), "user");
+  let d = fold(ast_traits(pre_ast), d, |d, t| declare_trait(d, t, "prelude"));
+  let d = fold(ast_traits(user_ast), d, |d, t| declare_trait(d, t, "user"));
+  let d = fold(ast_impls(pre_ast), d, |d, i| declare_impl(d, i, "prelude", user_ast));
+  let d = fold(ast_impls(user_ast), d, |d, i| declare_impl(d, i, "user", user_ast));
+  let (d, n3, derived) = derive_shows(d, n2, user_ast);
+  let cs = cs_new(d_store(d), n3);
+
+  // Functions and their keys.
+  let (mp, mu) = match d { Decls(_, _, _, _, mp, mu, _, _) -> (mp, mu) };
+  let (gp, cs) = fold(ast_fns(pre_ast), (MEmpty, cs), |acc, f| match acc {
+    (gp, cs) -> {
+      if m_has(gp, fn_name(f)) { fail_span("function `" ++ fn_name(f) ++ "` is defined twice", fn_ns(f), fn_ne(f)) } else { () };
+      (m_set(gp, fn_name(f), f), cs_set_fscope(cs_set_fkey(cs, fn_id(f), fn_name(f)), fn_id(f), "prelude"))
+    },
+  });
+  let cs = fold(ast_props(user_ast), cs, |cs, f| {
+    each(fn_params(f), |p| match p { Param(_, pn, None, s, e) -> fail_span("the parameters of property `" ++ fn_name(f) ++ "` need types, so that inputs can be generated", s, e), _ -> () });
+    cs_set_preset(cs, fn_id(f), mk_row(["fail"], None))
+  });
+  let (gu, cs) = fold(append(ast_fns(user_ast), ast_props(user_ast)), (MEmpty, cs), |acc, f| match acc {
+    (gu, cs) -> {
+      let name = fn_name(f);
+      if m_has(gu, name) { fail_span("function `" ++ name ++ "` is defined twice", fn_ns(f), fn_ne(f)) } else { () };
+      match m_get(mu, name) { Some(m) -> fail_span("`" ++ name ++ "` is already a method of trait `" ++ method_trait(m) ++ "`", fn_ns(f), fn_ne(f)), None -> () };
+      let shadow = m_has(gp, name) || m_has(builtins, name) || contains_str(js_object_names(), name) || m_has(mp, name);
+      let key = if shadow { name ++ "'" } else { name };
+      (m_set(gu, name, f), cs_set_fscope(cs_set_fkey(cs, fn_id(f), key), fn_id(f), "user"))
+    },
+  });
+  let entry = match opts { Opts(_, e, _, _, _) -> e };
+  let main = m_get(gu, entry);
+  match main {
+    None -> if is_empty(ast_props(user_ast)) { fail_span("the program has no `" ++ entry ++ "` function", 0, 0) } else { () },
+    Some(f) -> {
+      if fn_is_property(f) { fail_span("`" ++ entry ++ "` is a property, not a function to run", fn_ns(f), fn_ne(f)) } else { () };
+      if !is_empty(fn_params(f)) { fail_span("`" ++ entry ++ "` takes no parameters", fn_ns(f), fn_ne(f)) } else { () }
+    },
+  };
+  let env = Env(d, builtins, gp, gu, opts, match main { Some(f) -> Some(fn_id(f)), None -> None }, src, tenv_of(d));
+  let all_fns = append(ast_fns(pre_ast), append(ast_fns(user_ast), ast_props(user_ast)));
+
+  // The call graph (over-approximated by the names used) and its components.
+  let fns_arr = array_from_list(all_fns);
+  let n = length(all_fns);
+  let pos = fold(enumerate(all_fns), MEmpty, |m, iv| match iv { (i, f) -> m_set(m, int_to_string(fn_id(f)), i) });
+  let resolve = |name, scope| {
+    let f = if scope == "user" { match m_get(gu, name) { Some(f) -> Some(f), None -> m_get(gp, name) } } else { m_get(gp, name) };
+    match f { Some(g) -> m_get(pos, int_to_string(fn_id(g))), None -> None }
+  };
+  let succ = array_from_list(map(all_fns, |f| flat_map(names_used(fn_body(f)), |nm| match resolve(nm, cs_fscope(cs, fn_id(f))) { Some(i) -> [i], None -> [] })));
+  let sccs = tarjan(n, succ);
+
+  // Inference, one component at a time, generalizing after each.
+  let cs = fold(sccs, cs, |cs, comp| {
+    let fs = map(comp, |i| array_get(fns_arr, i));
+    let cs = fold(fs, cs, |cs, f| { let (v, cs) = new_tv(cs, 1); cs_set_ty(cs, fn_id(f), v) });
+    let cs = fold(fs, cs, |cs, f| {
+      let owner = if fn_is_property(f) { "property `" ++ fn_name(f) ++ "`" } else { "`" ++ fn_name(f) ++ "`" };
+      let ctx = Ctx(1, MEmpty, pure_row(), owner, cs_fscope(cs, fn_id(f)), false);
+      let cs = cs_with_sig(cs, MEmpty, MEmpty);
+      let (ty, cs) = fn_type(env, cs, f, ctx, owner);
+      let fty = match cs_ty(cs, fn_id(f)) { Some(t) -> t, None -> internal("fn ty") };
+      unify_at(env, cs, fty, ty, fn_ns(f), fn_ne(f), None)
+    });
+    fold(fs, cs, |cs, f| {
+      let fty = match cs_ty(cs, fn_id(f)) { Some(t) -> t, None -> internal("fn ty") };
+      let cs = cs_with_st(cs, generalize(cs_st(cs), fty, 0));
+      cs_set_scheme(cs, fn_id(f), fty)
+    })
+  });
+
+  // Impl methods, checked against their trait's signature with Self = the impl's type.
+  let (cs, impl_fns) = fold(flat_map(om_values(match d { Decls(_, _, _, _, _, _, im, _) -> im }), om_values), (cs, []), |acc, im| match (acc, im) {
+    ((cs, fns), ImplInfo(trn, head, params, wh, scope, display, ImplDecl(_, _, _, _, _, methods, _, _), keys)) -> {
+      let tinfo = match om_get(match d { Decls(_, _, _, trs, _, _, _, _) -> trs }, trn) { Some(t) -> t, None -> internal("trait") };
+      fold(methods, (cs, fns), |acc2, f| match acc2 {
+        (cs, fns) -> {
+          let mi = match tinfo { TraitInfo(_, _, ms) -> match find(ms, |m| match m { (n, _) -> n == fn_name(f) }) { Some((_, m)) -> m, None -> internal("method") } };
+          let key = match find(keys, |k| match k { (n, _) -> n == fn_name(f) }) { Some((_, k)) -> k, None -> internal("key") };
+          let cs = cs_set_fscope(cs_set_fkey(cs, fn_id(f), key), fn_id(f), scope);
+          let owner = "`" ++ fn_name(f) ++ "` in `impl " ++ trn ++ " for " ++ display ++ "`";
+          let ctx = Ctx(1, MEmpty, pure_row(), owner, scope, false);
+          let (vars, cs) = fold(params, ([], cs), |a, _| match a { (vs, cs) -> { let (v, cs) = new_tv(cs, 1); ([v, ..vs], cs) } });
+          let vars = reverse(vars);
+          let self_ty = if substring(head, 0, 1) == "(" { TT(vars) } else { TC(head, vars) };
+          let (expected, st, _) = match mi {
+            MethodInfo(_, _, scheme, self) -> match prune(cs_st(cs), self) {
+              TV(si) -> instantiate(cs_st(cs), scheme, 1, Inst([(si, self_ty)], [])),
+              _ -> instantiate(cs_st(cs), scheme, 1, inst_empty()),
+            },
+          };
+          let cs = cs_with_st(cs, st);
+          let (eps, eeff) = match expected { TF(ps, _, eff) -> (ps, eff), _ -> internal("method scheme") };
+          if length(fn_params(f)) != length(eps) {
+            fail_span("`" ++ fn_name(f) ++ "` takes " ++ plural(length(eps), "parameter") ++ " in trait `" ++ trn ++ "`", fn_ns(f), fn_ne(f))
+          } else { () };
+          let cs = cs_set_preset(cs, fn_id(f), eeff);
+          let cs = cs_with_sig(cs, MEmpty, MEmpty);
+          let (ty, cs) = fn_type(env, cs, f, ctx, owner);
+          let cs = unify_at(env, cs, expected, ty, fn_ns(f), fn_ne(f), Some(owner ++ " does not match the trait"));
+          each(enumerate(vars), |iv| match iv { (i, v) -> {
+            let p = cs_prune(cs, v);
+            let pname = list_get(params, i);
+            let distinct = match p {
+              TV(pi) -> !any(enumerate(vars), |jw| match jw { (j, w) -> j != i && match cs_prune(cs, w) { TV(wi) -> wi == pi, _ -> false } }),
+              _ -> false,
+            };
+            if !distinct { fail_span(owner ++ " only works for some types `" ++ pname ++ "`, but the impl is for all of them", fn_ns(f), fn_ne(f)) } else { () };
+            let declared = where_of(wh, pname);
+            let missing = match p { TV(pi) -> filter(v_traits(cs_st(cs), pi), |c| !contains_str(declared, c)), _ -> [] };
+            if !is_empty(missing) {
+              fail_at(owner ++ " needs `" ++ pname ++ ": " ++ join(missing, " + ") ++ "`", fn_ns(f), fn_ne(f), Some("add `where " ++ pname ++ ": " ++ join(missing, " + ") ++ "` to the impl"))
+            } else { () }
+          } });
+          let cs = cs_with_st(cs, generalize(cs_st(cs), ty, 0));
+          (cs_set_scheme(cs_set_ty(cs, fn_id(f), ty), fn_id(f), ty), [f, ..fns])
+        },
+      })
+    },
+  });
+  let all_fns = append(all_fns, reverse(impl_fns));
+
+  // Property inputs are generated: their types must be concrete, without functions.
+  fn concrete(t) {
+    match prune(cs_st(cs), t) { TV(_) -> false, TF(_, _, _) -> false, TT(es) -> all(es, concrete), TC(_, args) -> all(args, concrete), _ -> true }
+  }
+  each(ast_props(user_ast), |f| each(fn_params(f), |p| match p {
+    Param(pid, pn, _, s, e) -> match cs_ty(cs, pid) {
+      Some(t) -> if !concrete(t) { fail_span("property inputs need concrete types without functions; `" ++ pn ++ "` has type " ++ show_type(cs_st(cs), t), s, e) } else { () },
+      None -> (),
+    },
+  }));
+
+  // An annotated `main` must not claim more than it was granted.
+  match (opts, main) {
+    (Opts(Some(gs), _, _, _, _), Some(Fn(_, _, _, _, Some(Eff(ls, _, _, _)), _, _, _, ns, ne, _))) -> {
+      let extra = filter(ls, |l| l != "fail" && !contains_str(gs, l));
+      if !is_empty(extra) {
+        fail_at("`main` is declared with `" ++ join(extra, ", ") ++ "`, which was not granted", ns, ne, Some("grant it when running the program, for example `lumen2 run --allow " ++ join(extra, ",") ++ "`"))
+      } else { () }
+    },
+    _ -> (),
+  };
+
+  // Exhaustiveness, now that every type is known.
+  let adts = d_adts(d);
+  let cs = fold(cs_deferred(cs), cs, |cs, df| match df {
+    DLet(vt, pat) -> {
+      let (missing, _) = check_match(adts, cs, vt, [Arm(pat, None, EUnit(0, 0, 0), 0, 0)]);
+      if missing != "" { fail_at("this pattern can fail to match: `" ++ missing ++ "` is not covered", pat_s(pat), pat_e(pat), Some("use `match` for patterns that can fail")) } else { cs }
+    },
+    DMatch(stt, arms, s, e) -> {
+      let (missing, redundant) = check_match(adts, cs, stt, arms);
+      if missing != "" { fail_at("non-exhaustive match: `" ++ missing ++ "` is not covered", s, e, Some("add an arm for it, or a wildcard `_ ->` arm")) } else { () };
+      fold(redundant, cs, |cs, i| match list_get(arms, i) { Arm(p, _, _, _, _) -> cs_warn(cs, ("this arm can never match", pat_s(p), pat_e(p))) })
+    },
+  });
+
+  let sigs = map(ast_fns(user_ast), |f| (fn_name(f), signature_of(cs, src, f), fn_ns(f), fn_ne(f)));
+  Checked(d, pre_ast, user_ast, all_fns, main, cs, derived, sigs, cs_warnings(cs), env)
+}
+
+// Whitespace runs as single spaces (JavaScript's replace(/\s+/g, ' ')).
+fn squash_spaces(s) {
+  fn go(i, acc, in_space) {
+    if i >= string_length(s) { cat_rev(acc) }
+    else {
+      let n = space_len(s, i);
+      if n > 0 { go(i + n, if in_space { acc } else { [" ", ..acc] }, true) } else { go(i + 1, [substring(s, i, i + 1), ..acc], false) }
+    }
+  }
+  go(0, [], false)
+}
+
+// A signature, with any refinements written as in the source.
+fn signature_of(cs, src, f) {
+  let st = cs_st(cs);
+  let scheme = match cs_scheme(cs, fn_id(f)) { Some(t) -> t, None -> internal("scheme") };
+  let params = fn_params(f);
+  let refined = any(params, |p| cs_refine(cs, param_id(p)) != None || cs_elem(cs, param_id(p)) != None) || cs_refine(cs, fn_id(f)) != None || cs_elem(cs, fn_id(f)) != None;
+  if !refined { signature_text(st, scheme) } else {
+    match prune(st, scheme) {
+      TF(pts, ret, eff) -> {
+        let (_, pr) = pr_show(st, printer(), TF(pts, ret, eff), true);
+        let text = |ri, ty, pr| match ri { RefineInfo(_, v, _, _, _, ps, pe) -> { let (shown, pr) = pr_show(st, pr, ty, false); ("{" ++ v ++ ": " ++ shown ++ " | " ++ substring(src, ps, pe) ++ "}", pr) } };
+        let written = |te| squash_spaces(substring(src, te_s(te), te_e(te)));
+        let (ptexts, pr) = fold(zip(params, pts), ([], pr), |acc, pt| match (acc, pt) {
+          ((xs, pr), (p, t)) -> match p {
+            Param(pid, _, ann, _, _) -> match (cs_elem(cs, pid), cs_refine(cs, pid), ann) {
+              (Some(_), _, Some(a)) -> ([written(a), ..xs], pr),
+              (_, Some(ri), _) -> { let (x, pr) = text(ri, t, pr); ([x, ..xs], pr) },
+              _ -> { let (x, pr) = pr_show(st, pr, t, false); ([x, ..xs], pr) },
+            },
+          },
+        });
+        let ret_ann = match f { Fn(_, _, _, r, _, _, _, _, _, _, _) -> r };
+        let (rtext, pr) = match (cs_elem(cs, fn_id(f)), cs_refine(cs, fn_id(f)), ret_ann) {
+          (Some(_), _, Some(a)) -> (written(a), pr),
+          (_, Some(ri), _) -> text(ri, ret, pr),
+          _ -> pr_show(st, pr, ret, false),
+        };
+        let (etext, pr) = pr_effect(st, pr, eff);
+        let cons = pr_constraints(st, pr);
+        "fn(" ++ join(reverse(ptexts), ", ") ++ ") -> " ++ rtext ++ etext ++ (if is_empty(cons) { "" } else { " where " ++ join(cons, ", ") })
+      },
+      _ -> signature_text(st, scheme),
+    }
+  }
+}

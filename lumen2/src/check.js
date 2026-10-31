@@ -97,7 +97,7 @@ export function check(source, options = {}) {
   return program;
 }
 
-function checkOnce(source, { grants = null, entry = 'main', assumeSafe = false, safeSites = null, unproved = null } = {}) {
+export function checkOnce(source, { grants = null, entry = 'main', assumeSafe = false, safeSites = null, unproved = null } = {}) {
   // Whether the partial operation at this span was proved safe.
   const isSafe = (ctx, span) => assumeSafe || !!safeSites?.has(siteKey(ctx.scopeName, span));
   const whyUnsafe = (ctx, span) => unproved?.get(siteKey(ctx.scopeName, span));

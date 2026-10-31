@@ -1,0 +1,385 @@
+// ==================================================================== types
+// Types, effect rows and unification for Hindley-Milner inference with
+// row-polymorphic effects (as in the reference's types.js). Type variables
+// and row variables live in a store: each has a link (once bound), a level
+// (for generalization) and, for type variables, the traits it must
+// implement, in the order they were added.
+
+type Row { Row(List<String>, Option<Int>) }   // labels (sorted, distinct), tail row variable
+type Ty { TV(Int), TC(String, List<Ty>), TF(List<Ty>, Ty, Row), TT(List<Ty>), TP(String) }
+// vlink, vlevel, vtraits, rlink, rlevel
+type Store { Store(Array<Option<Ty>>, Array<Int>, Array<List<String>>, Array<Option<Row>>, Array<Int>) }
+
+fn generic() { 1000000000 }
+fn t_int() { TC("Int", []) }
+fn t_bool() { TC("Bool", []) }
+fn t_string() { TC("String", []) }
+fn t_unit() { TC("Unit", []) }
+
+fn sort_strings(xs) { sort(xs) }
+fn uniq_sorted(xs) {
+  match xs { [a, b, ..rest] -> if a == b { uniq_sorted([b, ..rest]) } else { [a, ..uniq_sorted([b, ..rest])] }, _ -> xs }
+}
+fn mk_row(labels, tail) { Row(uniq_sorted(sort_strings(labels)), tail) }
+fn pure_row() { Row([], None) }
+
+fn store_new() { Store(array_empty(), array_empty(), array_empty(), array_empty(), array_empty()) }
+fn new_var(st, level, traits) {
+  match st { Store(vl, vv, vt, rl, rv) -> (TV(array_length(vl)), Store(array_push(vl, None), array_push(vv, level), array_push(vt, traits), rl, rv)) }
+}
+fn new_rvar(st, level) {
+  match st { Store(vl, vv, vt, rl, rv) -> (array_length(rl), Store(vl, vv, vt, array_push(rl, None), array_push(rv, level))) }
+}
+fn v_link(st, i) { match st { Store(vl, _, _, _, _) -> array_get(vl, i) } }
+fn v_level(st, i) { match st { Store(_, vv, _, _, _) -> array_get(vv, i) } }
+fn v_traits(st, i) { match st { Store(_, _, vt, _, _) -> array_get(vt, i) } }
+fn r_link(st, i) { match st { Store(_, _, _, rl, _) -> array_get(rl, i) } }
+fn r_level(st, i) { match st { Store(_, _, _, _, rv) -> array_get(rv, i) } }
+fn set_v_link(st, i, t) { match st { Store(vl, vv, vt, rl, rv) -> Store(array_set(vl, i, Some(t)), vv, vt, rl, rv) } }
+fn set_v_level(st, i, l) { match st { Store(vl, vv, vt, rl, rv) -> Store(vl, array_set(vv, i, l), vt, rl, rv) } }
+fn add_v_trait(st, i, c) {
+  match st { Store(vl, vv, vt, rl, rv) -> { let ts = array_get(vt, i); if contains_str(ts, c) { st } else { Store(vl, vv, array_set(vt, i, append(ts, [c])), rl, rv) } } }
+}
+fn set_r_link(st, i, r) { match st { Store(vl, vv, vt, rl, rv) -> Store(vl, vv, vt, array_set(rl, i, Some(r)), rv) } }
+fn set_r_level(st, i, l) { match st { Store(vl, vv, vt, rl, rv) -> Store(vl, vv, vt, rl, array_set(rv, i, l)) } }
+
+fn prune(st, t) { match t { TV(i) -> match v_link(st, i) { Some(u) -> prune(st, u), None -> t }, _ -> t } }
+
+// A row with every bound tail followed: labels gathered, tail unbound or none.
+fn prune_row(st, r) {
+  match r {
+    Row(labels, tail) -> {
+      fn go(labels, tail) {
+        match tail {
+          Some(v) -> match r_link(st, v) { Some(Row(more, t2)) -> go(append(labels, more), t2), None -> (labels, tail) },
+          None -> (labels, tail),
+        }
+      }
+      let (ls, t) = go(labels, tail);
+      Row(uniq_sorted(sort_strings(ls)), t)
+    }
+  }
+}
+fn row_labels(r) { match r { Row(ls, _) -> ls } }
+fn row_tail(r) { match r { Row(_, t) -> t } }
+
+// The head of a type, which selects an impl: a type name, or `(n)` for n-tuples.
+fn head_of(st, t) {
+  match prune(st, t) { TC(n, _) -> Some(n), TT(es) -> Some("(" ++ int_to_string(length(es)) ++ ")"), _ -> None }
+}
+
+// ---------------------------------------------------------- unification
+type UErr { UMismatch, UInfinite, URecRow, UEffect(List<String>), UTrait(String, Ty) }
+
+// What requireTrait needs: each type's parameters and constructors' field
+// types, and each trait's impls (head -> parameters, where constraints).
+type ImplHead { ImplHead(List<String>, List<(String, List<String>)>) }
+type TEnv { TEnv(Map<(List<String>, List<List<Ty>>)>, Map<Map<ImplHead>>) }
+
+fn then_u(r, f) { match r { (st, None) -> f(st), _ -> r } }
+fn each_u(st, xs, f) { match xs { [] -> (st, None), [x, ..rest] -> then_u(f(st, x), |st| each_u(st, rest, f)) } }
+fn each2_u(st, xs, ys, f) {
+  match (xs, ys) { ([x, ..xr], [y, ..yr]) -> then_u(f(st, x, y), |st| each2_u(st, xr, yr, f)), _ -> (st, None) }
+}
+
+fn adjust_row(st, level, r) {
+  match prune_row(st, r) { Row(_, Some(t)) -> if r_level(st, t) > level { set_r_level(st, t, level) } else { st }, _ -> st }
+}
+fn occurs_adjust(st, v, t) {
+  match prune(st, t) {
+    TV(i) -> if i == v { (st, Some(UInfinite)) } else if v_level(st, i) > v_level(st, v) { (set_v_level(st, i, v_level(st, v)), None) } else { (st, None) },
+    TC(_, args) -> each_u(st, args, |st, a| occurs_adjust(st, v, a)),
+    TT(es) -> each_u(st, es, |st, a| occurs_adjust(st, v, a)),
+    TF(ps, r, eff) -> then_u(each_u(st, ps, |st, a| occurs_adjust(st, v, a)), |st| then_u(occurs_adjust(st, v, r), |st| (adjust_row(st, v_level(st, v), eff), None))),
+    TP(_) -> (st, None),
+  }
+}
+
+fn subst_params(t, sub) {
+  match t {
+    TP(n) -> match find(sub, |e| match e { (k, _) -> k == n }) { Some((_, u)) -> u, None -> t },
+    TC(n, args) -> TC(n, map(args, |a| subst_params(a, sub))),
+    TT(es) -> TT(map(es, |a| subst_params(a, sub))),
+    TF(ps, r, eff) -> TF(map(ps, |a| subst_params(a, sub)), subst_params(r, sub), eff),
+    _ -> t,
+  }
+}
+
+// Does type t implement the trait? Records the constraint on type variables.
+fn require_trait(env, st, tr, t, seen) {
+  match env {
+    TEnv(adts, impls) -> {
+      let pt = prune(st, t);
+      match pt {
+        TV(i) -> (add_v_trait(st, i, tr), None),
+        _ -> {
+          let found = match (m_get(impls, tr), head_of(st, pt)) { (Some(m), Some(h)) -> m_get(m, h), _ -> None };
+          match found {
+            Some(ImplHead(params, where_cs)) -> {
+              let args = match pt { TT(es) -> es, TC(_, a) -> a, _ -> [] };
+              let (st2, err, _) = fold(enumerate(params), (st, None, seen), |acc, ip| match (acc, ip) {
+                ((st, None, seen), (i, p)) -> {
+                  let cs = match find(where_cs, |w| match w { (q, _) -> q == p }) { Some((_, c)) -> c, None -> [] };
+                  fold(cs, (st, None, seen), |acc2, c| match acc2 {
+                    (st, None, seen) -> { let (st, e) = require_trait(env, st, c, list_get(args, i), seen); (st, e, seen) },
+                    _ -> acc2,
+                  })
+                },
+                _ -> acc,
+              });
+              (st2, err)
+            },
+            None -> {
+              if tr != "Ord" { (st, Some(UTrait(tr, pt))) }
+              else {
+                match pt {
+                  TF(_, _, _) -> (st, Some(UTrait(tr, pt))),
+                  TT(es) -> each_u(st, es, |st, e| require_trait(env, st, tr, e, seen)),
+                  TC(n, args) -> then_u(each_u(st, args, |st, a| require_trait(env, st, tr, a, seen)), |st| {
+                    match m_get(adts, n) {
+                      None -> (st, None),
+                      Some((params, ctor_fields)) -> if contains_str(seen, n) { (st, None) } else {
+                        let seen2 = [n, ..seen];
+                        let sub = zip(params, args);
+                        each_u(st, ctor_fields, |st, fs| each_u(st, fs, |st, f| require_trait(env, st, tr, subst_params(f, sub), seen2)))
+                      },
+                    }
+                  }),
+                  _ -> (st, None),
+                }
+              }
+            },
+          }
+        },
+      }
+    },
+  }
+}
+
+fn unify(env, st, a0, b0) {
+  let a = prune(st, a0);
+  let b = prune(st, b0);
+  match (a, b) {
+    (TV(i), TV(j)) -> if i == j { (st, None) } else { unify_var(env, st, i, b) },
+    (TV(i), _) -> unify_var(env, st, i, b),
+    (_, TV(j)) -> unify_var(env, st, j, a),
+    (TC(n1, a1), TC(n2, a2)) -> if n1 != n2 || length(a1) != length(a2) { (st, Some(UMismatch)) } else { each2_u(st, a1, a2, |st, x, y| unify(env, st, x, y)) },
+    (TT(e1), TT(e2)) -> if length(e1) != length(e2) { (st, Some(UMismatch)) } else { each2_u(st, e1, e2, |st, x, y| unify(env, st, x, y)) },
+    (TF(p1, r1, f1), TF(p2, r2, f2)) ->
+      if length(p1) != length(p2) { (st, Some(UMismatch)) }
+      else { then_u(each2_u(st, p1, p2, |st, x, y| unify(env, st, x, y)), |st| then_u(unify(env, st, r1, r2), |st| unify_rows(st, f1, f2))) },
+    _ -> (st, Some(UMismatch)),
+  }
+}
+fn unify_var(env, st, i, b) {
+  then_u(occurs_adjust(st, i, b), |st| {
+    let traits = v_traits(st, i);
+    let r = match b {
+      TV(j) -> (fold(traits, st, |st, c| add_v_trait(st, j, c)), None),
+      _ -> each_u(st, traits, |st, c| require_trait(env, st, c, b, [])),
+    };
+    then_u(r, |st| (set_v_link(st, i, b), None))
+  })
+}
+
+// Rows are equal when they have the same labels; an open tail can grow to
+// absorb the labels the other side has.
+fn unify_rows(st, r1, r2) {
+  let a = prune_row(st, r1);
+  let b = prune_row(st, r2);
+  let la = row_labels(a);
+  let lb = row_labels(b);
+  let only_a = filter(la, |l| !contains_str(lb, l));
+  let only_b = filter(lb, |l| !contains_str(la, l));
+  match (row_tail(a), row_tail(b)) {
+    (None, None) -> if !is_empty(only_a) { (st, Some(UEffect(only_a))) } else if !is_empty(only_b) { (st, Some(UEffect(only_b))) } else { (st, None) },
+    (None, Some(tb)) -> if !is_empty(only_b) { (st, Some(UEffect(only_b))) } else { bind_row(st, tb, mk_row(only_a, None)) },
+    (Some(ta), None) -> if !is_empty(only_a) { (st, Some(UEffect(only_a))) } else { bind_row(st, ta, mk_row(only_b, None)) },
+    (Some(ta), Some(tb)) ->
+      if ta == tb { if !is_empty(only_a) || !is_empty(only_b) { (st, Some(URecRow)) } else { (st, None) } }
+      else {
+        let (fresh, st) = new_rvar(st, min(r_level(st, ta), r_level(st, tb)));
+        then_u(bind_row(st, ta, mk_row(only_b, Some(fresh))), |st| bind_row(st, tb, mk_row(only_a, Some(fresh))))
+      },
+  }
+}
+fn bind_row(st, v, r) {
+  match prune_row(st, r) {
+    Row(_, Some(t)) -> if t == v { (st, Some(URecRow)) } else {
+      let st = if r_level(st, t) > r_level(st, v) { set_r_level(st, t, r_level(st, v)) } else { st };
+      (set_r_link(st, v, r), None)
+    },
+    _ -> (set_r_link(st, v, r), None),
+  }
+}
+
+// ------------------------------------------------- generalize / instantiate
+fn generalize(st, t, level) {
+  match prune(st, t) {
+    TV(i) -> if v_level(st, i) > level { set_v_level(st, i, generic()) } else { st },
+    TC(_, args) -> fold(args, st, |st, a| generalize(st, a, level)),
+    TT(es) -> fold(es, st, |st, a| generalize(st, a, level)),
+    TF(ps, r, eff) -> {
+      let st = fold(ps, st, |st, a| generalize(st, a, level));
+      let st = generalize(st, r, level);
+      match prune_row(st, eff) { Row(_, Some(tl)) -> if r_level(st, tl) > level { set_r_level(st, tl, generic()) } else { st }, _ -> st }
+    },
+    TP(_) -> st,
+  }
+}
+
+// Copies a type, replacing generic variables with fresh ones. `inst` records
+// the mapping: (type variables, row variables), each in order of creation.
+type Inst { Inst(List<(Int, Ty)>, List<(Int, Int)>) }
+fn inst_empty() { Inst([], []) }
+fn inst_lookup_v(inst, i) { match inst { Inst(vs, _) -> match find(vs, |e| match e { (k, _) -> k == i }) { Some((_, t)) -> Some(t), None -> None } } }
+fn inst_lookup_r(inst, i) { match inst { Inst(_, rs) -> match find(rs, |e| match e { (k, _) -> k == i }) { Some((_, t)) -> Some(t), None -> None } } }
+
+fn instantiate(st, t, level, inst) {
+  match prune(st, t) {
+    TV(i) -> if v_level(st, i) != generic() { (TV(i), st, inst) } else {
+      match inst_lookup_v(inst, i) {
+        Some(u) -> (u, st, inst),
+        None -> { let (v, st) = new_var(st, level, v_traits(st, i)); match inst { Inst(vs, rs) -> (v, st, Inst(append(vs, [(i, v)]), rs)) } },
+      }
+    },
+    TC(n, args) -> if is_empty(args) { (TC(n, args), st, inst) } else { let (as, st, inst) = instantiate_all(st, args, level, inst); (TC(n, as), st, inst) },
+    TT(es) -> { let (xs, st, inst) = instantiate_all(st, es, level, inst); (TT(xs), st, inst) },
+    TF(ps, r, eff) -> {
+      let pr = prune_row(st, eff);
+      let (tail, st, inst) = match row_tail(pr) {
+        Some(tl) -> if r_level(st, tl) == generic() {
+          match inst_lookup_r(inst, tl) {
+            Some(u) -> (Some(u), st, inst),
+            None -> { let (v, st) = new_rvar(st, level); match inst { Inst(vs, rs) -> (Some(v), st, Inst(vs, append(rs, [(tl, v)]))) } },
+          }
+        } else { (Some(tl), st, inst) },
+        None -> (None, st, inst),
+      };
+      let (qs, st, inst) = instantiate_all(st, ps, level, inst);
+      let (rr, st, inst) = instantiate(st, r, level, inst);
+      (TF(qs, rr, mk_row(row_labels(pr), tail)), st, inst)
+    },
+    other -> (other, st, inst),
+  }
+}
+fn instantiate_all(st, ts, level, inst) {
+  match ts {
+    [] -> ([], st, inst),
+    [t, ..rest] -> { let (u, st, inst) = instantiate(st, t, level, inst); let (us, st, inst) = instantiate_all(st, rest, level, inst); ([u, ..us], st, inst) },
+  }
+}
+
+// A function type whose effect row is closed, reopened with a fresh tail.
+fn open_effect(st, t, level) {
+  match prune(st, t) {
+    TF(ps, r, eff) -> {
+      let pr = prune_row(st, eff);
+      match row_tail(pr) { Some(_) -> (TF(ps, r, eff), st), None -> { let (v, st) = new_rvar(st, level); (TF(ps, r, mk_row(row_labels(pr), Some(v))), st) } }
+    },
+    other -> (other, st),
+  }
+}
+
+// -------------------------------------------------------------- printing
+// names: type variables in order of first use; rows: row variables named;
+// uses: how often each row variable occurs (a tail used once is left out).
+type Printer { Printer(List<(Int, String)>, List<(Int, String)>, List<(Int, Int)>) }
+fn printer() { Printer([], [], []) }
+
+fn pr_scan(st, pr, t) {
+  match prune(st, t) {
+    TC(_, args) -> fold(args, pr, |pr, a| pr_scan(st, pr, a)),
+    TT(es) -> fold(es, pr, |pr, a| pr_scan(st, pr, a)),
+    TF(ps, r, eff) -> {
+      let pr = fold(ps, pr, |pr, a| pr_scan(st, pr, a));
+      let pr = pr_scan(st, pr, r);
+      match row_tail(prune_row(st, eff)) {
+        Some(tl) -> match pr {
+          Printer(ns, rs, uses) -> {
+            let n = match find(uses, |u| match u { (k, _) -> k == tl }) { Some((_, c)) -> c, None -> 0 };
+            Printer(ns, rs, [(tl, n + 1), ..filter(uses, |u| match u { (k, _) -> k != tl })])
+          },
+        },
+        None -> pr,
+      }
+    },
+    _ -> pr,
+  }
+}
+fn pr_var_name(pr, i) {
+  match pr {
+    Printer(ns, rs, uses) -> match find(ns, |e| match e { (k, _) -> k == i }) {
+      Some((_, n)) -> (n, pr),
+      None -> {
+        let n = length(ns);
+        let name = if n < 26 { char_from_code(97 + n) } else { "t" ++ int_to_string(n) };
+        (name, Printer(append(ns, [(i, name)]), rs, uses))
+      },
+    },
+  }
+}
+fn pr_row_name(pr, i) {
+  match pr {
+    Printer(ns, rs, uses) -> match find(rs, |e| match e { (k, _) -> k == i }) {
+      Some((_, n)) -> (n, pr),
+      None -> {
+        let n = length(rs);
+        let name = if n == 0 { "e" } else { "e" ++ int_to_string(n + 1) };
+        (name, Printer(ns, append(rs, [(i, name)]), uses))
+      },
+    },
+  }
+}
+fn pr_effect(st, pr, eff) {
+  let r = prune_row(st, eff);
+  let ls = row_labels(r);
+  let (tail, pr) = match (row_tail(r), pr) {
+    (Some(tl), Printer(_, _, uses)) -> {
+      let n = match find(uses, |u| match u { (k, _) -> k == tl }) { Some((_, c)) -> c, None -> 0 };
+      if n > 1 { let (name, pr) = pr_row_name(pr, tl); (Some(name), pr) } else { (None, pr) }
+    },
+    _ -> (None, pr),
+  };
+  let text = match tail {
+    None -> if is_empty(ls) { "" } else if length(ls) == 1 { " ! " ++ list_get(ls, 0) } else { " ! {" ++ join(ls, ", ") ++ "}" },
+    Some(tn) -> if is_empty(ls) { " ! " ++ tn } else { " ! {" ++ join(ls, ", ") ++ " | " ++ tn ++ "}" },
+  };
+  (text, pr)
+}
+fn pr_show(st, pr, t, top) {
+  let pr = if top { pr_scan(st, pr, t) } else { pr };
+  match prune(st, t) {
+    TV(i) -> pr_var_name(pr, i),
+    TC(n, args) -> if n == "Unit" { ("()", pr) } else if is_empty(args) { (n, pr) } else {
+      let (xs, pr) = pr_show_all(st, pr, args);
+      (n ++ "<" ++ join(xs, ", ") ++ ">", pr)
+    },
+    TT(es) -> { let (xs, pr) = pr_show_all(st, pr, es); ("(" ++ join(xs, ", ") ++ ")", pr) },
+    TF(ps, r, eff) -> {
+      let (xs, pr) = pr_show_all(st, pr, ps);
+      let (rt, pr) = pr_show(st, pr, r, false);
+      let (et, pr) = pr_effect(st, pr, eff);
+      ("fn(" ++ join(xs, ", ") ++ ") -> " ++ rt ++ et, pr)
+    },
+    TP(_) -> ("?", pr),
+  }
+}
+fn pr_show_all(st, pr, ts) {
+  match ts { [] -> ([], pr), [t, ..rest] -> { let (x, pr) = pr_show(st, pr, t, false); let (xs, pr) = pr_show_all(st, pr, rest); ([x, ..xs], pr) } }
+}
+// The trait constraints on the variables named so far: `a: Ord, b: Show + Ord`.
+fn pr_constraints(st, pr) {
+  match pr {
+    Printer(ns, _, _) -> filter(map(ns, |e| match e { (i, n) -> {
+      let ts = v_traits(st, i);
+      if is_empty(ts) { "" } else { n ++ ": " ++ join(sort_strings(ts), " + ") }
+    } }), |s| s != ""),
+  }
+}
+fn show_type(st, t) { let (s, _) = pr_show(st, printer(), t, true); s }
+fn signature_text(st, t) {
+  let (s, pr) = pr_show(st, printer(), t, true);
+  let cs = pr_constraints(st, pr);
+  if is_empty(cs) { s } else { s ++ " where " ++ join(cs, ", ") }
+}

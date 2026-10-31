@@ -1,0 +1,97 @@
+// lumen2c: the Lumen 2 compiler, written in Lumen 2.
+//
+// It is a port of the reference compiler that was written in JavaScript
+// (lumen2/src/ before it was retired), pass for pass, and it produces the same
+// output byte for byte: the same diagnostics, signatures, proof obligations
+// and WebAssembly. The files of this directory are concatenated in name order
+// (compiler/build.js) into one program.
+//
+// ================================================================ utilities
+
+// A map from strings to values: an AVL tree.
+type Map<v> { MEmpty, MNode(Map<v>, String, v, Map<v>, Int) }
+
+fn m_height(m) { match m { MEmpty -> 0, MNode(_, _, _, _, h) -> h } }
+fn m_make(l, k, v, r) { MNode(l, k, v, r, max(m_height(l), m_height(r)) + 1) }
+fn m_rotate_right(l, k, v, r) {
+  match l { MNode(ll, lk, lv, lr, _) -> m_make(ll, lk, lv, m_make(lr, k, v, r)), MEmpty -> m_make(l, k, v, r) }
+}
+fn m_rotate_left(l, k, v, r) {
+  match r { MNode(rl, rk, rv, rr, _) -> m_make(m_make(l, k, v, rl), rk, rv, rr), MEmpty -> m_make(l, k, v, r) }
+}
+fn m_balance(l, k, v, r) {
+  let hl = m_height(l);
+  let hr = m_height(r);
+  if hl > hr + 1 {
+    match l {
+      MNode(ll, lk, lv, lr, _) -> if m_height(ll) >= m_height(lr) { m_rotate_right(l, k, v, r) } else { m_rotate_right(m_rotate_left(ll, lk, lv, lr), k, v, r) },
+      MEmpty -> m_make(l, k, v, r),
+    }
+  } else if hr > hl + 1 {
+    match r {
+      MNode(rl, rk, rv, rr, _) -> if m_height(rr) >= m_height(rl) { m_rotate_left(l, k, v, r) } else { m_rotate_left(l, k, v, m_rotate_right(rl, rk, rv, rr)) },
+      MEmpty -> m_make(l, k, v, r),
+    }
+  } else { m_make(l, k, v, r) }
+}
+fn m_set(m, k, v) {
+  match m {
+    MEmpty -> MNode(MEmpty, k, v, MEmpty, 1),
+    MNode(l, k2, v2, r, h) -> if k < k2 { m_balance(m_set(l, k, v), k2, v2, r) } else if k > k2 { m_balance(l, k2, v2, m_set(r, k, v)) } else { MNode(l, k, v, r, h) },
+  }
+}
+fn m_get(m, k) {
+  match m { MEmpty -> None, MNode(l, k2, v, r, _) -> if k < k2 { m_get(l, k) } else if k > k2 { m_get(r, k) } else { Some(v) } }
+}
+fn m_has(m, k) { match m_get(m, k) { Some(_) -> true, None -> false } }
+fn m_entries(m) {
+  fn go(m, acc) { match m { MEmpty -> acc, MNode(l, k, v, r, _) -> go(l, [(k, v), ..go(r, acc)]) } }
+  go(m, [])
+}
+fn m_size(m) { match m { MEmpty -> 0, MNode(l, _, _, r, _) -> m_size(l) + 1 + m_size(r) } }
+
+// Text pieces joined: the way to build long text in linear time.
+fn cat(xs) { concat_strings(xs) }
+fn cat_rev(xs) { concat_strings(reverse(xs)) }
+fn join_with(xs, sep) { join(xs, sep) }
+
+fn digit(c) { c >= 48 && c <= 57 }
+fn alpha(c) { (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95 }
+fn alnum(c) { digit(c) || alpha(c) }
+fn upper(c) { c >= 65 && c <= 90 }
+fn code_at(src, i) { if i >= 0 && i < string_length(src) { char_code_at(src, i) } else { 0 - 1 } }
+fn starts_at(src, i, p) { substring(src, i, i + string_length(p)) == p }
+
+fn list_get(xs, i) { match nth(xs, i) { Some(x) -> x, None -> panic("internal error: list index " ++ int_to_string(i)) } }
+fn contains_str(xs, s) { any(xs, |x| x == s) }
+fn enumerate(xs) { zip(range(0, length(xs)), xs) }
+
+// JSON text for a string of bytes: printable ASCII as is, the rest escaped.
+// (Bytes 128-255 become \u00XX: the host reads the string back as bytes.)
+fn hex4(n) {
+  let d = "0123456789abcdef";
+  "\\u00" ++ substring(d, n / 16, n / 16 + 1) ++ substring(d, n % 16, n % 16 + 1)
+}
+fn json_str(s) {
+  fn piece(c) {
+    if c == 34 { "\\\"" } else if c == 92 { "\\\\" } else if c == 10 { "\\n" }
+    else if c < 32 || c >= 127 { hex4(c) } else { char_from_code(c) }
+  }
+  fn go(i, start, acc) {
+    if i >= string_length(s) { cat_rev([substring(s, start, i), ..acc]) }
+    else {
+      let c = char_code_at(s, i);
+      if c == 34 || c == 92 || c < 32 || c >= 127 { go(i + 1, i + 1, [piece(c), substring(s, start, i), ..acc]) } else { go(i + 1, start, acc) }
+    }
+  }
+  "\"" ++ go(0, 0, []) ++ "\""
+}
+
+// The first compile error stops compilation. The message, span and note are
+// handed to the host as JSON in the panic message.
+fn fail_at(msg, s, e, note) {
+  let n = match note { Some(t) -> json_str(t), None -> "null" };
+  panic("LUMENERR{\"message\":" ++ json_str(msg) ++ ",\"s\":" ++ int_to_string(s) ++ ",\"e\":" ++ int_to_string(e) ++ ",\"note\":" ++ n ++ "}")
+}
+fn fail_span(msg, s, e) { fail_at(msg, s, e, None) }
+fn internal(msg) { panic("internal error: " ++ msg) }
