@@ -11,8 +11,11 @@ import { compileSource, utf8 } from '../src/api.js';
 import { runWasm } from '../src/codegen.js';
 import { makeHost } from '../src/host.js';
 import { parse } from '../src/parser.js';
-import { checkOnce } from '../src/check.js';
+import { checkOnce, check } from '../src/check.js';
 import { PRELUDE } from '../src/prelude.js';
+import { lowerProgram, tkey } from '../src/lower.js';
+import { inlineSmall } from '../src/inline.js';
+import { simplify } from '../src/simplify.js';
 import { generate } from '../test/fuzz.js';
 
 const here = (p) => new URL(p, import.meta.url);
@@ -145,6 +148,100 @@ export function jsCheck1(src, grants = null, entry = 'main') {
   }
 }
 
+// The whole check (both passes and the proofs), in compiler/99-main.lm's `check` format.
+export function jsCheck(src, grants = null, entry = 'main', mutant = null) {
+  const off = byteOffsets(src);
+  const key = (k) => { const m = /^user:(\d+):(\d+)$/.exec(k); return m ? `user:${off[+m[1]]}:${off[+m[2]]}` : k; };
+  try {
+    const p = check(src, { grants, entry, mutant, includePrelude: true });
+    const v = p.verification;
+    const lines = p.signatures.map((s) => `sig ${s.name}: ${s.type}`);
+    for (const w of p.warnings) lines.push(`warn ${w.message} @${off[w.span.s]}-${off[w.span.e]}`);
+    for (const k of [...v.safe].map(key).sort(cmpBytes)) lines.push(`safe ${k}`);
+    for (const x of [...v.unproved].map(([k, n]) => `${key(k)}: ${n}`).sort(cmpBytes)) lines.push(`unproved ${x}`);
+    for (const o of v.obligations) if (o.scope === 'user') lines.push(`ob ${o.kind} ${o.site ? key(o.site) : ''} @${off[o.span.s]}-${off[o.span.e]} ${o.what} ${o.status} ${o.lemmas ?? 0} ${o.clauses ?? 0} ${o.counterexample ?? ''}`);
+    return lines.join('\n');
+  } catch (e) {
+    if (!e.span) return `CRASH ${e.message}`;
+    return errText({ message: e.message, s: off[e.span.s], e: off[e.span.e], note: e.note });
+  }
+}
+const cmpBytes = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
+// The IR, in compiler/90-dump.lm's format.
+const jbytes = jstr; // the compiler's strings hold one byte per character
+export function dumpIR(ir) {
+  const tk = (t) => (t ? tkey(t) : '-');
+  const at = (a) => (a.k === 'var' ? `$${a.v}` : a.k === 'int' ? `#${a.n}` : a.k === 'bool' ? String(a.b) : a.k === 'unit' ? '()' : jbytes(a.s));
+  const ats = (xs) => `[${xs.map(at).join(' ')}]`;
+  const tys = (xs) => `[${xs.map(tk).join(' ')}]`;
+  const path = (p) => `[${p.join(' ')}]`;
+  const out = [];
+  const rhs = (r) => {
+    switch (r.k) {
+      case 'atom': return `atom ${at(r.a)}`;
+      case 'prim': return `prim ${r.op} ${ats(r.args)} ${tk(r.ty)}`;
+      case 'cmp': return `cmp ${r.op} ${tk(r.ty)} ${ats(r.args)}`;
+      case 'call': return `call ${r.fn} ${ats(r.args)}`;
+      case 'callc': return `callc ${at(r.f)} ${ats(r.args)}`;
+      case 'ctor': return `ctor ${tk(r.ty)} ${r.tag} ${ats(r.args)} ${r.reuse ?? '-'}`;
+      case 'tuple': return `tuple ${tk(r.ty)} ${ats(r.args)} ${r.reuse ?? '-'}`;
+      case 'closure': return `closure ${r.fn} ${tk(r.ty)} ${ats(r.captures)} ${tys(r.captureTys)}`;
+      case 'staticfn': return `static ${r.fn} ${tk(r.ty)}`;
+      case 'field': case 'peek': return `${r.k} ${at(r.x)} ${path(r.path)} ${tk(r.ty)} ${tk(r.objTy)}`;
+      case 'testtag': return `testtag ${at(r.x)} ${path(r.path)} ${tk(r.objTy)} ${tk(r.ty)} ${r.tag}`;
+      case 'testlit': return `testlit ${at(r.x)} ${path(r.path)} ${tk(r.objTy)} ${tk(r.ty)} ${at(r.lit)}`;
+      case 'envfield': return `envfield ${r.i} ${tk(r.ty)}`;
+      case 'builtin': return `builtin ${r.name} ${ats(r.args)} ${tk(r.ty)} ${tys(r.argTys)}`;
+      case 'expr': return 'expr';
+      default: throw new Error(`dumpIR: ${r.k}`);
+    }
+  };
+  const ex = (e) => {
+    for (;;) {
+      switch (e.k) {
+        case 'let': out.push(`let ${e.v} ${rhs(e.rhs)}`); if (e.rhs.k === 'expr') { ex(e.rhs.e); out.push('end'); } e = e.body; continue;
+        case 'ret': out.push(`ret ${rhs(e.rhs)}`); if (e.rhs.k === 'expr') { ex(e.rhs.e); out.push('end'); } return;
+        case 'if': out.push(`if ${at(e.c)}`); ex(e.t); out.push('else'); ex(e.e); out.push('end'); return;
+        case 'unreachable': out.push('unreachable'); return;
+        case 'dup': out.push(`dup ${e.v}`); e = e.body; continue;
+        case 'drop': out.push(`drop ${e.v}`); e = e.body; continue;
+        case 'dropreuse': out.push(`dropreuse ${e.r} ${e.v}`); e = e.body; continue;
+        case 'freetoken': out.push(`free ${e.v} ${e.size ?? '-'}`); e = e.body; continue;
+        case 'unpack': out.push(`unpack ${e.v} [${e.xs.map((x) => `${x.x}:${x.i}`).join(' ')}] ${e.r ?? '-'} ${tys(e.fields ?? [])}`); e = e.body; continue;
+        default: throw new Error(`dumpIR: ${e.k}`);
+      }
+    }
+  };
+  for (const f of ir.fns) {
+    out.push(`fn ${f.name} env=${f.env} ret=${tk(f.ret)}`);
+    out.push(`params ${f.params.map((p) => `${p.v}:${tk(p.ty)}`).join(' ')}`);
+    out.push(`vars ${[...f.vars].map(([v, t]) => `${v}:${tk(t)}`).join(' ')}`);
+    out.push(`borrowed ${[...(f.borrowed ?? [])].join(' ')}`);
+    out.push(`captures ${tys(f.captures ?? [])}`);
+    if (f.modes) out.push(`modes ${f.modes.join(' ')}`);
+    ex(f.body);
+  }
+  out.push(`main ${ir.main}`);
+  for (const [k, v] of ir.ordImpls) out.push(`ord ${k} ${v}`);
+  return out.join('\n');
+}
+
+// Lowering after one checking pass (lower.js), then (opt) inlining and simplification.
+export function jsLower1(src, grants = null, entry = 'main', mutant = null, stage = 'lower1') {
+  const off = byteOffsets(src);
+  try {
+    const p = checkOnce(src, { assumeSafe: true, grants, entry });
+    if (!p.main) return 'NOMAIN';
+    const ir = lowerProgram(p, { mutant });
+    if (stage !== 'lower1') { inlineSmall(ir); for (const f of ir.fns) simplify(f); }
+    return dumpIR(ir);
+  } catch (e) {
+    if (!e.span) return `CRASH ${e.message}`;
+    return errText({ message: e.message, s: off[e.span.s], e: off[e.span.e], note: e.note });
+  }
+}
+
 export function jsAst(src) {
   const off = byteOffsets(src);
   try { return dumpAst(parse(src), off); } catch (e) {
@@ -209,6 +306,7 @@ function main() {
   let same = 0, diff = 0;
   for (const { name, src, grants = null, entry = 'main' } of items) {
     let want, got;
+    const t0 = performance.now();
     if (stage === 'ast') {
       want = jsAst(src);
       const r = runCompiler(bytes, 'ast', src);
@@ -217,7 +315,17 @@ function main() {
       want = jsCheck1(src, grants, entry);
       const r = runCompiler(bytes, `check1${grants ? ` grants=${grants.join(',')}` : ''}${entry !== 'main' ? ` entry=${entry}` : ''}`, src);
       got = r.err ? errText(r.err) : r.crash ? `CRASH ${r.crash}` : r.out.replace(/\n$/, '');
+    } else if (stage === 'check') {
+      want = jsCheck(src, grants, entry);
+      const r = runCompiler(bytes, `check${grants ? ` grants=${grants.join(',')}` : ''}${entry !== 'main' ? ` entry=${entry}` : ''}`, src);
+      got = r.err ? errText(r.err) : r.crash ? `CRASH ${r.crash}` : r.out.replace(/\n$/, '');
+    } else if (stage === 'lower1' || stage === 'opt1') {
+      want = jsLower1(src, grants, entry, process.env.MUTANT ?? null, stage);
+      const r = runCompiler(bytes, `${stage}${grants ? ` grants=${grants.join(',')}` : ''}${entry !== 'main' ? ` entry=${entry}` : ''}${process.env.MUTANT ? ` mutant=${process.env.MUTANT}` : ''}`, src);
+      got = r.err ? errText(r.err) : r.crash ? `CRASH ${r.crash}` : r.out.replace(/\n$/, '');
     } else throw new Error(`unknown stage ${stage}`);
+    const ms = performance.now() - t0;
+    if (ms > 5000 && process.env.PARITY_TIMES) console.log(`(${name}: ${Math.round(ms)} ms)`);
     if (want === got) same++;
     else {
       diff++;

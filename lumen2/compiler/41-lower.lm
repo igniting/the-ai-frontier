@@ -1,0 +1,576 @@
+// ================================================================= lowering
+// Typed syntax tree -> monomorphic IR in A-normal form (lower.js). Every
+// polymorphic function is compiled once per concrete type it is used at;
+// trait methods are resolved to their impls; lambdas and local functions are
+// lifted to closure code. The lowering is written in continuation-passing
+// style, and its counter, variables and work queue change in the same order
+// as the reference's, so names and the order of functions come out the same.
+
+// The lowering's state: the name counter, functions made (by name, in order;
+// none while queued), the work queue, user Ord impls by type key (in order),
+// type keys seen by registerOrd, the current function's variables (newest
+// first) and borrowed variables, and the local ids' atoms.
+type LS { LS(Int, OMap<Option<IRFn>>, List<(Fn, List<(Int, Ty)>, String)>, List<(String, String)>, List<String>, List<(String, Ty)>, List<String>, Map<At>) }
+// What lowering reads: the checked program and the mutant.
+type LC { LC(Checked, String) }
+// A context: the instance's type substitution, the current function's name.
+type LCtx { LCtx(List<(Int, Ty)>, String) }
+
+fn lc_cs(lc) { match lc { LC(Checked(_, _, _, _, _, cs, _, _, _, _), _) -> cs } }
+fn lc_decls(lc) { match lc { LC(Checked(d, _, _, _, _, _, _, _, _, _), _) -> d } }
+fn lc_mutant(lc) { match lc { LC(_, m) -> m } }
+fn lc_st(lc) { cs_st(lc_cs(lc)) }
+fn ls_tmp(ls) { match ls { LS(t, _, _, _, _, _, _, _) -> (t, LS(t + 1, ls_out(ls), ls_work(ls), ls_ord(ls), ls_seen(ls), ls_vars(ls), ls_bor(ls), ls_atoms(ls))) } }
+fn ls_out(ls) { match ls { LS(_, o, _, _, _, _, _, _) -> o } }
+fn ls_work(ls) { match ls { LS(_, _, w, _, _, _, _, _) -> w } }
+fn ls_ord(ls) { match ls { LS(_, _, _, o, _, _, _, _) -> o } }
+fn ls_seen(ls) { match ls { LS(_, _, _, _, s, _, _, _) -> s } }
+fn ls_vars(ls) { match ls { LS(_, _, _, _, _, v, _, _) -> v } }
+fn ls_bor(ls) { match ls { LS(_, _, _, _, _, _, b, _) -> b } }
+fn ls_atoms(ls) { match ls { LS(_, _, _, _, _, _, _, a) -> a } }
+fn ls_set_out(ls, o) { match ls { LS(t, _, w, od, s, v, b, a) -> LS(t, o, w, od, s, v, b, a) } }
+fn ls_set_work(ls, w) { match ls { LS(t, o, _, od, s, v, b, a) -> LS(t, o, w, od, s, v, b, a) } }
+fn ls_set_ord(ls, od) { match ls { LS(t, o, w, _, s, v, b, a) -> LS(t, o, w, od, s, v, b, a) } }
+fn ls_set_seen(ls, s) { match ls { LS(t, o, w, od, _, v, b, a) -> LS(t, o, w, od, s, v, b, a) } }
+fn ls_set_cur(ls, v, b) { match ls { LS(t, o, w, od, s, _, _, a) -> LS(t, o, w, od, s, v, b, a) } }
+fn ls_set_atoms(ls, a) { match ls { LS(t, o, w, od, s, v, b, _) -> LS(t, o, w, od, s, v, b, a) } }
+fn ls_atom(ls, id) { match m_get(ls_atoms(ls), int_to_string(id)) { Some(a) -> a, None -> internal("no atom for local " ++ int_to_string(id)) } }
+fn ls_bind_atom(ls, id, a) { ls_set_atoms(ls, m_set(ls_atoms(ls), int_to_string(id), a)) }
+fn ls_add_borrowed(ls, v) { ls_set_cur(ls, ls_vars(ls), if contains_str(ls_bor(ls), v) { ls_bor(ls) } else { [v, ..ls_bor(ls)] }) }
+
+// ------------------------------------------------------------ concrete types
+fn conc(st, t, sub) {
+  match prune(st, t) {
+    TV(i) -> match find(sub, |e| match e { (k, _) -> k == i }) { Some((_, u)) -> u, None -> t_unit() },
+    TC(n, args) -> if is_empty(args) { TC(n, args) } else { TC(n, map(args, |a| conc(st, a, sub))) },
+    TT(es) -> TT(map(es, |a| conc(st, a, sub))),
+    TF(ps, r, _) -> TF(map(ps, |a| conc(st, a, sub)), conc(st, r, sub), pure_row()),
+    other -> other,
+  }
+}
+fn generic_vars(st, t, acc) {
+  match prune(st, t) {
+    TV(i) -> if v_level(st, i) == generic() && !any(acc, |x| x == i) { append(acc, [i]) } else { acc },
+    TC(_, args) -> fold(args, acc, |a, x| generic_vars(st, x, a)),
+    TT(es) -> fold(es, acc, |a, x| generic_vars(st, x, a)),
+    TF(ps, r, _) -> generic_vars(st, r, fold(ps, acc, |a, x| generic_vars(st, x, a))),
+    _ -> acc,
+  }
+}
+fn ty_match(st, scheme, concrete, sub) {
+  match prune(st, scheme) {
+    TV(i) -> if v_level(st, i) == generic() && !any(sub, |e| match e { (k, _) -> k == i }) { append(sub, [(i, concrete)]) } else { sub },
+    TC(_, args) -> match concrete { TC(_, cargs) -> fold(zip(args, cargs), sub, |s, ac| match ac { (a, c) -> ty_match(st, a, c, s) }), _ -> sub },
+    TT(es) -> match concrete { TT(ces) -> fold(zip(es, ces), sub, |s, ac| match ac { (a, c) -> ty_match(st, a, c, s) }), _ -> sub },
+    TF(ps, r, _) -> match concrete { TF(cps, cr, _) -> ty_match(st, r, cr, fold(zip(ps, cps), sub, |s, ac| match ac { (a, c) -> ty_match(st, a, c, s) })), _ -> sub },
+    _ -> sub,
+  }
+}
+fn node_conc(lc, id, sub) { match cs_ty(lc_cs(lc), id) { Some(t) -> conc(lc_st(lc), t, sub), None -> internal("no type for node " ++ int_to_string(id)) } }
+
+fn lc_fn_by_key(lc, key) {
+  match lc { LC(Checked(_, _, _, fns, _, cs, _, _, _, _), _) -> match find(fns, |f| cs_fkey(cs, fn_id(f)) == key) { Some(f) -> f, None -> internal("no function " ++ key) } }
+}
+fn lc_scheme(lc, f) { match cs_scheme(lc_cs(lc), fn_id(f)) { Some(t) -> t, None -> internal("no scheme") } }
+
+// The IR name of a top-level function at a concrete type, queued for lowering.
+fn instance(lc, ls, key, use_ty) {
+  let decl = lc_fn_by_key(lc, key);
+  let st = lc_st(lc);
+  let scheme = lc_scheme(lc, decl);
+  let sub = ty_match(st, scheme, use_ty, []);
+  let args = map(generic_vars(st, scheme, []), |v| conc(st, match find(sub, |e| match e { (k, _) -> k == v }) { Some((_, u)) -> u, None -> t_unit() }, []));
+  let name = if is_empty(args) { key } else { key ++ "<" ++ join(map(args, tkey), ",") ++ ">" };
+  if om_has(ls_out(ls), name) { (name, ls) }
+  else { (name, ls_set_work(ls_set_out(ls, om_set(ls_out(ls), name, None)), append(ls_work(ls), [(decl, sub, name)]))) }
+}
+
+// Closure code that lets a top-level function, constructor, comparison or builtin be used as a value.
+fn wrapper(lc, ls, kind, target, ty, tag) {
+  let name = "wrap:" ++ kind ++ ":" ++ target ++ ":" ++ tkey(ty);
+  if om_has(ls_out(ls), name) { (name, ls) } else {
+    let (pts, ret) = match ty { TF(ps, r, _) -> (ps, r), _ -> internal("wrapper type") };
+    let (params, ls) = fold(pts, ([], ls), |acc, p| match acc { (ps, ls) -> { let (n, ls) = ls_tmp(ls); ([("a" ++ int_to_string(n), p), ..ps], ls) } });
+    let params = reverse(params);
+    let args = map(params, |p| match p { (v, _) -> QVar(v) });
+    let (body, ls) = if kind == "fn" { (IRet(RCall(target, args)), ls) }
+      else if kind == "ctor" { (IRet(RCtor(ret, tag, args, None)), ls) }
+      else if kind == "cmp" { let ls = register_ord(lc, ls, list_get(pts, 0)); (IRet(RCmp("three", list_get(pts, 0), args)), ls) }
+      else if kind == "unreachable" { (IUnreachable, ls) }
+      else { (IRet(RBuiltinCall(target, args, ret, pts)), ls) };
+    let all_params = [("env", ty), ..params];
+    let f = IRFn(name, true, all_params, ret, body, all_params, [], [], []);
+    (name, ls_set_out(ls, om_set(ls_out(ls), name, Some(f))))
+  }
+}
+
+fn impl_key_of(i, m) { match i { ImplInfo(_, _, _, _, _, _, _, keys) -> match find(keys, |k| match k { (n, _) -> n == m }) { Some((_, key)) -> key, None -> internal("impl key") } } }
+fn find_impl(lc, tr, head) {
+  match lc_decls(lc) { Decls(_, _, _, _, _, _, im, _) -> match om_get(im, tr) { Some(per) -> match head { Some(h) -> om_get(per, h), None -> None }, None -> None } }
+}
+
+// A trait method at a concrete type: the impl's function, the structural comparison, or nothing.
+fn resolve_method(lc, ls, tr, method, fty) {
+  let self = match fty { TF([s, .._], _, _) -> s, _ -> t_unit() };
+  match find_impl(lc, tr, conc_head(self)) {
+    Some(i) -> { let (n, ls) = instance(lc, ls, impl_key_of(i, method), fty); ("fn", n, ls) },
+    None -> if tr == "Ord" { ("cmp", "", ls) } else { ("unreachable", "", ls) },
+  }
+}
+
+// The functions of user `impl Ord`s that structural comparison at type t can reach.
+fn register_ord(lc, ls, t) {
+  let key = tkey(t);
+  if contains_str(ls_seen(ls), key) { ls } else {
+    let ls = ls_set_seen(ls, [key, ..ls_seen(ls)]);
+    match t {
+      TT(es) -> fold(es, ls, |ls, e| register_ord(lc, ls, e)),
+      TC(n, args) -> match find_impl(lc, "Ord", Some(n)) {
+        Some(i) -> { let (name, ls) = instance(lc, ls, impl_key_of(i, "compare"), TF([t, t], t_int(), pure_row())); ls_set_ord(ls, append(ls_ord(ls), [(key, name)])) },
+        None -> {
+          let ls = fold(args, ls, |ls, a| register_ord(lc, ls, a));
+          match om_get(d_adts(lc_decls(lc)), n) {
+            None -> ls,
+            Some(a) -> { let sub = zip(adt_params(a), args); fold(adt_ctors(a), ls, |ls, c| fold(ctor_fields(c), ls, |ls, f| register_ord(lc, ls, subst_params(f, sub)))) },
+          }
+        },
+      },
+      _ -> ls,
+    }
+  }
+}
+
+// ---------------------------------------------------------------- functions
+fn sanitize(h) { concat_strings(map(range(0, string_length(h)), |i| { let c = char_code_at(h, i); if alnum(c) { substring(h, i, i + 1) } else { "" } })) }
+fn lw_var(ls, ty, hint) {
+  let (n, ls) = ls_tmp(ls);
+  let v = sanitize(hint) ++ "_" ++ int_to_string(n);
+  (v, ls_set_cur(ls, [(v, ty), ..ls_vars(ls)], ls_bor(ls)))
+}
+
+fn lower_fn(lc, ls, decl, sub, name) {
+  let cs = lc_cs(lc);
+  let ty = conc(lc_st(lc), lc_scheme(lc, decl), sub);
+  let (pts, ret) = match ty { TF(ps, r, _) -> (ps, r), _ -> internal("fn type") };
+  let ls = ls_set_atoms(ls_set_cur(ls, [], []), MEmpty);
+  let (params, ls) = fold(zip(fn_params(decl), pts), ([], ls), |acc, pt| match (acc, pt) {
+    ((ps, ls), (p, t)) -> { let (v, ls) = lw_var(ls, t, param_name(p)); ([(v, t), ..ps], ls) },
+  });
+  let params = reverse(params);
+  let ls = fold(zip(fn_params(decl), params), ls, |ls, pp| match pp { (p, (v, _)) -> ls_bind_atom(ls, cs_lid(cs, param_id(p)), QVar(v)) });
+  let (body, ls) = lower_tail(lc, ls, fn_body(decl), LCtx(sub, name));
+  let f = IRFn(name, false, params, ret, body, reverse(ls_vars(ls)), reverse(ls_bor(ls)), [], []);
+  ls_set_out(ls, om_set(ls_out(ls), name, Some(f)))
+}
+
+fn atom_type(ls, a) {
+  match a {
+    QVar(v) -> match var_ty(ls_vars(ls), v) { Some(t) -> t, None -> internal("atom type " ++ v) },
+    QInt(_) -> t_int(), QBool(_) -> t_bool(), QUnit -> t_unit(), QStr(_) -> t_string(),
+  }
+}
+
+// Lowers a lambda or local function into lifted closure code plus a closure value.
+fn lower_closure(lc, ls, node_id, params, body, ctx, self_id) {
+  let cs = lc_cs(lc);
+  match ctx { LCtx(sub, outer_name) -> {
+    let fn_ty = node_conc(lc, node_id, sub);
+    let (pts, ret) = match fn_ty { TF(ps, r, _) -> (ps, r), _ -> internal("closure type") };
+    let param_ids = map(params, |p| cs_lid(cs, param_id(p)));
+    // A refinement's bound variable is not a runtime value: only ids with an atom are captured.
+    let captured = filter(free_locals(lc, body, param_ids, self_id), |id| m_has(ls_atoms(ls), int_to_string(id)));
+    let (n, ls) = ls_tmp(ls);
+    let name = "lambda" ++ int_to_string(n) ++ ":" ++ outer_name;
+    // The outer function's variables and atoms are set aside while the code is lowered.
+    let outer_vars = ls_vars(ls);
+    let outer_bor = ls_bor(ls);
+    let outer_atoms = ls_atoms(ls);
+    let ls = ls_set_cur(ls, [], []);
+    let (ps, ls) = fold(zip(params, pts), ([], ls), |acc, pt| match (acc, pt) { ((ps, ls), (p, t)) -> { let (v, ls) = lw_var(ls, t, param_name(p)); ([(v, t), ..ps], ls) } });
+    let ps = reverse(ps);
+    let ls = ls_set_cur(ls, [("env", fn_ty), ..ls_vars(ls)], ls_bor(ls));
+    let ls = ls_set_atoms(ls, MEmpty);
+    let ls = fold(zip(param_ids, ps), ls, |ls, ip| match ip { (id, (v, _)) -> ls_bind_atom(ls, id, QVar(v)) });
+    let ls = match self_id { Some(sid) -> ls_bind_atom(ls, sid, QVar("env")), None -> ls };
+    // Captured values are loaded from the closure at entry.
+    let (loads, ctys, ls) = fold(enumerate(captured), ([], [], ls), |acc, ic| match (acc, ic) {
+      ((loads, ctys, ls), (i, id)) -> {
+        let outer = match m_get(outer_atoms, int_to_string(id)) { Some(a) -> a, None -> internal("capture") };
+        let cty = match outer { QVar(v) -> match var_ty(outer_vars, v) { Some(t) -> t, None -> internal("capture type") }, other -> atom_type(ls, other) };
+        let (v, ls) = lw_var(ls, cty, "cap");
+        (append(loads, [(v, i, cty)]), append(ctys, [cty]), ls_bind_atom(ls, id, QVar(v)))
+      },
+    });
+    let (b, ls) = lower_tail(lc, ls, body, LCtx(sub, name));
+    let b2 = fold(reverse(loads), b, |acc, l| match l { (v, i, t) -> ILet(v, REnvfield(i, t), acc) });
+    let f = IRFn(name, true, [("env", fn_ty), ..ps], ret, b2, reverse(ls_vars(ls)), reverse(ls_bor(ls)), ctys, []);
+    let ls = ls_set_out(ls, om_set(ls_out(ls), name, Some(f)));
+    let ls = ls_set_atoms(ls_set_cur(ls, outer_vars, outer_bor), outer_atoms);
+    (RClosure(name, fn_ty, map(captured, |id| match m_get(outer_atoms, int_to_string(id)) { Some(a) -> a, None -> internal("capture") }), ctys), ls)
+  } }
+}
+
+// Local ids referenced inside a lambda's body but bound outside it, in the
+// order the reference's generic walk meets them. (It also walks the
+// refinements the checker attached to the tree, but their predicates are the
+// annotations' own, already met.)
+type FL { FL(List<Int>, List<Int>) }   // used (in order), bound
+fn fl_use(fl, id) { match fl { FL(u, b) -> if any(u, |x| x == id) { fl } else { FL(append(u, [id]), b) } } }
+fn fl_bind(fl, id) { match fl { FL(u, b) -> FL(u, [id, ..b]) } }
+fn fl_te(lc, t, fl) {
+  match t {
+    TRefine(_, _, _, base, pred, _, _) -> fl_ex(lc, pred, fl_te(lc, base, fl)),
+    TFun(ps, r, _, _, _) -> fl_te(lc, r, fold(ps, fl, |a, p| fl_te(lc, p, a))),
+    TCon(_, args, _, _) -> fold(args, fl, |a, x| fl_te(lc, x, a)),
+    TTuple(es, _, _) -> fold(es, fl, |a, x| fl_te(lc, x, a)),
+    TVar(_, _, _) -> fl,
+  }
+}
+fn fl_param(lc, p, fl) {
+  let cs = lc_cs(lc);
+  match p { Param(pid, _, ann, _, _) -> {
+    let fl = fl_bind(fl, cs_lid(cs, pid));
+    match ann { Some(t) -> fl_te(lc, t, fl), None -> fl }
+  } }
+}
+fn fl_pat(lc, p, fl) {
+  match p {
+    PVar(id, _, _, _) -> fl_bind(fl, cs_lid(lc_cs(lc), id)),
+    PTuple(_, es, _, _) -> fold(es, fl, |a, q| fl_pat(lc, q, a)),
+    PCtor(_, _, args, _, _, _) -> fold(args, fl, |a, q| fl_pat(lc, q, a)),
+    _ -> fl,
+  }
+}
+fn fl_ex(lc, x, fl) {
+  let cs = lc_cs(lc);
+  match x {
+    EVar(id, _, _, _) -> match cs_ref(cs, id) { RLocal(l) -> fl_use(fl, l), _ -> fl },
+    ECtor(_, _, Some(args), _, _, _) -> fold(args, fl, |a, y| fl_ex(lc, y, a)),
+    ETuple(_, es, _, _) -> fold(es, fl, |a, y| fl_ex(lc, y, a)),
+    ECall(_, f, args, _, _) -> fold(args, fl_ex(lc, f, fl), |a, y| fl_ex(lc, y, a)),
+    EBinop(_, _, l, r, _, _) -> fl_ex(lc, r, fl_ex(lc, l, fl)),
+    EUnop(_, _, a, _, _) -> fl_ex(lc, a, fl),
+    ELambda(_, ps, b, _, _) -> fl_ex(lc, b, fold(ps, fl, |a, p| fl_param(lc, p, a))),
+    EIf(_, c, t, el, _, _) -> { let a = fl_ex(lc, t, fl_ex(lc, c, fl)); match el { Some(y) -> fl_ex(lc, y, a), None -> a } },
+    EMatch(_, sc, arms, _, _) -> fold(arms, fl_ex(lc, sc, fl), |a, arm| match arm { Arm(p, g, b, _, _) -> fl_ex(lc, b, match g { Some(y) -> fl_ex(lc, y, fl_pat(lc, p, a)), None -> fl_pat(lc, p, a) }) }),
+    EBlock(_, stmts, r, _, _) -> { let a = fold(stmts, fl, |a, s| fl_stmt(lc, s, a)); match r { Some(y) -> fl_ex(lc, y, a), None -> a } },
+    _ -> fl,
+  }
+}
+fn fl_stmt(lc, s, fl) {
+  let cs = lc_cs(lc);
+  match s {
+    SLet(_, p, ann, v, _, _) -> fl_ex(lc, v, match ann { Some(t) -> fl_te(lc, t, fl_pat(lc, p, fl)), None -> fl_pat(lc, p, fl) }),
+    SExpr(y) -> fl_ex(lc, y, fl),
+    SFn(Fn(fid, _, ps, r, _, body, _, _, _, _, _)) -> {
+      let a = fl_bind(fl, cs_lid(cs, fid));
+      let a = fold(ps, a, |a, p| fl_param(lc, p, a));
+      let a = match r { Some(t) -> fl_te(lc, t, a), None -> a };
+      fl_ex(lc, body, a)
+    },
+  }
+}
+fn free_locals(lc, body, param_ids, self_id) {
+  let fl = fl_ex(lc, body, FL([], param_ids));
+  match fl { FL(used, bound) -> filter(used, |id| !any(bound, |b| b == id) && match self_id { Some(s) -> id != s, None -> true }) }
+}
+
+// ------------------------------------------------------------ expressions
+fn ret_atom(a) { IRet(RAtom(a)) }
+
+fn lower_tail(lc, ls, x, ctx) {
+  match x {
+    EBlock(_, stmts, result, _, _) -> lower_block(lc, ls, stmts, result, ctx),
+    EIf(_, c, t, el, _, _) -> lower_value(lc, ls, c, ctx, |ca, ls| {
+      let (ti, ls) = lower_tail(lc, ls, t, ctx);
+      let (ei, ls) = match el { Some(y) -> lower_tail(lc, ls, y, ctx), None -> (ret_atom(QUnit), ls) };
+      (IIf(ca, ti, ei), ls)
+    }),
+    EMatch(id, scrut, arms, _, _) -> lower_value(lc, ls, scrut, ctx, |xa, ls| lower_match(lc, ls, scrut, arms, xa, ctx)),
+    ECall(id, f, args, _, _) -> lower_call(lc, ls, id, f, args, ctx, |r, ls| (IRet(r), ls)),
+    EBinop(_, "&&", l, r, _, _) -> lower_value(lc, ls, l, ctx, |la, ls| { let (ri, ls) = lower_tail(lc, ls, r, ctx); (IIf(la, ri, ret_atom(QBool(false))), ls) }),
+    EBinop(_, "||", l, r, _, _) -> lower_value(lc, ls, l, ctx, |la, ls| { let (ri, ls) = lower_tail(lc, ls, r, ctx); (IIf(la, ret_atom(QBool(true)), ri), ls) }),
+    _ -> lower_value(lc, ls, x, ctx, |a, ls| (ret_atom(a), ls)),
+  }
+}
+
+// Binds an rhs to a fresh variable and continues with it.
+fn bind(lc, ls, r, ty, k, hint) {
+  let (v, ls) = lw_var(ls, ty, hint);
+  let ls = match r { RPeek(_, _, _, _) -> ls_add_borrowed(ls, v), _ -> ls };
+  let (body, ls) = k(QVar(v), ls);
+  (ILet(v, r, body), ls)
+}
+
+fn lower_values(lc, ls, xs, ctx, k) {
+  fn go(ls, rest, acc) {
+    match rest { [] -> k(reverse(acc), ls), [x, ..more] -> lower_value(lc, ls, x, ctx, |a, ls| go(ls, more, [a, ..acc])) }
+  }
+  go(ls, xs, [])
+}
+
+fn lower_value(lc, ls, x, ctx, k) {
+  let cs = lc_cs(lc);
+  let sub = match ctx { LCtx(s, _) -> s };
+  match x {
+    EInt(_, v, _, _) -> k(QInt(v), ls),
+    EBool(_, v, _, _) -> k(QBool(v), ls),
+    EUnit(_, _, _) -> k(QUnit, ls),
+    EStr(_, v, _, _) -> k(QStr(v), ls),
+    EVar(id, _, _, _) -> match cs_ref(cs, id) {
+      RLocal(l) -> k(ls_atom(ls, l), ls),
+      RMethod(tr, m) -> {
+        let t = node_conc(lc, id, sub);
+        let (kind, name, ls) = resolve_method(lc, ls, tr, m, t);
+        let (w, ls) = if kind == "fn" { wrapper(lc, ls, "fn", name, t, 0) } else { wrapper(lc, ls, kind, tr ++ "." ++ m, t, 0) };
+        bind(lc, ls, RStaticfn(w, t), t, k, "t")
+      },
+      RGlobal(key) -> {
+        let t = node_conc(lc, id, sub);
+        let (target, ls) = instance(lc, ls, key, t);
+        let (w, ls) = wrapper(lc, ls, "fn", target, t, 0);
+        bind(lc, ls, RStaticfn(w, t), t, k, "t")
+      },
+      RBuiltin(b) -> {
+        let t = node_conc(lc, id, sub);
+        let (w, ls) = wrapper(lc, ls, "builtin", b, t, 0);
+        bind(lc, ls, RStaticfn(w, t), t, k, "t")
+      },
+      RNone -> internal("unresolved variable"),
+    },
+    ECtor(id, _, args, _, _, _) -> {
+      let t = node_conc(lc, id, sub);
+      let info = match cs_ctor(cs, id) { Some(c) -> c, None -> internal("ctor info") };
+      match args {
+        None -> if !is_empty(ctor_fields(info)) {
+          let (w, ls) = wrapper(lc, ls, "ctor", ctor_key(info), t, ctor_idx(info));
+          bind(lc, ls, RStaticfn(w, t), t, k, "t")
+        } else { bind(lc, ls, RCtor(t, ctor_idx(info), [], None), t, k, "t") },
+        Some(xs) -> lower_values(lc, ls, xs, ctx, |vals, ls| bind(lc, ls, RCtor(t, ctor_idx(info), vals, None), t, k, "t")),
+      }
+    },
+    ECall(id, f, args, _, _) -> lower_call(lc, ls, id, f, args, ctx, |r, ls| bind(lc, ls, r, node_conc(lc, id, sub), k, "t")),
+    ETuple(id, es, _, _) -> lower_values(lc, ls, es, ctx, |vals, ls| bind(lc, ls, RTuple(node_conc(lc, id, sub), vals, None), node_conc(lc, id, sub), k, "t")),
+    EUnop(id, op, a, _, _) -> lower_value(lc, ls, a, ctx, |aa, ls| bind(lc, ls, RPrim(if op == "-" { "neg" } else { "not" }, [aa], None), node_conc(lc, id, sub), k, "t")),
+    EBinop(id, op, l, r, _, _) -> lower_binop(lc, ls, id, op, l, r, ctx, k),
+    ELambda(id, params, body, _, _) -> {
+      let (clo, ls) = lower_closure(lc, ls, id, params, body, ctx, None);
+      bind(lc, ls, clo, node_conc(lc, id, sub), k, "clo")
+    },
+    _ -> {
+      // A block, if or match as a value: a nested expression.
+      let (e, ls) = lower_tail(lc, ls, x, ctx);
+      bind(lc, ls, RExpr(e), node_conc(lc, ex_id(x), sub), k, "t")
+    },
+  }
+}
+
+fn lower_call(lc, ls, id, f, args, ctx, k) {
+  let cs = lc_cs(lc);
+  let sub = match ctx { LCtx(s, _) -> s };
+  match f {
+    EVar(fid, _, _, _) -> match cs_ref(cs, fid) {
+      RMethod(tr, m) -> {
+        let fty = node_conc(lc, fid, sub);
+        let (kind, name, ls) = resolve_method(lc, ls, tr, m, fty);
+        lower_values(lc, ls, args, ctx, |vals, ls| {
+          if kind == "fn" { k(RCall(name, vals), ls) }
+          else if kind == "cmp" { let p0 = match fty { TF([p, .._], _, _) -> p, _ -> t_unit() }; let ls = register_ord(lc, ls, p0); k(RCmp("three", p0, vals), ls) }
+          else { (IUnreachable, ls) }
+        })
+      },
+      RGlobal(key) -> {
+        let (name, ls) = instance(lc, ls, key, node_conc(lc, fid, sub));
+        lower_values(lc, ls, args, ctx, |vals, ls| k(RCall(name, vals), ls))
+      },
+      RBuiltin(b) -> {
+        let fty = node_conc(lc, fid, sub);
+        let (pts, ret) = match fty { TF(ps, r, _) -> (ps, r), _ -> internal("builtin type") };
+        lower_values(lc, ls, args, ctx, |vals, ls| k(RBuiltinCall(b, vals, ret, pts), ls))
+      },
+      _ -> lower_value(lc, ls, f, ctx, |fa, ls| lower_values(lc, ls, args, ctx, |vals, ls| k(RCallc(fa, vals), ls))),
+    },
+    _ -> lower_value(lc, ls, f, ctx, |fa, ls| lower_values(lc, ls, args, ctx, |vals, ls| k(RCallc(fa, vals), ls))),
+  }
+}
+
+fn lower_binop(lc, ls, id, op, l, r, ctx, k) {
+  let sub = match ctx { LCtx(s, _) -> s };
+  let ty = node_conc(lc, id, sub);
+  if op == "&&" || op == "||" {
+    lower_value(lc, ls, l, ctx, |la, ls| {
+      let (rhs_tail, ls) = lower_tail(lc, ls, r, ctx);
+      let node = if op == "&&" { IIf(la, rhs_tail, ret_atom(QBool(false))) } else { IIf(la, ret_atom(QBool(true)), rhs_tail) };
+      bind(lc, ls, RExpr(node), t_bool(), k, "t")
+    })
+  } else {
+    lower_value(lc, ls, l, ctx, |la, ls| lower_value(lc, ls, r, ctx, |ra, ls| {
+      let op_ty = node_conc(lc, ex_id(l), sub);
+      let arith = if op == "+" { "add" } else if op == "-" { "sub" } else if op == "*" { "mul" } else if op == "/" { "div" } else if op == "%" { "rem" } else { "" };
+      if arith != "" { bind(lc, ls, RPrim(arith, [la, ra], None), ty, k, "t") }
+      else if op == "++" { bind(lc, ls, RBuiltinCall("concat", [la, ra], t_string(), [t_string(), t_string()]), ty, k, "t") }
+      else {
+        let cmp = if op == "==" { "eq" } else if op == "!=" { "ne" } else if op == "<" { "lt" } else if op == "<=" { "le" } else if op == ">" { "gt" } else { "ge" };
+        let native = match op_ty { TC(n, _) -> n == "Int" || n == "Bool" || n == "Unit", _ -> false };
+        let ls = if !native { register_ord(lc, ls, op_ty) } else { ls };
+        bind(lc, ls, if native { RPrim(cmp, [la, ra], Some(op_ty)) } else { RCmp(cmp, op_ty, [la, ra]) }, t_bool(), k, "t")
+      }
+    }))
+  }
+}
+
+fn lower_block(lc, ls, stmts, result, ctx) {
+  let cs = lc_cs(lc);
+  let sub = match ctx { LCtx(s, _) -> s };
+  match stmts {
+    [] -> match result { Some(y) -> lower_tail(lc, ls, y, ctx), None -> (ret_atom(QUnit), ls) },
+    [st, ..rest] -> {
+      let next = |ls| lower_block(lc, ls, rest, result, ctx);
+      match st {
+        SExpr(y) -> lower_value(lc, ls, y, ctx, |_, ls| next(ls)),
+        SFn(f) -> {
+          let lid = cs_lid(cs, fn_id(f));
+          let (clo, ls) = lower_closure(lc, ls, fn_id(f), fn_params(f), fn_body(f), ctx, Some(lid));
+          let t = node_conc(lc, fn_id(f), sub);
+          bind(lc, ls, clo, t, |a, ls| next(ls_bind_atom(ls, lid, a)), fn_name(f))
+        },
+        SLet(_, p, _, value, _, _) -> lower_value(lc, ls, value, ctx, |a, ls| bind_pattern(lc, ls, p, a, ctx, next)),
+      }
+    },
+  }
+}
+
+// The variables of a pattern: (local id, path, type node) in order.
+fn collect_binds(lc, p, path, acc) {
+  match p {
+    PVar(id, _, _, _) -> append(acc, [(cs_lid(lc_cs(lc), id), path, id)]),
+    PTuple(_, es, _, _) -> fold(enumerate(es), acc, |a, iq| match iq { (i, q) -> collect_binds(lc, q, append(path, [i]), a) }),
+    PCtor(_, _, args, _, _, _) -> fold(enumerate(args), acc, |a, iq| match iq { (i, q) -> collect_binds(lc, q, append(path, [i]), a) }),
+    _ -> acc,
+  }
+}
+
+// Binds an irrefutable pattern's variables (owned projections) and continues.
+fn bind_pattern(lc, ls, p, a, ctx, k) {
+  let sub = match ctx { LCtx(s, _) -> s };
+  let binds = collect_binds(lc, p, [], []);
+  fn go(ls, bs) {
+    match bs {
+      [] -> k(ls),
+      [(id, path, tid), ..more] -> {
+        let t = node_conc(lc, tid, sub);
+        if is_empty(path) { go(ls_bind_atom(ls, id, a), more) }
+        else {
+          let (v, ls) = lw_var(ls, t, "p");
+          let ls = ls_bind_atom(ls, id, QVar(v));
+          let (body, ls) = go(ls, more);
+          (ILet(v, RField(a, path, t, node_conc(lc, pat_id(p), sub)), body), ls)
+        }
+      },
+    }
+  }
+  go(ls, binds)
+}
+
+// ------------------------------------------------------------------ match
+fn lower_match(lc, ls, scrut, arms, x, ctx) {
+  let sub = match ctx { LCtx(s, _) -> s };
+  let scrut_ty = node_conc(lc, ex_id(scrut), sub);
+  let n = length(arms);
+  fn collect_tests(p, path, acc) {
+    let pty = || node_conc(lc, pat_id(p), sub);
+    match p {
+      PInt(_, v, _, _) -> append(acc, [RTestLit(x, path, scrut_ty, pty(), QInt(v))]),
+      PStr(_, v, _, _) -> append(acc, [RTestLit(x, path, scrut_ty, pty(), QStr(v))]),
+      PBool(_, v, _, _) -> append(acc, [RTestLit(x, path, scrut_ty, pty(), QBool(v))]),
+      PTuple(_, es, _, _) -> fold(enumerate(es), acc, |a, iq| match iq { (i, q) -> collect_tests(q, append(path, [i]), a) }),
+      PCtor(id, _, args, _, _, _) -> {
+        let info = match cs_ctor(lc_cs(lc), id) { Some(c) -> c, None -> internal("pattern ctor") };
+        let d = adt_of_name(lc, ctor_adt(info));
+        let acc2 = if length(adt_ctors(d)) > 1 { append(acc, [RTestTag(x, path, scrut_ty, pty(), ctor_idx(info))]) } else { acc };
+        fold(enumerate(args), acc2, |a, iq| match iq { (i, q) -> collect_tests(q, append(path, [i]), a) })
+      },
+      _ -> acc,
+    }
+  }
+  fn go(ls, i) {
+    if i == n { (IUnreachable, ls) }
+    else {
+      match list_get(arms, i) { Arm(pat, guard, body, _, _) -> {
+        let tests = collect_tests(pat, [], []);
+        let binds = collect_binds(lc, pat, [], []);
+        let saved = ls_atoms(ls);
+        // The arm's condition (tests, then the guard) reads x through borrowed peeks.
+        let has_cond = !is_empty(tests) || is_some(guard);
+        let (cond, ls) = if has_cond {
+          fn peek_binds(ls, bs, k) {
+            match bs {
+              [] -> k(ls),
+              [(id, path, tid), ..more] -> if is_empty(path) { peek_binds(ls_bind_atom(ls, id, x), more, k) } else {
+                let t = node_conc(lc, tid, sub);
+                bind(lc, ls, RPeek(x, path, t, scrut_ty), t, |a, ls| peek_binds(ls_bind_atom(ls, id, a), more, k), "g")
+              },
+            }
+          }
+          fn test_chain(ls, ts) {
+            match ts {
+              [] -> match guard { Some(g) -> peek_binds(ls, binds, |ls| lower_tail(lc, ls, g, ctx)), None -> (ret_atom(QBool(true)), ls) },
+              [t, ..more] -> bind(lc, ls, t, t_bool(), |c, ls| { let (rest, ls) = test_chain(ls, more); (IIf(c, rest, ret_atom(QBool(false))), ls) }, "t"),
+            }
+          }
+          let (c, ls) = test_chain(ls, tests);
+          (Some(c), ls_set_atoms(ls, saved))
+        } else { (None, ls) };
+        let body_of = |ls| {
+          let mutant = lc_mutant(lc);
+          fn step(ls, bs) {
+            match bs {
+              [] -> lower_tail(lc, ls, body, ctx),
+              [(id, path, tid), ..more] -> if is_empty(path) { step(ls_bind_atom(ls, id, x), more) } else {
+                let tnode = if mutant == "lower-bind-type" { match list_get(binds, 0) { (_, _, t0) -> t0 } } else { tid };
+                let t = node_conc(lc, tnode, sub);
+                let (v, ls) = lw_var(ls, t, "b");
+                let ls = ls_bind_atom(ls, id, QVar(v));
+                let (rest, ls) = step(ls, more);
+                (ILet(v, RField(x, path, t, scrut_ty), rest), ls)
+              },
+            }
+          }
+          let (b, ls) = step(ls, binds);
+          (b, ls_set_atoms(ls, saved))
+        };
+        match cond {
+          None -> body_of(ls),
+          Some(c) -> if i == n - 1 && !is_some(guard) { body_of(ls) }
+            else if length(tests) == 1 && !is_some(guard) {
+              bind(lc, ls, list_get(tests, 0), t_bool(), |ca, ls| { let (t, ls) = body_of(ls); let (e, ls) = go(ls, i + 1); (IIf(ca, t, e), ls) }, "t")
+            } else {
+              bind(lc, ls, RExpr(c), t_bool(), |ca, ls| { let (t, ls) = body_of(ls); let (e, ls) = go(ls, i + 1); (IIf(ca, t, e), ls) }, "t")
+            },
+        }
+      } }
+    }
+  }
+  go(ls, 0)
+}
+fn adt_of_name(lc, n) { match om_get(d_adts(lc_decls(lc)), n) { Some(a) -> a, None -> internal("adt") } }
+
+// ------------------------------------------------------------------- drive
+// The IR: functions in order, the entry's name, user Ord impls by type key.
+type IRProg { IRProg(List<IRFn>, String, List<(String, String)>) }
+
+fn lower_program(checked, mutant) {
+  let lc = LC(checked, mutant);
+  let main = match checked { Checked(_, _, _, _, Some(m), _, _, _, _, _) -> m, _ -> internal("no main") };
+  let cs = lc_cs(lc);
+  let ls0 = LS(0, om_empty(), [], [], [], [], [], MEmpty);
+  let (main_name, ls) = instance(lc, ls0, cs_fkey(cs, fn_id(main)), conc(lc_st(lc), lc_scheme(lc, main), []));
+  fn drain(ls) {
+    match ls_work(ls) {
+      [] -> ls,
+      [(decl, sub, name), ..rest] -> drain(lower_fn(lc, ls_set_work(ls, rest), decl, sub, name)),
+    }
+  }
+  let ls = drain(ls);
+  IRProg(map(om_values(ls_out(ls)), |f| match f { Some(g) -> g, None -> internal("unlowered function") }), main_name, ls_ord(ls))
+}

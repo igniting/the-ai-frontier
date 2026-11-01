@@ -1,0 +1,357 @@
+// ============================================================ bit-blasting
+// Deciding linear integer arithmetic by bit-blasting (blast.js). A term is a
+// linear combination of atoms plus a constant; its coefficients keep the
+// order they were added in (the encoding follows it). Formulas compare terms
+// with 0. To prove that facts imply a goal, facts && !goal is encoded in
+// two's complement wide enough that nothing overflows, and refuted.
+
+type Term { Term(List<(Int, Big)>, Big) }
+type Fm { FTrue, FFalse, FLt(Term), FLe(Term), FEq(Term), FNot(Fm), FAnd(Fm, Fm), FOr(Fm, Fm), FBvar(Int), FDiv2(Int, Term, Int) }
+// An atom: an integer in [lo, hi], or a Boolean; its name, and whether a counterexample shows it.
+type Atom { AInt(Big, Big, String, Bool), ABool(String, Bool) }
+
+fn konst(c) { Term([], c) }
+fn atom_term(id) { Term([(id, BS(1))], BS(0)) }
+fn term_c(t) { match t { Term(_, c) -> c } }
+fn term_coeffs(t) { match t { Term(cs, _) -> cs } }
+fn is_const(t) { is_empty(term_coeffs(t)) }
+fn coeff_get(cs, id) { match find(cs, |e| match e { (k, _) -> k == id }) { Some((_, v)) -> Some(v), None -> None } }
+fn coeff_set(cs, id, v) {
+  if any(cs, |e| match e { (k, _) -> k == id }) { map(cs, |e| match e { (k, w) -> if k == id { (k, v) } else { e } }) } else { append(cs, [(id, v)]) }
+}
+fn coeff_del(cs, id) { filter(cs, |e| match e { (k, _) -> k != id }) }
+fn add_terms_signed(a, b, sign) {
+  match (a, b) {
+    (Term(ca, ka), Term(cb, kb)) -> {
+      let cs = fold(cb, ca, |cs, e| match e { (id, k) -> {
+        let v = b_add(match coeff_get(cs, id) { Some(x) -> x, None -> BS(0) }, b_mul(sign, k));
+        if b_is_zero(v) { coeff_del(cs, id) } else { coeff_set(cs, id, v) }
+      } });
+      Term(cs, b_add(ka, b_mul(sign, kb)))
+    },
+  }
+}
+fn add_terms(a, b) { add_terms_signed(a, b, BS(1)) }
+fn sub_terms(a, b) { add_terms_signed(a, b, BS(0 - 1)) }
+fn scale_term(a, k) {
+  if b_is_zero(k) { konst(BS(0)) } else { match a { Term(cs, c) -> Term(map(cs, |e| match e { (id, x) -> (id, b_mul(x, k)) }), b_mul(c, k)) } }
+}
+
+fn compare(op, a, b) {
+  if op == "<" { FLt(sub_terms(a, b)) } else if op == "<=" { FLe(sub_terms(a, b)) }
+  else if op == ">" { FLt(sub_terms(b, a)) } else if op == ">=" { FLe(sub_terms(b, a)) }
+  else if op == "==" { FEq(sub_terms(a, b)) } else { FNot(FEq(sub_terms(a, b))) }
+}
+fn f_and(a, b) { match (a, b) { (FTrue, _) -> b, (_, FTrue) -> a, _ -> FAnd(a, b) } }
+fn f_or(a, b) { FOr(a, b) }
+fn f_not(a) { match a { FNot(x) -> x, _ -> FNot(a) } }
+
+// The atoms a formula mentions, each once, in order of appearance.
+fn atoms_of(f, acc) {
+  let add = |acc, id| if any(acc, |x| x == id) { acc } else { append(acc, [id]) };
+  match f {
+    FLt(t) -> fold(term_coeffs(t), acc, |a, e| match e { (id, _) -> add(a, id) }),
+    FLe(t) -> fold(term_coeffs(t), acc, |a, e| match e { (id, _) -> add(a, id) }),
+    FEq(t) -> fold(term_coeffs(t), acc, |a, e| match e { (id, _) -> add(a, id) }),
+    FDiv2(q, t, _) -> fold(term_coeffs(t), add(acc, q), |a, e| match e { (id, _) -> add(a, id) }),
+    FBvar(id) -> add(acc, id),
+    FAnd(x, y) -> atoms_of(y, atoms_of(x, acc)),
+    FOr(x, y) -> atoms_of(y, atoms_of(x, acc)),
+    FNot(x) -> atoms_of(x, acc),
+    _ -> acc,
+  }
+}
+
+// ---------------------------------------------------------------- encoder
+// Literals are DIMACS integers; variable 1 is constant true (T).
+// width, mutant, variables so far, clauses (newest first), gate memo
+type Enc { Enc(Int, String, Int, List<List<Int>>, Map<Int>) }
+
+fn e_width(e) { match e { Enc(w, _, _, _, _) -> w } }
+fn e_fresh(e) { match e { Enc(w, m, n, cs, memo) -> (n + 1, Enc(w, m, n + 1, cs, memo)) } }
+fn e_clause(e, c) { match e { Enc(w, m, n, cs, memo) -> Enc(w, m, n, [c, ..cs], memo) } }
+fn e_gate(e, key, make) {
+  match e { Enc(_, _, _, _, memo) -> match m_get(memo, key) {
+    Some(z) -> (z, e),
+    None -> { let (z, e) = make(e); match e { Enc(w, m, n, cs, memo2) -> (z, Enc(w, m, n, cs, m_set(memo2, key, z))) } },
+  } }
+}
+fn e_and(e, x, y) {
+  if x == 0 - 1 || y == 0 - 1 || x == 0 - y { (0 - 1, e) }
+  else if x == 1 { (y, e) }
+  else if y == 1 || x == y { (x, e) }
+  else {
+    let (a, b) = if x < y { (x, y) } else { (y, x) };
+    e_gate(e, "&" ++ int_to_string(a) ++ "," ++ int_to_string(b), |e| {
+      let (z, e) = e_fresh(e);
+      (z, e_clause(e_clause(e_clause(e, [0 - z, a]), [0 - z, b]), [z, 0 - a, 0 - b]))
+    })
+  }
+}
+fn e_or(e, x, y) { let (z, e) = e_and(e, 0 - x, 0 - y); (0 - z, e) }
+fn abs_int(x) { if x < 0 { 0 - x } else { x } }
+fn e_xor(e, x, y) {
+  if x == 0 - 1 { (y, e) } else if y == 0 - 1 { (x, e) } else if x == 1 { (0 - y, e) } else if y == 1 { (0 - x, e) }
+  else if x == y { (0 - 1, e) } else if x == 0 - y { (1, e) }
+  else {
+    let (a, b) = if abs_int(x) < abs_int(y) { (x, y) } else { (y, x) };
+    e_gate(e, "^" ++ int_to_string(a) ++ "," ++ int_to_string(b), |e| {
+      let (z, e) = e_fresh(e);
+      (z, e_clause(e_clause(e_clause(e_clause(e, [0 - z, a, b]), [0 - z, 0 - a, 0 - b]), [z, 0 - a, b]), [z, a, 0 - b]))
+    })
+  }
+}
+fn e_maj(e, x, y, z) {
+  match e {
+    Enc(_, "blast-carry", _, _, _) -> e_and(e, x, y),
+    _ -> {
+      let (xy, e) = e_and(e, x, y);
+      let (o, e) = e_or(e, x, y);
+      let (zo, e) = e_and(e, z, o);
+      e_or(e, xy, zo)
+    },
+  }
+}
+fn e_constant(e, k) {
+  let w = e_width(e);
+  let u = b_as_uint(w, k);
+  map(range(0, w), |i| if b_bit(u, i) == 1 { 1 } else { 0 - 1 })
+}
+fn e_add(e, a, b, carry_in) {
+  fn go(e, xs, ys, c, acc) {
+    match (xs, ys) {
+      ([x, ..xr], [y, ..yr]) -> {
+        let (s1, e) = e_xor(e, x, y);
+        let (s2, e) = e_xor(e, s1, c);
+        let (c2, e) = e_maj(e, x, y, c);
+        go(e, xr, yr, c2, [s2, ..acc])
+      },
+      _ -> (reverse(acc), e),
+    }
+  }
+  go(e, a, b, carry_in, [])
+}
+fn e_neg(e, a) { e_add(e, map(a, |x| 0 - x), e_constant(e, BS(0)), 1) }
+fn e_sub(e, a, b) { e_add(e, a, map(b, |x| 0 - x), 1) }
+fn e_scale(e, a, k) {
+  if b_is_neg(k) { let (s, e) = e_scale(e, a, b_neg(k)); e_neg(e, s) }
+  else {
+    let w = e_width(e);
+    fn go(e, k, shift, acc) {
+      if b_le(k, BS(0)) { (acc, e) }
+      else {
+        let (acc, e) = if b_bit(k, 0) == 1 { e_add(e, acc, append(map(range(0, shift), |_| 0 - 1), take(a, w - shift)), 0 - 1) } else { (acc, e) };
+        go(e, b_quot(k, BS(2)), shift + 1, acc)
+      }
+    }
+    go(e, k, 0, e_constant(e, BS(0)))
+  }
+}
+fn e_sign(e, a) { list_get(a, e_width(e) - 1) }
+fn e_is_zero(e, a) { fold(a, (1, e), |acc, x| match acc { (z, e) -> e_and(e, z, 0 - x) }) }
+
+// ----------------------------------------------------------------- proving
+type MVal { MInt(Big), MBool(Bool) }
+// lemmas, clause count, and (when kept) the formula's variables, clauses and proof
+type ProveResult { Proved(Int, Int, Int, List<List<Int>>, List<List<Int>>), Refuted(List<(Int, MVal)>), Unknown }
+
+fn atom_lo(atoms, id) { match array_get(atoms, id) { AInt(lo, _, _, _) -> lo, _ -> BS(0) } }
+fn atom_hi(atoms, id) { match array_get(atoms, id) { AInt(_, hi, _, _) -> hi, _ -> BS(0) } }
+fn atom_is_bool(atoms, id) { match array_get(atoms, id) { ABool(_, _) -> true, _ -> false } }
+
+fn floor_div(a, b) {
+  let q = b_quot(a, b);
+  if !b_is_zero(b_rem(a, b)) && b_is_neg(a) != b_is_neg(b) { b_sub(q, BS(1)) } else { q }
+}
+fn ceil_div(a, b) { b_neg(floor_div(b_neg(a), b)) }
+
+// The cache key: the query with atoms renamed in order of appearance.
+fn ser_term(t, canon) {
+  match t { Term(cs, c) -> {
+    let (parts, canon) = fold(cs, ([], canon), |acc, e| match (acc, e) { ((ps, cn), (id, k)) -> { let (nm, cn) = canon_name(cn, id); ([b_to_string(k) ++ "*" ++ int_to_string(nm), ..ps], cn) } });
+    (join(reverse(parts), "+") ++ "+" ++ b_to_string(c), canon)
+  } }
+}
+fn canon_name(canon, id) {
+  match find(canon, |e| match e { (k, _) -> k == id }) { Some((_, n)) -> (n, canon), None -> { let n = length(canon); (n, append(canon, [(id, n)])) } }
+}
+fn ser(f, canon) {
+  match f {
+    FLt(t) -> { let (s, c) = ser_term(t, canon); ("lt(" ++ s ++ ")", c) },
+    FLe(t) -> { let (s, c) = ser_term(t, canon); ("le(" ++ s ++ ")", c) },
+    FEq(t) -> { let (s, c) = ser_term(t, canon); ("eq(" ++ s ++ ")", c) },
+    FBvar(id) -> { let (n, c) = canon_name(canon, id); ("b" ++ int_to_string(n), c) },
+    FDiv2(q, t, sh) -> { let (n, c) = canon_name(canon, q); let (s, c) = ser_term(t, c); ("div" ++ int_to_string(sh) ++ "(" ++ int_to_string(n) ++ "," ++ s ++ ")", c) },
+    FAnd(x, y) -> { let (a, c) = ser(x, canon); let (b, c) = ser(y, c); ("and(" ++ a ++ "," ++ b ++ ")", c) },
+    FOr(x, y) -> { let (a, c) = ser(x, canon); let (b, c) = ser(y, c); ("or(" ++ a ++ "," ++ b ++ ")", c) },
+    FNot(x) -> { let (a, c) = ser(x, canon); ("!" ++ a, c) },
+    FTrue -> ("true", canon),
+    FFalse -> ("false", canon),
+  }
+}
+
+// The facts connected to the goal through shared atoms, in the reference's order.
+fn cone(facts, goal) {
+  let pending = map(facts, |f| (f, atoms_of(f, [])));
+  let used0 = filter(pending, |p| match p { (_, as) -> is_empty(as) });
+  let rest0 = filter(pending, |p| match p { (_, as) -> !is_empty(as) });
+  fn rounds(used, rest, relevant) {
+    let (used2, next, relevant2, grew) = fold(rest, (used, [], relevant, false), |acc, p| match (acc, p) {
+      ((u, nx, rel, g), (_, as)) -> if any(as, |a| any(rel, |r| r == a)) {
+        (append(u, [p]), nx, fold(as, rel, |rel, a| if any(rel, |r| r == a) { rel } else { append(rel, [a]) }), true)
+      } else { (u, append(nx, [p]), rel, g) },
+    });
+    if grew { rounds(used2, next, relevant2) } else { (used2, relevant2) }
+  }
+  rounds(used0, rest0, atoms_of(goal, []))
+}
+
+// The query cache: key -> result (a refuted model by canonical atom number).
+type Cache { Cache(Map<ProveResult>) }
+
+fn prove(atoms, facts, goal, mutant, max_conflicts, keep, cache) {
+  let (used_p, relevant) = cone(facts, goal);
+  let used = map(used_p, |p| match p { (f, _) -> f });
+  let (parts, canon) = fold(used, ([], []), |acc, f| match acc { (ps, cn) -> { let (s, cn) = ser(f, cn); ([s, ..ps], cn) } });
+  let (gs, canon) = ser(goal, canon);
+  let body = join(reverse(parts), ";") ++ "|" ++ gs;
+  let key = body ++ "|" ++ join(map(canon, |e| match e { (id, _) -> match array_get(atoms, id) { ABool(_, _) -> "B", AInt(lo, hi, _, _) -> b_to_string(lo) ++ ":" ++ b_to_string(hi) } }), ",") ++ (if keep { "|keep" } else { "" });
+  let cached = mutant != "blast-carry" && mutant != "sat-claims-unsat" && mutant != "rup-accept-all";
+  let hit = match cache { Cache(m) -> if cached { m_get(m, key) } else { None } };
+  match hit {
+    Some(Refuted(model)) -> (Refuted(map(model, |e| match e { (i, v) -> (match find(canon, |c| match c { (_, n) -> n == i }) { Some((id, _)) -> id, None -> 0 - 1 }, v) })), cache),
+    Some(r) -> (r, cache),
+    None -> {
+      let r = prove_fresh(atoms, used, relevant, goal, mutant, max_conflicts, keep);
+      let stored = match r { Refuted(model) -> Refuted(flat_map(model, |e| match e { (id, v) -> match find(canon, |c| match c { (k, _) -> k == id }) { Some((_, n)) -> [(n, v)], None -> [] } })), other -> other };
+      let cache2 = match (cache, r) { (_, Unknown) -> cache, (Cache(m), _) -> if !cached { cache } else { Cache(m_set(if m_size_over(m, 20000) { MEmpty } else { m }, key, stored)) } };
+      (r, cache2)
+    },
+  }
+}
+fn m_size_over(m, n) { m_size(m) > n }
+
+fn prove_fresh(atoms, used, relevant, goal, mutant, max_conflicts, keep) {
+  // Tighter ranges from the facts' top-level linear constraints.
+  fn conj(f, acc) {
+    match f {
+      FAnd(x, y) -> conj(y, conj(x, acc)),
+      FLe(t) -> [t, ..acc],
+      FLt(t) -> [add_terms(t, konst(BS(1))), ..acc],
+      FEq(t) -> [scale_term(t, BS(0 - 1)), t, ..acc],
+      _ -> acc,
+    }
+  }
+  let lins = reverse(fold(used, [], |acc, f| conj(f, acc)));
+  // ranges: atom id -> (lo, hi), tightened
+  let lo = |rg, id| match find(rg, |e| match e { (k, _, _) -> k == id }) { Some((_, l, _)) -> l, None -> atom_lo(atoms, id) };
+  let hi = |rg, id| match find(rg, |e| match e { (k, _, _) -> k == id }) { Some((_, _, h)) -> h, None -> atom_hi(atoms, id) };
+  let set_rg = |rg, id, l, h| [(id, l, h), ..filter(rg, |e| match e { (k, _, _) -> k != id })];
+  fn tighten(rg, round) {
+    if round >= 4 { rg } else {
+      let (rg2, changed) = fold(lins, (rg, false), |acc, t| match acc {
+        (rg, ch) -> {
+          let terms = term_coeffs(t);
+          if any(terms, |e| match e { (id, _) -> atom_is_bool(atoms, id) }) { acc }
+          else {
+            let least = fold(terms, BS(0), |s, e| match e { (id, k) -> b_add(s, if b_lt(BS(0), k) { b_mul(k, lo(rg, id)) } else { b_mul(k, hi(rg, id)) }) });
+            fold(terms, (rg, ch), |acc2, e| match (acc2, e) {
+              ((rg, ch), (id, k)) -> {
+                let others = b_sub(least, if b_lt(BS(0), k) { b_mul(k, lo(rg, id)) } else { b_mul(k, hi(rg, id)) });
+                let rhs = b_sub(b_neg(term_c(t)), others);
+                if b_lt(BS(0), k) { let h = floor_div(rhs, k); if b_lt(h, hi(rg, id)) { (set_rg(rg, id, lo(rg, id), h), true) } else { (rg, ch) } }
+                else { let l = ceil_div(rhs, k); if b_lt(lo(rg, id), l) { (set_rg(rg, id, l, hi(rg, id)), true) } else { (rg, ch) } }
+              },
+            })
+          }
+        },
+      });
+      if changed { tighten(rg2, round + 1) } else { rg2 }
+    }
+  }
+  let rg = tighten([], 0);
+  // Width: enough bits that no term (or atom range check) can overflow.
+  let mag = |id| if atom_is_bool(atoms, id) { BS(1) } else { b_max(b_abs(lo(rg, id)), b_abs(hi(rg, id))) };
+  fn visit_terms(f, bound) {
+    let tb = |t| fold(term_coeffs(t), b_abs(term_c(t)), |s, e| match e { (id, k) -> b_add(s, b_mul(b_abs(k), mag(id))) });
+    match f {
+      FLt(t) -> b_max(bound, tb(t)), FLe(t) -> b_max(bound, tb(t)), FEq(t) -> b_max(bound, tb(t)), FDiv2(_, t, _) -> b_max(bound, tb(t)),
+      FAnd(x, y) -> visit_terms(y, visit_terms(x, bound)), FOr(x, y) -> visit_terms(y, visit_terms(x, bound)), FNot(x) -> visit_terms(x, bound),
+      _ -> bound,
+    }
+  }
+  let bound1 = visit_terms(goal, fold(used, BS(1), |b, f| visit_terms(f, b)));
+  let bound = fold(relevant, bound1, |b, id| if atom_is_bool(atoms, id) { b } else { b_max(b, b_mul(mag(id), BS(2))) });
+  let width = b_bit_length(bound) + 2;
+  // Encoding. bits: atom id -> literals (atoms in order of allocation).
+  let e0 = Enc(width, mutant, 1, [[1]], MEmpty);
+  fn bits_of(e, bits, id) {
+    match find(bits, |b| match b { (k, _) -> k == id }) {
+      Some((_, ls)) -> (ls, e, bits),
+      None -> if atom_is_bool(atoms, id) { let (z, e) = e_fresh(e); ([z], e, append(bits, [(id, [z])])) } else {
+        let (ls, e) = fold(range(0, width), ([], e), |acc, _| match acc { (ls, e) -> { let (z, e) = e_fresh(e); ([z, ..ls], e) } });
+        let ls = reverse(ls);
+        let bits = append(bits, [(id, ls)]);
+        let (d1, e) = e_sub(e, ls, e_constant(e, lo(rg, id)));
+        let e = e_clause(e, [0 - e_sign(e, d1)]);
+        let (d2, e) = e_sub(e, e_constant(e, hi(rg, id)), ls);
+        (ls, e_clause(e, [0 - e_sign(e, d2)]), bits)
+      },
+    }
+  }
+  fn term_bits(e, bits, t) {
+    fold(term_coeffs(t), (e_constant(e, term_c(t)), e, bits), |acc, c| match (acc, c) {
+      ((acc_bits, e, bits), (id, k)) -> {
+        let (ab, e, bits) = bits_of(e, bits, id);
+        let (sc, e) = e_scale(e, ab, k);
+        let (sum, e) = e_add(e, acc_bits, sc, 0 - 1);
+        (sum, e, bits)
+      },
+    })
+  }
+  fn formula(e, bits, f) {
+    match f {
+      FTrue -> (1, e, bits),
+      FFalse -> (0 - 1, e, bits),
+      FLt(t) -> { let (b, e, bits) = term_bits(e, bits, t); (e_sign(e, b), e, bits) },
+      FLe(t) -> { let (b, e, bits) = term_bits(e, bits, t); let (z, e) = e_is_zero(e, b); let (r, e) = e_or(e, e_sign(e, b), z); (r, e, bits) },
+      FEq(t) -> { let (b, e, bits) = term_bits(e, bits, t); let (z, e) = e_is_zero(e, b); (z, e, bits) },
+      FBvar(id) -> { let (ls, e, bits) = bits_of(e, bits, id); (list_get(ls, 0), e, bits) },
+      FDiv2(q, t, sh) -> {
+        let (x, e, bits) = term_bits(e, bits, t);
+        let neg = e_sign(e, x);
+        let (xs, e) = fold(x, ([], e), |acc, b| match acc { (ys, e) -> { let (y, e) = e_xor(e, b, neg); ([y, ..ys], e) } });
+        let (ax, e) = e_add(e, reverse(xs), e_constant(e, BS(0)), neg);
+        let aq = append(drop(ax, sh), map(range(0, sh), |_| 0 - 1));
+        let (ys, e) = fold(aq, ([], e), |acc, b| match acc { (ys, e) -> { let (y, e) = e_xor(e, b, neg); ([y, ..ys], e) } });
+        let (qq, e) = e_add(e, reverse(ys), e_constant(e, BS(0)), neg);
+        let (qb, e, bits) = bits_of(e, bits, q);
+        let (r, e) = fold(zip(qb, qq), (1, e), |acc, pq| match (acc, pq) { ((a, e), (b, qi)) -> { let (xr, e) = e_xor(e, b, qi); e_and(e, a, 0 - xr) } });
+        (r, e, bits)
+      },
+      FAnd(x, y) -> { let (a, e, bits) = formula(e, bits, x); let (b, e, bits) = formula(e, bits, y); let (r, e) = e_and(e, a, b); (r, e, bits) },
+      FOr(x, y) -> { let (a, e, bits) = formula(e, bits, x); let (b, e, bits) = formula(e, bits, y); let (r, e) = e_or(e, a, b); (r, e, bits) },
+      FNot(x) -> { let (a, e, bits) = formula(e, bits, x); (0 - a, e, bits) },
+    }
+  }
+  let (e, bits) = fold(used, (e0, []), |acc, f| match acc { (e, bits) -> { let (l, e, bits) = formula(e, bits, f); (e_clause(e, [l]), bits) } });
+  let (gl, e, bits) = formula(e, bits, goal);
+  let e = e_clause(e, [0 - gl]);
+  match e { Enc(_, _, nvars, cls, _) -> {
+    let clauses = reverse(cls);
+    match sat_solve(nvars, clauses, max_conflicts, mutant) {
+      SUnknown -> Unknown,
+      SUnsat(proof) -> match check_refutation(nvars, clauses, proof, mutant) {
+        RupBad(why) -> internal("the SAT solver's refutation was rejected by the proof checker (" ++ why ++ ")"),
+        RupOk(lemmas) -> if keep { Proved(lemmas, length(clauses), nvars, clauses, proof) } else { Proved(lemmas, length(clauses), nvars, [], []) },
+      },
+      SSat(model) -> Refuted(map(bits, |b| match b { (id, ls) ->
+        if atom_is_bool(atoms, id) { let l = list_get(ls, 0); (id, MBool(array_get(model, abs_int(l)) == (if l > 0 { 1 } else { 0 }))) }
+        else {
+          let v = fold(enumerate(ls), BS(0), |acc, il| match il { (i, l) -> if (array_get(model, abs_int(l)) == 1) == (l > 0) { b_add(acc, b_pow2(i)) } else { acc } });
+          (id, MInt(if b_bit(v, width - 1) == 1 { b_sub(v, b_pow2(width)) } else { v }))
+        }
+      })),
+    }
+  } }
+}

@@ -1,0 +1,302 @@
+// ===================================================================== SAT
+// A CDCL SAT solver that writes a DRUP proof (sat.js): two watched literals,
+// first-UIP learning, VSIDS with a binary heap (activities as doubles),
+// phase saving and Luby restarts. Learned clauses are never deleted.
+// Internal literals: 2v for v, 2v + 1 for -v.
+
+type SatResult { SUnsat(List<List<Int>>), SSat(Array<Int>), SUnknown }
+
+// vals, levels, reasons, phases, activities, seen, trail, decision-level
+// starts, clauses, watch lists and their lengths, heap, heap positions,
+// counters (0 trail length, 1 next to propagate, 2 decision level, 3 heap
+// size, 4 n), activity increment, proof (newest first)
+type Sat { Sat(Array<Int>, Array<Int>, Array<Int>, Array<Int>, Array<F>, Array<Int>, Array<Int>, Array<Int>, Array<Array<Int>>, Array<Array<Int>>, Array<Int>, Array<Int>, Array<Int>, Array<Int>, F, List<List<Int>>) }
+
+fn lit_flip(l) { if l % 2 == 0 { l + 1 } else { l - 1 } }
+fn lit_enc(d) { if d > 0 { 2 * d } else { 0 - 2 * d + 1 } }
+fn lit_dec(l) { if l % 2 == 1 { 0 - l / 2 } else { l / 2 } }
+
+fn s_ints(s) { match s { Sat(_, _, _, _, _, _, _, _, _, _, _, _, _, ints, _, _) -> ints } }
+fn s_int(s, i) { array_get(s_ints(s), i) }
+fn s_set_int(s, i, v) { match s { Sat(a, b, c, d, e, f, g, h, i2, j, k, l, m, ints, o, p) -> Sat(a, b, c, d, e, f, g, h, i2, j, k, l, m, array_set(ints, i, v), o, p) } }
+fn s_val(s, v) { match s { Sat(vals, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) -> array_get(vals, v) } }
+fn s_lit_val(s, l) { let x = s_val(s, l / 2); if l % 2 == 1 { 0 - x } else { x } }
+fn s_level(s, v) { match s { Sat(_, lv, _, _, _, _, _, _, _, _, _, _, _, _, _, _) -> array_get(lv, v) } }
+fn s_reason(s, v) { match s { Sat(_, _, r, _, _, _, _, _, _, _, _, _, _, _, _, _) -> array_get(r, v) } }
+fn s_phase(s, v) { match s { Sat(_, _, _, ph, _, _, _, _, _, _, _, _, _, _, _, _) -> array_get(ph, v) } }
+fn s_act(s, v) { match s { Sat(_, _, _, _, act, _, _, _, _, _, _, _, _, _, _, _) -> array_get(act, v) } }
+fn s_seen(s, v) { match s { Sat(_, _, _, _, _, sn, _, _, _, _, _, _, _, _, _, _) -> array_get(sn, v) } }
+fn s_trail(s, i) { match s { Sat(_, _, _, _, _, _, t, _, _, _, _, _, _, _, _, _) -> array_get(t, i) } }
+fn s_lim(s, i) { match s { Sat(_, _, _, _, _, _, _, lim, _, _, _, _, _, _, _, _) -> array_get(lim, i) } }
+fn s_heap(s, i) { match s { Sat(_, _, _, _, _, _, _, _, _, _, _, hp, _, _, _, _) -> array_get(hp, i) } }
+fn s_pos(s, v) { match s { Sat(_, _, _, _, _, _, _, _, _, _, _, _, ps, _, _, _) -> array_get(ps, v) } }
+fn s_inc(s) { match s { Sat(_, _, _, _, _, _, _, _, _, _, _, _, _, _, inc, _) -> inc } }
+fn s_db_len(s) { match s { Sat(_, _, _, _, _, _, _, _, db, _, _, _, _, _, _, _) -> array_length(db) } }
+
+fn s_set_val(s, v, x) { match s { Sat(vals, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p) -> Sat(array_set(vals, v, x), b, c, d, e, f, g, h, i, j, k, l, m, n, o, p) } }
+fn s_set_level(s, v, x) { match s { Sat(a, lv, c, d, e, f, g, h, i, j, k, l, m, n, o, p) -> Sat(a, array_set(lv, v, x), c, d, e, f, g, h, i, j, k, l, m, n, o, p) } }
+fn s_set_reason(s, v, x) { match s { Sat(a, b, r, d, e, f, g, h, i, j, k, l, m, n, o, p) -> Sat(a, b, array_set(r, v, x), d, e, f, g, h, i, j, k, l, m, n, o, p) } }
+fn s_set_phase(s, v, x) { match s { Sat(a, b, c, ph, e, f, g, h, i, j, k, l, m, n, o, p) -> Sat(a, b, c, array_set(ph, v, x), e, f, g, h, i, j, k, l, m, n, o, p) } }
+fn s_set_act(s, v, x) { match s { Sat(a, b, c, d, act, f, g, h, i, j, k, l, m, n, o, p) -> Sat(a, b, c, d, array_set(act, v, x), f, g, h, i, j, k, l, m, n, o, p) } }
+fn s_set_seen(s, v, x) { match s { Sat(a, b, c, d, e, sn, g, h, i, j, k, l, m, n, o, p) -> Sat(a, b, c, d, e, array_set(sn, v, x), g, h, i, j, k, l, m, n, o, p) } }
+fn s_set_trail(s, i2, x) { match s { Sat(a, b, c, d, e, f, t, h, i, j, k, l, m, n, o, p) -> Sat(a, b, c, d, e, f, array_set(t, i2, x), h, i, j, k, l, m, n, o, p) } }
+fn s_set_lim(s, i2, x) { match s { Sat(a, b, c, d, e, f, g, lim, i, j, k, l, m, n, o, p) -> Sat(a, b, c, d, e, f, g, array_set(lim, i2, x), i, j, k, l, m, n, o, p) } }
+fn s_set_heap(s, i2, x) { match s { Sat(a, b, c, d, e, f, g, h, i, j, k, hp, m, n, o, p) -> Sat(a, b, c, d, e, f, g, h, i, j, k, array_set(hp, i2, x), m, n, o, p) } }
+fn s_set_pos(s, v, x) { match s { Sat(a, b, c, d, e, f, g, h, i, j, k, l, ps, n, o, p) -> Sat(a, b, c, d, e, f, g, h, i, j, k, l, array_set(ps, v, x), n, o, p) } }
+fn s_set_inc(s, x) { match s { Sat(a, b, c, d, e, f, g, h, i, j, k, l, m, n, _, p) -> Sat(a, b, c, d, e, f, g, h, i, j, k, l, m, n, x, p) } }
+fn s_push_proof(s, x) { match s { Sat(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p) -> Sat(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, [x, ..p]) } }
+fn s_proof(s) { match s { Sat(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, p) -> reverse(p) } }
+
+// Takes clause ci out of the database (leaving an empty one) so that it can be changed in place.
+fn s_take_clause(s, ci) {
+  match s { Sat(a, b, c, d, e, f, g, h, db, j, k, l, m, n, o, p) -> { let cl = array_get(db, ci); (cl, Sat(a, b, c, d, e, f, g, h, array_set(db, ci, array_empty()), j, k, l, m, n, o, p)) } }
+}
+fn s_put_clause(s, ci, cl) { match s { Sat(a, b, c, d, e, f, g, h, db, j, k, l, m, n, o, p) -> Sat(a, b, c, d, e, f, g, h, array_set(db, ci, cl), j, k, l, m, n, o, p) } }
+fn s_push_clause(s, cl) { match s { Sat(a, b, c, d, e, f, g, h, db, j, k, l, m, n, o, p) -> Sat(a, b, c, d, e, f, g, h, array_push(db, cl), j, k, l, m, n, o, p) } }
+fn s_take_watch(s, w) {
+  match s { Sat(a, b, c, d, e, f, g, h, i, ws, wl, l, m, n, o, p) -> { let list = array_get(ws, w); (list, array_get(wl, w), Sat(a, b, c, d, e, f, g, h, i, array_set(ws, w, array_empty()), wl, l, m, n, o, p)) } }
+}
+fn s_put_watch(s, w, list, len) { match s { Sat(a, b, c, d, e, f, g, h, i, ws, wl, l, m, n, o, p) -> Sat(a, b, c, d, e, f, g, h, i, array_set(ws, w, list), array_set(wl, w, len), l, m, n, o, p) } }
+// Appends to a list with its length kept separately (the array may be longer).
+fn push_at(list, len, x) { if len < array_length(list) { array_set(list, len, x) } else { array_push(list, x) } }
+fn s_watch_push(s, w, x) { let (list, len, s) = s_take_watch(s, w); s_put_watch(s, w, push_at(list, len, x), len + 1) }
+
+// --------------------------------------------------------------- the heap
+fn s_less(s, a, b) { f_gt(s_act(s, a), s_act(s, b)) }
+fn s_up(s, i0) {
+  let v = s_heap(s, i0);
+  fn go(s, i) {
+    if i > 0 {
+      let p = (i - 1) / 2;
+      if s_less(s, v, s_heap(s, p)) { let hp = s_heap(s, p); go(s_set_pos(s_set_heap(s, i, hp), hp, i), p) } else { (s, i) }
+    } else { (s, i) }
+  }
+  let (s, i) = go(s, i0);
+  s_set_pos(s_set_heap(s, i, v), v, i)
+}
+fn s_down(s, i0) {
+  let v = s_heap(s, i0);
+  let hlen = s_int(s, 3);
+  fn go(s, i) {
+    let c = 2 * i + 1;
+    if c >= hlen { (s, i) }
+    else {
+      let c2 = if c + 1 < hlen && s_less(s, s_heap(s, c + 1), s_heap(s, c)) { c + 1 } else { c };
+      if !s_less(s, s_heap(s, c2), v) { (s, i) } else { let hc = s_heap(s, c2); go(s_set_pos(s_set_heap(s, i, hc), hc, i), c2) }
+    }
+  }
+  let (s, i) = go(s, i0);
+  s_set_pos(s_set_heap(s, i, v), v, i)
+}
+fn s_insert(s, v) {
+  if s_pos(s, v) >= 0 { s } else {
+    let hlen = s_int(s, 3);
+    let s = s_set_int(s_set_heap(s_set_pos(s, v, hlen), hlen, v), 3, hlen + 1);
+    s_up(s, hlen)
+  }
+}
+fn s_pop_max(s) {
+  let v = s_heap(s, 0);
+  let hlen = s_int(s, 3) - 1;
+  let last = s_heap(s, hlen);
+  let s = s_set_pos(s_set_int(s, 3, hlen), v, 0 - 1);
+  if hlen > 0 { (v, s_down(s_set_pos(s_set_heap(s, 0, last), last, 0), 0)) } else { (v, s) }
+}
+fn s_bump(s, v) {
+  let a = f_add(s_act(s, v), s_inc(s));
+  let s = s_set_act(s, v, a);
+  let s = if f_gt(a, f_1e100()) {
+    let n = s_int(s, 4);
+    let s = fold(range(1, n + 1), s, |s, i| s_set_act(s, i, f_mul(s_act(s, i), f_1em100())));
+    s_set_inc(s, f_mul(s_inc(s), f_1em100()))
+  } else { s };
+  if s_pos(s, v) >= 0 { s_up(s, s_pos(s, v)) } else { s }
+}
+
+fn s_assign(s, l, from) {
+  let v = l / 2;
+  let tl = s_int(s, 0);
+  let s = s_set_val(s, v, if l % 2 == 1 { 0 - 1 } else { 1 });
+  let s = s_set_level(s, v, s_int(s, 2));
+  let s = s_set_reason(s, v, from);
+  s_set_int(s_set_trail(s, tl, l), 0, tl + 1)
+}
+
+fn s_add_clause(s, lits) {
+  let idx = s_db_len(s);
+  let s = s_push_clause(s, lits);
+  if array_length(lits) >= 2 { (idx, s_watch_push(s_watch_push(s, lit_flip(array_get(lits, 0)), idx), lit_flip(array_get(lits, 1)), idx)) } else { (idx, s) }
+}
+
+// Unit propagation; returns a conflicting clause index or -1.
+fn s_propagate(s) {
+  let qhead = s_int(s, 1);
+  if qhead >= s_int(s, 0) { (0 - 1, s) }
+  else {
+    let t = s_trail(s, qhead);
+    let s = s_set_int(s, 1, qhead + 1);
+    let falsified = lit_flip(t);
+    let (ws, len, s) = s_take_watch(s, t);
+    // Visits ws[i..len), keeping ws[0..j).
+    fn visit(s, ws, i, j) {
+      if i >= len { (0 - 1, s, ws, j) }
+      else {
+        let ci = array_get(ws, i);
+        let (c0, s) = s_take_clause(s, ci);
+        let c = if array_get(c0, 0) == falsified { array_set(array_set(c0, 0, array_get(c0, 1)), 1, falsified) } else { c0 };
+        if s_lit_val(s, array_get(c, 0)) == 1 { visit(s_put_clause(s, ci, c), array_set(ws, j, ci), i + 1, j + 1) }
+        else {
+          fn find_k(k) { if k >= array_length(c) { 0 - 1 } else if s_lit_val(s, array_get(c, k)) != 0 - 1 { k } else { find_k(k + 1) } }
+          let k = find_k(2);
+          if k >= 0 {
+            let x = array_get(c, k);
+            let c2 = array_set(array_set(c, 1, x), k, falsified);
+            visit(s_watch_push(s_put_clause(s, ci, c2), lit_flip(x), ci), ws, i + 1, j)
+          } else {
+            let ws = array_set(ws, j, ci);
+            let s = s_put_clause(s, ci, c);
+            if s_lit_val(s, array_get(c, 0)) == 0 - 1 {
+              fn copy(ws, i, j) { if i >= len { (ws, j) } else { copy(array_set(ws, j, array_get(ws, i)), i + 1, j + 1) } }
+              let (ws, j2) = copy(ws, i + 1, j + 1);
+              (ci, s, ws, j2)
+            } else { visit(s_assign(s, array_get(c, 0), ci), ws, i + 1, j + 1) }
+          }
+        }
+      }
+    }
+    let (confl, s, ws, j) = visit(s, ws, 0, 0);
+    let s = s_put_watch(s, t, ws, j);
+    if confl >= 0 { (confl, s) } else { s_propagate(s) }
+  }
+}
+
+fn s_backtrack(s, lvl) {
+  if s_int(s, 2) <= lvl { s } else {
+    let stop = s_lim(s, lvl);
+    fn go(s, i) {
+      if i < stop { s } else {
+        let v = s_trail(s, i) / 2;
+        let s = s_set_phase(s, v, s_val(s, v));
+        let s = s_set_reason(s_set_val(s, v, 0), v, 0 - 1);
+        go(s_insert(s, v), i - 1)
+      }
+    }
+    let s = go(s, s_int(s, 0) - 1);
+    s_set_int(s_set_int(s_set_int(s, 0, stop), 1, stop), 2, lvl)
+  }
+}
+
+fn index_in(c, x) { fn go(k) { if k >= array_length(c) { 0 - 1 } else if array_get(c, k) == x { k } else { go(k + 1) } } go(0) }
+
+// First-UIP conflict analysis: (learned clause, backtrack level).
+fn s_analyze(s, confl0) {
+  let cur = s_int(s, 2);
+  fn walk(s, confl, p, idx, path_c, learnt) {
+    let (c, s) = s_take_clause(s, confl);
+    let start = if p == 0 - 1 { 0 } else { 1 };
+    let (s, path_c, learnt) = fold(range(start, array_length(c)), (s, path_c, learnt), |acc, k| match acc {
+      (s, pc, ln) -> {
+        let q = array_get(c, k);
+        let v = q / 2;
+        if s_seen(s, v) != 0 || s_level(s, v) == 0 { acc }
+        else {
+          let s = s_bump(s_set_seen(s, v, 1), v);
+          if s_level(s, v) == cur { (s, pc + 1, ln) } else { (s, pc, array_push(ln, q)) }
+        }
+      },
+    });
+    let s = s_put_clause(s, confl, c);
+    fn back(idx) { if s_seen(s, s_trail(s, idx) / 2) == 0 { back(idx - 1) } else { idx } }
+    let idx2 = back(idx);
+    let p2 = s_trail(s, idx2);
+    let confl2 = s_reason(s, p2 / 2);
+    let s = s_set_seen(s, p2 / 2, 0);
+    let pc = path_c - 1;
+    if pc == 0 { (s, p2, learnt) }
+    else {
+      let (rc, s) = s_take_clause(s, confl2);
+      let rc2 = if array_get(rc, 0) != p2 { let k = index_in(rc, p2); array_set(array_set(rc, k, array_get(rc, 0)), 0, p2) } else { rc };
+      walk(s_put_clause(s, confl2, rc2), confl2, p2, idx2 - 1, pc, learnt)
+    }
+  }
+  let (s, p, learnt0) = walk(s, confl0, 0 - 1, s_int(s, 0) - 1, 0, array_push(array_empty(), 0));
+  let learnt1 = array_set(learnt0, 0, lit_flip(p));
+  let (bt, mx) = fold(range(1, array_length(learnt1)), (0, 1), |acc, k| match acc {
+    (bt, mx) -> { let l = s_level(s, array_get(learnt1, k) / 2); if l > bt { (l, k) } else { acc } },
+  });
+  let learnt = if array_length(learnt1) > 1 { let t = array_get(learnt1, 1); array_set(array_set(learnt1, 1, array_get(learnt1, mx)), mx, t) } else { learnt1 };
+  let s = fold(range(0, array_length(learnt)), s, |s, k| s_set_seen(s, array_get(learnt, k) / 2, 0));
+  (learnt, bt, s_set_inc(s, f_mul(s_inc(s), f_inv095())))
+}
+
+// The Luby sequence 1 1 2 1 1 2 4 ..., which scales the restart intervals.
+fn luby(i) {
+  fn go(k) {
+    let p = pow2_small(k);
+    if i == p - 1 { pow2_small(k - 1) } else if i < p - 1 { luby(i - pow2_small(k - 1) + 1) } else { go(k + 1) }
+  }
+  go(1)
+}
+
+fn uniq_ints(xs) { reverse(fold(xs, [], |acc, x| if any(acc, |y| y == x) { acc } else { [x, ..acc] })) }
+
+fn sat_solve(nvars, clauses, max_conflicts, mutant) {
+  if mutant == "sat-claims-unsat" { SUnsat([[]]) } else {
+    let n = nvars;
+    let s0 = Sat(array_make(n + 1, 0), array_make(n + 1, 0), array_make(n + 1, 0 - 1), array_make(n + 1, 0 - 1), array_make(n + 1, f_zero()),
+      array_make(n + 1, 0), array_make(n + 1, 0), array_make(n + 1, 0), array_empty(), array_make(2 * n + 2, array_empty()), array_make(2 * n + 2, 0),
+      array_make(n + 1, 0), array_make(n + 1, 0 - 1), array_from_list([0, 0, 0, 0, n]), f_one(), []);
+    let s = fold(range(1, n + 1), s0, |s, v| s_insert(s, v));
+    // Load the formula; units are assigned at level 0. (None: already unsatisfiable.)
+    let loaded = fold(clauses, Some(s), |acc, c| match acc {
+      None -> None,
+      Some(s) -> {
+        let lits = uniq_ints(map(c, lit_enc));
+        if any(lits, |l| any(lits, |m| m == lit_flip(l))) { Some(s) }
+        else if is_empty(lits) { None }
+        else if length(lits) == 1 {
+          let l = list_get(lits, 0);
+          let lv = s_lit_val(s, l);
+          if lv == 0 - 1 { None } else if lv == 0 { let (idx, s) = s_add_clause(s, array_from_list(lits)); Some(s_assign(s, l, idx)) } else { Some(s) }
+        } else { let (_, s) = s_add_clause(s, array_from_list(lits)); Some(s) }
+      },
+    });
+    match loaded {
+      None -> SUnsat([[]]),
+      Some(s) -> {
+        let (confl, s) = s_propagate(s);
+        if confl >= 0 { SUnsat([[]]) } else { sat_search(s, 0, 0, 100 * luby(1), max_conflicts) }
+      },
+    }
+  }
+}
+
+fn sat_search(s, conflicts, restarts, budget, max_conflicts) {
+  let (confl, s) = s_propagate(s);
+  if confl >= 0 {
+    let conflicts = conflicts + 1;
+    if s_int(s, 2) == 0 { SUnsat(s_proof(s_push_proof(s, []))) }
+    else {
+      let (learnt, bt, s) = s_analyze(s, confl);
+      let s = s_push_proof(s, map(array_to_list(learnt), lit_dec));
+      let s = s_backtrack(s, bt);
+      let s = if array_length(learnt) == 1 { s_assign(s, array_get(learnt, 0), 0 - 1) } else { let (idx, s) = s_add_clause(s, learnt); s_assign(s, array_get(learnt, 0), idx) };
+      if conflicts >= max_conflicts { SUnknown }
+      else if budget - 1 <= 0 { sat_search(s_backtrack(s, 0), conflicts, restarts + 1, 100 * luby(restarts + 2), max_conflicts) }
+      else { sat_search(s, conflicts, restarts, budget - 1, max_conflicts) }
+    }
+  } else {
+    fn pick(s) {
+      if s_int(s, 3) == 0 { (0, s) } else { let (w, s) = s_pop_max(s); if s_val(s, w) == 0 { (w, s) } else { pick(s) } }
+    }
+    let (v, s) = pick(s);
+    if v == 0 {
+      let n = s_int(s, 4);
+      SSat(array_from_list(map(range(0, n + 1), |i| if i >= 1 && s_val(s, i) == 1 { 1 } else { 0 })))
+    } else {
+      let nl = s_int(s, 2);
+      let s = s_set_int(s_set_lim(s, nl, s_int(s, 0)), 2, nl + 1);
+      sat_search(s_assign(s, if s_phase(s, v) == 1 { 2 * v } else { 2 * v + 1 }, 0 - 1), conflicts, restarts, budget, max_conflicts)
+    }
+  }
+}

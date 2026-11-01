@@ -64,6 +64,7 @@ fn starts_at(src, i, p) { substring(src, i, i + string_length(p)) == p }
 
 fn list_get(xs, i) { match nth(xs, i) { Some(x) -> x, None -> panic("internal error: list index " ++ int_to_string(i)) } }
 fn contains_str(xs, s) { any(xs, |x| x == s) }
+fn is_some(o) { match o { Some(_) -> true, None -> false } }
 fn enumerate(xs) { zip(range(0, length(xs)), xs) }
 
 // JSON text for a string of bytes: printable ASCII as is, the rest escaped.

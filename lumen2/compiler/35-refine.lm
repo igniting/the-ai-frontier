@@ -1,0 +1,741 @@
+// ============================================================ refinements
+// Proof obligations for partial operations and refinement types (refine.js):
+// a symbolic walk of each function body, tracking integers as linear terms,
+// arrays and strings by their lengths (and what their elements can be), and
+// the facts that hold on the current path. Each obligation is bit-blasted
+// and refuted, with the refutation checked.
+
+type SV { SVInt(Term), SVBool(Fm), SVLen(Term, Option<List<ElPart>>) }
+// A part of what an array's elements can be: satisfying a declared element
+// refinement (with its binding of the callee's parameters), or equal to a
+// value; each under branch conditions.
+type ElPart { EPDecl(ElemSpec, List<(Int, Option<SV>)>, List<Fm>), EPEq(SV, List<Fm>) }
+
+// kind, scope, site, span, what, status, lemmas, clauses, counterexample, and when kept: variables, clauses, proof
+type Oblig { Oblig(String, String, String, Int, Int, String, String, Int, Int, String, Int, List<List<Int>>, List<List<Int>>) }
+
+// The walk's state: atoms, definitions (newest first), the symbolic values of
+// local ids, local functions, safe sites, notes on unproved sites (newest
+// first), obligations (newest first), the current scope, the query cache.
+type VS { VS(Array<Atom>, List<Fm>, Map<Option<SV>>, Map<Fn>, Map<Bool>, List<(String, String)>, List<Oblig>, String, Cache) }
+// What the walk reads: the checked program, the mutant, whether proofs are kept, the user source.
+type VEnv { VEnv(Checked, String, Bool, String) }
+
+fn ve_cs(ve) { match ve { VEnv(Checked(_, _, _, _, _, cs, _, _, _, _), _, _, _) -> cs } }
+fn ve_mutant(ve) { match ve { VEnv(_, m, _, _) -> m } }
+fn int_min_b() { big(0 - 9223372036854775807 - 1) }
+fn int_max_b() { big(9223372036854775807) }
+fn max_array_b() { BS(16777215) }
+
+fn vs_atoms(vs) { match vs { VS(a, _, _, _, _, _, _, _, _) -> a } }
+fn vs_scope(vs) { match vs { VS(_, _, _, _, _, _, _, sc, _) -> sc } }
+fn vs_new_atom(vs, name, lo, hi, display) {
+  match vs { VS(a, d, env, lf, safe, un, ob, sc, ca) -> (array_length(a), VS(array_push(a, AInt(lo, hi, name, display)), d, env, lf, safe, un, ob, sc, ca)) }
+}
+fn vs_new_bool(vs, name, display) {
+  match vs { VS(a, d, env, lf, safe, un, ob, sc, ca) -> (array_length(a), VS(array_push(a, ABool(name, display)), d, env, lf, safe, un, ob, sc, ca)) }
+}
+fn vs_def(vs, f) { match vs { VS(a, d, env, lf, safe, un, ob, sc, ca) -> VS(a, [f, ..d], env, lf, safe, un, ob, sc, ca) } }
+fn vs_env_get(vs, id) { match vs { VS(_, _, env, _, _, _, _, _, _) -> m_get(env, int_to_string(id)) } }
+fn vs_env_set(vs, id, v) { match vs { VS(a, d, env, lf, safe, un, ob, sc, ca) -> VS(a, d, m_set(env, int_to_string(id), v), lf, safe, un, ob, sc, ca) } }
+fn vs_local_fn(vs, id) { match vs { VS(_, _, _, lf, _, _, _, _, _) -> m_get(lf, int_to_string(id)) } }
+fn vs_set_local_fn(vs, id, f) { match vs { VS(a, d, env, lf, safe, un, ob, sc, ca) -> VS(a, d, env, m_set(lf, int_to_string(id), f), safe, un, ob, sc, ca) } }
+fn vs_add_safe(vs, k) { match vs { VS(a, d, env, lf, safe, un, ob, sc, ca) -> VS(a, d, env, lf, m_set(safe, k, true), un, ob, sc, ca) } }
+fn vs_add_unproved(vs, k, note) {
+  match vs { VS(a, d, env, lf, safe, un, ob, sc, ca) -> VS(a, d, env, lf, safe, [(k, note), ..filter(un, |e| match e { (k2, _) -> k2 != k })], ob, sc, ca) }
+}
+fn vs_push_oblig(vs, o) { match vs { VS(a, d, env, lf, safe, un, ob, sc, ca) -> VS(a, d, env, lf, safe, un, [o, ..ob], sc, ca) } }
+fn vs_set_scope(vs, sc) { match vs { VS(a, d, env, lf, safe, un, ob, _, ca) -> VS(a, d, env, lf, safe, un, ob, sc, ca) } }
+fn vs_set_atom(vs, id, at) { match vs { VS(a, d, env, lf, safe, un, ob, sc, ca) -> VS(array_set(a, id, at), d, env, lf, safe, un, ob, sc, ca) } }
+
+fn int_of(v) { match v { Some(SVInt(t)) -> Some(t), _ -> None } }
+fn len_of(v) { match v { Some(SVLen(t, _)) -> Some(t), _ -> None } }
+fn bool_of(v) { match v { Some(SVBool(f)) -> Some(f), _ -> None } }
+fn el_of(v) { match v { Some(SVLen(_, el)) -> el, _ -> None } }
+fn with_el(v, el) { match v { Some(SVLen(t, _)) -> Some(SVLen(t, el)), _ -> v } }
+
+fn type_name_of(ve, ty) { match ty { Some(t) -> match prune(cs_st(ve_cs(ve)), t) { TC(n, _) -> n, _ -> "" }, None -> "" } }
+fn node_ty(ve, id) { cs_ty(ve_cs(ve), id) }
+
+fn fresh_sv(ve, vs, ty, name, display) {
+  let tn = type_name_of(ve, ty);
+  if tn == "Int" { let (id, vs) = vs_new_atom(vs, name, int_min_b(), int_max_b(), display); (Some(SVInt(atom_term(id))), vs) }
+  else if tn == "Bool" { let (id, vs) = vs_new_bool(vs, name, display); (Some(SVBool(FBvar(id))), vs) }
+  else if tn == "Array" { let (id, vs) = vs_new_atom(vs, "array_length(" ++ name ++ ")", BS(0), max_array_b(), display); (Some(SVLen(atom_term(id), None)), vs) }
+  else if tn == "String" { let (id, vs) = vs_new_atom(vs, "string_length(" ++ name ++ ")", BS(0), max_array_b(), display); (Some(SVLen(atom_term(id), None)), vs) }
+  else { (None, vs) }
+}
+fn var_sym(ve, vs, id, ty, name) {
+  match vs_env_get(vs, id) {
+    Some(v) -> (v, vs),
+    None -> { let (v, vs) = fresh_sv(ve, vs, ty, name, true); (v, vs_env_set(vs, id, v)) },
+  }
+}
+
+// ----------------------------------------------------------- messages
+fn text_of(ve, s, e, sc) {
+  match ve { VEnv(_, _, _, src) -> if sc == "prelude" { substring(prelude_source(), s, e) } else { substring(src, s, e) } }
+}
+fn v_err(vs, msg, s, e, note) { if vs_scope(vs) == "user" { fail_at(msg, s, e, note) } else { fail_at(msg, 0, 0, note) } }
+
+// ------------------------------------------------------------ definitions
+fn term_interval(atoms, t) {
+  fold(term_coeffs(t), (term_c(t), term_c(t)), |acc, e| match (acc, e) {
+    ((lo, hi), (id, k)) -> {
+      let (alo, ahi) = (atom_lo(atoms, id), atom_hi(atoms, id));
+      if b_lt(BS(0), k) { (b_add(lo, b_mul(k, alo)), b_add(hi, b_mul(k, ahi))) } else { (b_add(lo, b_mul(k, ahi)), b_add(hi, b_mul(k, alo))) }
+    },
+  })
+}
+fn widen(ve, vs, id, lo, hi) {
+  if ve_mutant(ve) == "refine-overflow-def" { vs } else {
+    match array_get(vs_atoms(vs), id) {
+      AInt(alo, ahi, n, d) -> vs_set_atom(vs, id, AInt(if b_lt(lo, alo) { lo } else { alo }, if b_lt(ahi, hi) { hi } else { ahi }, n, d)),
+      _ -> vs,
+    }
+  }
+}
+
+// A branch's alternative: its condition, its value, and whether the conditions are exact.
+type Alt { Alt(Option<Fm>, Option<SV>, Bool) }
+
+fn merge(ve, vs, ty, alts, name) {
+  if any(alts, |a| match a { Alt(_, None, _) -> true, _ -> false }) { fresh_sv(ve, vs, ty, name, false) }
+  else {
+    let first = match list_get(alts, 0) { Alt(_, Some(v), _) -> v, _ -> internal("merge") };
+    let kind = match first { SVInt(_) -> "int", SVBool(_) -> "bool", SVLen(_, _) -> "len" };
+    let exact = all(alts, |a| match a { Alt(Some(_), _, true) -> true, _ -> false });
+    if kind == "bool" && (exact || ve_mutant(ve) == "refine-match-or") {
+      let f = reduce_or(map(alts, |a| match a { Alt(c, Some(SVBool(vf)), _) -> match c { Some(cf) -> f_and(cf, vf), None -> vf }, _ -> FFalse }));
+      (Some(SVBool(f)), vs)
+    } else {
+      let (r, vs) = fresh_sv(ve, vs, ty, name, false);
+      let rkind = match r { Some(SVInt(_)) -> "int", Some(SVBool(_)) -> "bool", Some(SVLen(_, _)) -> "len", None -> "" };
+      if rkind != kind { (r, vs) } else {
+        let vs = if kind != "bool" {
+          let rid = match r { Some(SVInt(t)) -> atom_id_of(t), Some(SVLen(t, _)) -> atom_id_of(t), _ -> 0 };
+          fold(alts, vs, |vs, a| match a { Alt(_, Some(v), _) -> { let (lo, hi) = term_interval(vs_atoms(vs), sv_term(v)); widen(ve, vs, rid, lo, hi) }, _ -> vs })
+        } else { vs };
+        let same = |v| match (r, v) {
+          (Some(SVBool(rf)), SVBool(vf)) -> f_or(f_and(rf, vf), f_and(f_not(rf), f_not(vf))),
+          (Some(rv), _) -> compare("==", sv_term(rv), sv_term(v)),
+          _ -> FFalse,
+        };
+        let cases0 = map(alts, |a| match a { Alt(c, Some(v), _) -> match c { Some(cf) -> f_and(cf, same(v)), None -> same(v) }, _ -> FFalse });
+        let cases = if !exact && all(alts, |a| match a { Alt(Some(_), _, _) -> true, _ -> false }) {
+          append(cases0, [reduce_and(map(alts, |a| match a { Alt(Some(c), _, _) -> f_not(c), _ -> FTrue }))])
+        } else { cases0 };
+        let vs = vs_def(vs, reduce_or(cases));
+        if kind == "len" {
+          let el = if exact { branch_union(map(alts, |a| match a { Alt(c, v, _) -> (c, el_of(v)) })) } else { fold(drop(alts, 1), match list_get(alts, 0) { Alt(_, v, _) -> el_of(v) }, |acc, a| match a { Alt(_, v, _) -> el_union(acc, el_of(v)) }) };
+          (with_el(r, el), vs)
+        } else { (r, vs) }
+      }
+    }
+  }
+}
+fn reduce_or(fs) { match fs { [f, ..rest] -> fold(rest, f, |x, y| f_or(x, y)), [] -> FFalse } }
+fn reduce_and(fs) { match fs { [f, ..rest] -> fold(rest, f, |x, y| f_and(x, y)), [] -> FTrue } }
+fn atom_id_of(t) { match term_coeffs(t) { [(id, _), .._] -> id, [] -> 0 } }
+fn sv_term(v) { match v { SVInt(t) -> t, SVLen(t, _) -> t, SVBool(_) -> konst(BS(0)) } }
+
+// After a branch, what one of its arms learned holds afterwards.
+fn learn_from(st, arms) {
+  let base = length(st);
+  let learned = map(arms, |a| reverse(take(a, length(a) - base)));
+  if any(learned, |fs| is_empty(fs)) { st } else { [reduce_or(map(learned, reduce_and)), ..st] }
+}
+
+// ---------------------------------------------------------- obligations
+fn describe_model(vs, model) {
+  let atoms = vs_atoms(vs);
+  let parts = sort(flat_map(model, |e| match e { (id, v) -> match array_get(atoms, id) {
+    AInt(_, _, name, true) -> [name ++ " = " ++ mval_text(v)],
+    ABool(name, true) -> [name ++ " = " ++ mval_text(v)],
+    _ -> [],
+  } }));
+  if is_empty(parts) { "it does not hold here" } else { "for example when " ++ join(parts, ", ") }
+}
+fn mval_text(v) { match v { MInt(b) -> b_to_string(b), MBool(x) -> if x { "true" } else { "false" } } }
+
+fn small_atoms(atoms) {
+  array_from_list(map(array_to_list(atoms), |a| match a {
+    AInt(lo, hi, n, d) -> AInt(if b_lt(lo, BS(0 - 16)) { BS(0 - 16) } else { lo }, if b_lt(BS(16), hi) { BS(16) } else { hi }, n, d),
+    other -> other,
+  }))
+}
+
+// Records an obligation and tries to prove it; afterwards the goal holds on this path.
+fn oblige(ve, vs, kind, goal, st, site, s, e, what) {
+  match goal {
+    None -> {
+      let o = Oblig(kind, vs_scope(vs), site, s, e, what, "unknown", 0, 0, "", 0, [], []);
+      (o, vs_push_oblig(vs, o), st)
+    },
+    Some(g) -> match ve {
+      VEnv(_, mutant, keep, _) -> match vs {
+        VS(atoms, defs, env, lf, safe, un, ob, sc, cache) -> {
+          let facts = append(reverse(defs), reverse(st));
+          let (r, cache) = prove(atoms, facts, g, mutant, 100000, keep, cache);
+          let (o, cache) = match r {
+            Proved(lemmas, ncl, nv, cls, pf) -> (Oblig(kind, sc, site, s, e, what, "proved", lemmas, ncl, "", nv, cls, pf), cache),
+            Unknown -> (Oblig(kind, sc, site, s, e, what, "unknown", 0, 0, "", 0, [], []), cache),
+            Refuted(model) -> {
+              let small = small_atoms(atoms);
+              let ok = all(array_to_list(small), |a| match a { AInt(lo, hi, _, _) -> b_le(lo, hi), _ -> true });
+              let (r2, cache) = if ok { prove(small, facts, g, mutant, 100000, keep, cache) } else { (Unknown, cache) };
+              let vs1 = VS(atoms, defs, env, lf, safe, un, ob, sc, cache);
+              let ce = match r2 { Refuted(m2) -> describe_model(vs1, m2), _ -> describe_model(vs1, model) };
+              (Oblig(kind, sc, site, s, e, what, "refuted", 0, 0, ce, 0, [], []), cache)
+            },
+          };
+          (o, VS(atoms, defs, env, lf, safe, un, [o, ..ob], sc, cache), [g, ..st])
+        },
+      },
+    },
+  }
+}
+fn ob_status(o) { match o { Oblig(_, _, _, _, _, _, st, _, _, _, _, _, _) -> st } }
+fn ob_ce(o) { match o { Oblig(_, _, _, _, _, _, _, _, _, ce, _, _, _) -> ce } }
+fn ob_note(o) { let ce = ob_ce(o); if ce == "" { None } else { Some(ce) } }
+
+fn partial(ve, vs, s, e, goal, st, what) {
+  let key = site_key(vs_scope(vs), s, e);
+  let (o, vs, st) = oblige(ve, vs, "partial", goal, st, key, s, e, what);
+  if ob_status(o) == "proved" { (vs_add_safe(vs, key), st) }
+  else { (vs_add_unproved(vs, key, "could not prove that " ++ what ++ (if ob_ce(o) != "" { ": " ++ ob_ce(o) } else { "" })), st) }
+}
+fn in_bounds(i, n) { match (i, n) { (Some(it), Some(nt)) -> Some(f_and(compare(">=", it, konst(BS(0))), compare("<", it, nt))), _ -> None } }
+
+// ------------------------------------------------------------- predicates
+// A refinement predicate as a formula; `binding` gives the refined value and
+// the callee's parameters (by local id); other variables are the scope's.
+fn predicate(ve, vs, x, binding) { let (v, vs) = pred_val(ve, vs, x, binding); (bool_of(v), vs) }
+fn pred_val(ve, vs, x, binding) {
+  let cs = ve_cs(ve);
+  match x {
+    EInt(_, v, _, _) -> (Some(SVInt(konst(big(v)))), vs),
+    EBool(_, v, _, _) -> (Some(SVBool(if v { FTrue } else { FFalse })), vs),
+    EVar(id, name, _, _) -> {
+      let lid = match cs_ref(cs, id) { RLocal(l) -> l, _ -> 0 - 1 };
+      match find(binding, |b| match b { (k, _) -> k == lid }) {
+        Some((_, Some(v))) -> (Some(v), vs),
+        _ -> var_sym(ve, vs, lid, node_ty(ve, id), name),
+      }
+    },
+    EUnop(_, op, a, _, _) -> {
+      let (av, vs) = pred_val(ve, vs, a, binding);
+      if op == "-" { (match int_of(av) { Some(t) -> Some(SVInt(scale_term(t, BS(0 - 1)))), None -> None }, vs) }
+      else { (match bool_of(av) { Some(f) -> Some(SVBool(f_not(f))), None -> None }, vs) }
+    },
+    ECall(_, _, args, _, _) -> {
+      let (av, vs) = pred_val(ve, vs, list_get(args, 0), binding);
+      match len_of(av) { Some(t) -> (Some(SVInt(t)), vs), None -> { let (id, vs) = vs_new_atom(vs, "length", int_min_b(), int_max_b(), false); (Some(SVInt(atom_term(id))), vs) } }
+    },
+    EBinop(_, op, l, r, _, _) -> {
+      let (lv, vs) = pred_val(ve, vs, l, binding);
+      let (rv, vs) = pred_val(ve, vs, r, binding);
+      let both_int = |f| match (int_of(lv), int_of(rv)) { (Some(a), Some(b)) -> f(a, b), _ -> None };
+      let res = if op == "+" { both_int(|a, b| Some(SVInt(add_terms(a, b)))) }
+        else if op == "-" { both_int(|a, b| Some(SVInt(sub_terms(a, b)))) }
+        else if op == "*" { both_int(|a, b| if is_const(a) { Some(SVInt(scale_term(b, term_c(a)))) } else if is_const(b) { Some(SVInt(scale_term(a, term_c(b)))) } else { None }) }
+        else if op == "&&" { match (bool_of(lv), bool_of(rv)) { (Some(a), Some(b)) -> Some(SVBool(f_and(a, b))), _ -> None } }
+        else if op == "||" { match (bool_of(lv), bool_of(rv)) { (Some(a), Some(b)) -> Some(SVBool(f_or(a, b))), _ -> None } }
+        else { both_int(|a, b| Some(SVBool(compare(op, a, b)))) };
+      (res, vs)
+    },
+    _ -> (None, vs),
+  }
+}
+
+// ----------------------------------------------------------- element specs
+fn el_just(x) { match x { Some(SVInt(_)) -> Some([EPEq(sv_of(x), [])]), Some(SVLen(_, _)) -> Some([EPEq(sv_of(x), [])]), _ -> None } }
+fn sv_of(x) { match x { Some(v) -> v, None -> internal("sv") } }
+fn el_union(a, b) { match (a, b) { (Some(x), Some(y)) -> Some(append(x, y)), _ -> None } }
+fn el_declared(spec, binding) { match spec { Some(sp) -> Some([EPDecl(sp, binding, [])]), None -> None } }
+fn el_cs(p) { match p { EPDecl(_, _, cs) -> cs, EPEq(_, cs) -> cs } }
+fn el_with_cs(p, cs) { match p { EPDecl(sp, b, _) -> EPDecl(sp, b, cs), EPEq(x, _) -> EPEq(x, cs) } }
+fn branch_union(alts) {
+  if any(alts, |a| match a { (_, None) -> true, _ -> false }) { None }
+  else { Some(flat_map(alts, |a| match a { (c, Some(parts)) -> map(parts, |p| el_with_cs(p, append(el_cs(p), match c { Some(cf) -> [cf], None -> [] }))), _ -> [] })) }
+}
+
+fn part_holds(ve, vs, p, v) {
+  let (f, vs) = match p {
+    EPEq(x, _) -> (match (x, v) {
+      (SVInt(xt), Some(SVInt(vt))) -> Some(compare("==", vt, xt)),
+      (SVLen(xt, _), Some(SVLen(vt, _))) -> Some(compare("==", vt, xt)),
+      _ -> None,
+    }, vs),
+    EPDecl(ElemSpec(refine, _), binding, _) -> match refine {
+      Some(RefineInfo(vid, _, pred, _, _, _, _)) -> predicate(ve, vs, pred, append(filter(binding, |b| match b { (k, _) -> k != vid }), [(vid, v)])),
+      None -> (Some(FTrue), vs),
+    },
+  };
+  (match f { Some(ff) -> Some(fold(el_cs(p), ff, |acc, c| f_and(acc, c))), None -> None }, vs)
+}
+fn elem_holds(ve, vs, parts, v) {
+  let (fs, vs) = fold(parts, ([], vs), |acc, p| match acc { (fs, vs) -> { let (f, vs) = part_holds(ve, vs, p, v); ([f, ..fs], vs) } });
+  let fs = reverse(fs);
+  if is_empty(fs) { (Some(FFalse), vs) }
+  else if all(fs, |f| f != None) { (Some(reduce_or(map(fs, |f| match f { Some(x) -> x, None -> FFalse }))), vs) }
+  else { (None, vs) }
+}
+fn el_inner(el) {
+  match el {
+    None -> None,
+    Some(parts) -> fold(parts, Some([]), |acc, p| match acc {
+      None -> None,
+      Some(out) -> {
+        let sub = match p { EPEq(x, _) -> el_of(Some(x)), EPDecl(ElemSpec(_, elem), b, _) -> el_declared(elem, b) };
+        match sub { None -> None, Some(qs) -> Some(append(out, map(qs, |q| el_with_cs(q, append(el_cs(q), el_cs(p)))))) }
+      },
+    }),
+  }
+}
+
+fn elem_ty_of(ve, ty) { match ty { Some(t) -> match prune(cs_st(ve_cs(ve)), t) { TC(_, [a, .._]) -> Some(a), _ -> None }, None -> None } }
+
+// Proves that the elements described by `have` satisfy the declared spec,
+// at every depth, one part at a time. Returns the first failure: the
+// obligation and the spec it was for.
+fn implies(ve, vs, have, want, ty, st, kind, s, e, what) {
+  match want {
+    None -> (None, vs),
+    Some(wparts) -> {
+      let w = list_get(wparts, 0);
+      let (wspec, wbinding) = match w { EPDecl(sp, b, _) -> (sp, b), _ -> internal("implies") };
+      let (wrefine, welem) = match wspec { ElemSpec(r, el) -> (r, el) };
+      let elem_ty = elem_ty_of(ve, ty);
+      let (probe, vs) = fresh_sv(ve, vs, elem_ty, "element", true);
+      let what2 = what ++ " (its elements)";
+      match have {
+        None -> match wrefine {
+          Some(_) -> { let (o, vs, _) = oblige(ve, vs, kind, None, st, "", s, e, what2); (Some((o, wspec)), vs) },
+          None -> implies(ve, vs, None, el_inner(want), elem_ty, st, kind, s, e, what),
+        },
+        Some(hparts) -> {
+          let (bad, vs) = fold(hparts, (None, vs), |acc, p| match acc {
+            (Some(_), _) -> acc,
+            (None, vs) -> match wrefine {
+              None -> acc,
+              Some(_) -> {
+                let s2 = append(reverse(el_cs(p)), st);
+                let (goal, s2, vs) = match p {
+                  EPEq(x, _) -> { let (g, vs) = part_holds(ve, vs, w, Some(x)); (g, s2, vs) },
+                  EPDecl(_, _, _) -> {
+                    let (same, vs) = match probe {
+                      Some(_) -> { let (h1, vs) = part_holds(ve, vs, el_with_cs(p, []), probe); let (w1, vs) = part_holds(ve, vs, w, probe); (h1 == w1, vs) },
+                      None -> (false, vs),
+                    };
+                    if same { (Some(FTrue), s2, vs) }
+                    else {
+                      let (v, vs) = fresh_sv(ve, vs, elem_ty, "element", true);
+                      let (h, vs) = match v { Some(_) -> part_holds(ve, vs, el_with_cs(p, []), v), None -> (None, vs) };
+                      let s2 = match h { Some(hf) -> [hf, ..s2], None -> s2 };
+                      match (v, h) { (Some(_), Some(_)) -> { let (g, vs) = part_holds(ve, vs, w, v); (g, s2, vs) }, _ -> (None, s2, vs) }
+                    }
+                  },
+                };
+                match goal {
+                  Some(FTrue) -> (None, vs),
+                  _ -> { let (o, vs, _) = oblige(ve, vs, kind, goal, s2, "", s, e, what2); if ob_status(o) != "proved" { (Some((o, wspec)), vs) } else { (None, vs) } },
+                }
+              },
+            },
+          });
+          match bad {
+            Some(_) -> (bad, vs),
+            None -> match welem {
+              Some(_) -> implies(ve, vs, el_inner(have), el_declared(welem, wbinding), elem_ty, st, kind, s, e, what),
+              None -> (None, vs),
+            },
+          }
+        },
+      }
+    },
+  }
+}
+fn spec_pred_text(ve, sp, sc) { match sp { ElemSpec(Some(RefineInfo(_, _, _, _, _, ps, pe)), _) -> text_of(ve, ps, pe, sc), _ -> "" } }
+
+// ------------------------------------------------------------- expressions
+fn param_info(ve, p) {
+  let cs = ve_cs(ve);
+  match p { Param(pid, name, _, _, _) -> (cs_lid(cs, pid), cs_ty(cs, pid), name, cs_refine(cs, pid), cs_elem(cs, pid)) }
+}
+fn has_refined_params(ve, f) {
+  let cs = ve_cs(ve);
+  any(fn_params(f), |p| cs_refine(cs, param_id(p)) != None || cs_elem(cs, param_id(p)) != None)
+}
+
+fn sym_all(ve, vs, xs, st) {
+  match xs { [] -> ([], vs, st), [x, ..rest] -> { let (v, vs, st) = sym(ve, vs, x, st, false); let (vs2, vs, st) = sym_all(ve, vs, rest, st); ([v, ..vs2], vs, st) } }
+}
+
+fn sym(ve, vs, x, st, callee) {
+  let cs = ve_cs(ve);
+  match x {
+    EInt(_, v, _, _) -> (Some(SVInt(konst(big(v)))), vs, st),
+    EBool(_, v, _, _) -> (Some(SVBool(if v { FTrue } else { FFalse })), vs, st),
+    EStr(_, v, _, _) -> (Some(SVLen(konst(BS(string_length(v))), None)), vs, st),
+    EUnit(_, _, _) -> (None, vs, st),
+    EVar(id, name, s, e) -> match cs_ref(cs, id) {
+      RLocal(lid) -> {
+        match vs_local_fn(vs, lid) {
+          Some(f) -> if !callee && has_refined_params(ve, f) { v_err(vs, "`" ++ name ++ "` has refined parameters, so it can only be called directly", s, e, Some("a call through a function value could not be checked against the refinements")) } else { () },
+          None -> (),
+        };
+        let (v, vs) = var_sym(ve, vs, lid, node_ty(ve, id), name);
+        (v, vs, st)
+      },
+      RGlobal(key) -> {
+        if !callee {
+          match find_fn_by_key(ve, key) {
+            Some(f) -> if has_refined_params(ve, f) { v_err(vs, "`" ++ name ++ "` has refined parameters, so it can only be called directly", s, e, Some("a call through a function value could not be checked against the refinements")) } else { () },
+            None -> (),
+          }
+        } else { () };
+        (None, vs, st)
+      },
+      _ -> (None, vs, st),
+    },
+    ECtor(_, _, args, _, _, _) -> { let (_, vs, st) = sym_all(ve, vs, match args { Some(a) -> a, None -> [] }, st); (None, vs, st) },
+    ETuple(_, es, _, _) -> { let (_, vs, st) = sym_all(ve, vs, es, st); (None, vs, st) },
+    ELambda(_, params, body, _, _) -> { let vs = v_body(ve, vs, params, body, None, st); (None, vs, st) },
+    EUnop(id, op, a, _, _) -> {
+      let (av, vs, st) = sym(ve, vs, a, st, false);
+      if op == "-" { match int_of(av) { Some(t) -> (Some(SVInt(scale_term(t, BS(0 - 1)))), vs, st), None -> { let (r, vs) = fresh_sv(ve, vs, node_ty(ve, id), "-", false); (r, vs, st) } } }
+      else { (match bool_of(av) { Some(f) -> Some(SVBool(f_not(f))), None -> None }, vs, st) }
+    },
+    EBinop(id, op, l, r, s, e) -> sym_binop(ve, vs, id, op, l, r, s, e, st),
+    EBlock(_, stmts, result, _, _) -> {
+      let (vs, st) = fold(stmts, (vs, st), |acc, stmt| match acc {
+        (vs, st) -> match stmt {
+          SLet(lid, pat, _, value, vsp, vep) -> {
+            let (v, vs, st) = sym(ve, vs, value, st, false);
+            let (vs, st) = match cs_refine(cs, lid) {
+              Some(RefineInfo(vid, _, pred, rs, re, ps, pe)) -> {
+                let (goal, vs) = predicate(ve, vs, pred, [(vid, v)]);
+                let (o, vs, st) = oblige(ve, vs, "let", goal, st, "", ex_s(value), ex_e(value), "`" ++ text_of(ve, rs, re, vs_scope(vs)) ++ "`");
+                if ob_status(o) != "proved" { v_err(vs, "cannot prove that this value satisfies `" ++ text_of(ve, ps, pe, vs_scope(vs)) ++ "`", ex_s(value), ex_e(value), ob_note(o)) } else { (vs, st) }
+              },
+              None -> (vs, st),
+            };
+            match pat { PVar(pid, _, _, _) -> (vs_env_set(vs, cs_lid(cs, pid), v), st), _ -> (vs, st) }
+          },
+          SExpr(y) -> { let (_, vs, st) = sym(ve, vs, y, st, false); (vs, st) },
+          SFn(f) -> {
+            let vs = vs_set_local_fn(vs, cs_lid(cs, fn_id(f)), f);
+            (v_body(ve, vs, fn_params(f), fn_body(f), Some(f), st), st)
+          },
+        },
+      });
+      match result { Some(y) -> sym(ve, vs, y, st, false), None -> (None, vs, st) }
+    },
+    EIf(id, c, t, el, _, _) -> {
+      let (cv, vs, st) = sym(ve, vs, c, st, false);
+      let cf = bool_of(cv);
+      let (yes0, no0) = match cf {
+        Some(f) -> ([f, ..st], [if ve_mutant(ve) == "refine-else-same" { f } else { f_not(f) }, ..st]),
+        None -> (st, st),
+      };
+      let (a, vs, yes) = sym(ve, vs, t, yes0, false);
+      let (b, vs, no) = match el { Some(y) -> sym(ve, vs, y, no0, false), None -> (None, vs, no0) };
+      let (r, vs) = merge(ve, vs, node_ty(ve, id), [Alt(cf, a, true), Alt(match cf { Some(f) -> Some(f_not(f)), None -> None }, b, true)], "if");
+      (r, vs, learn_from(st, [yes, no]))
+    },
+    EMatch(id, scrut, arms, _, _) -> {
+      let (sv, vs, st) = sym(ve, vs, scrut, st, false);
+      let (alts, states, vs, _) = fold(arms, ([], [], vs, []), |acc, arm| match (acc, arm) {
+        ((alts, states, vs, before), Arm(pat, guard, body, _, _)) -> {
+          let a0 = append(before, st);
+          let lit = match (pat, int_of(sv), bool_of(sv)) {
+            (PInt(_, v, _, _), Some(t), _) -> Some(compare("==", t, konst(big(v)))),
+            (PBool(_, v, _, _), _, Some(f)) -> Some(if v { f } else { f_not(f) }),
+            _ -> None,
+          };
+          let a1 = match lit { Some(lf) -> [lf, ..a0], None -> a0 };
+          let vs = match pat { PVar(pid, _, _, _) -> vs_env_set(vs, cs_lid(cs, pid), sv), _ -> vs };
+          let conds0 = append(reverse(before), match lit { Some(lf) -> [lf], None -> [] });
+          let (a2, conds, vs) = match guard {
+            Some(g) -> { let (gv, vs, a1b) = sym(ve, vs, g, a1, false); match bool_of(gv) { Some(gf) -> ([gf, ..a1b], append(conds0, [gf]), vs), None -> (a1b, conds0, vs) } },
+            None -> (a1, conds0, vs),
+          };
+          let (bv, vs, a3) = sym(ve, vs, body, a2, false);
+          let c = if is_empty(conds) { None } else { Some(reduce_and(conds)) };
+          let before2 = match (lit, guard) { (Some(lf), None) -> [f_not(lf), ..before], _ -> before };
+          (append(alts, [Alt(c, bv, false)]), append(states, [a3]), vs, before2)
+        },
+      });
+      let (r, vs) = merge(ve, vs, node_ty(ve, id), alts, "match");
+      (r, vs, learn_from(st, states))
+    },
+    ECall(id, f, args, s, e) -> sym_call(ve, vs, id, f, args, s, e, st),
+  }
+}
+
+fn find_fn_by_key(ve, key) {
+  match ve { VEnv(Checked(_, _, _, fns, _, cs, _, _, _, _), _, _, _) -> find(fns, |f| cs_fkey(cs, fn_id(f)) == key) }
+}
+
+fn sym_binop(ve, vs, id, op, l, r, s, e, st) {
+  if op == "&&" || op == "||" {
+    let (lv, vs, st) = sym(ve, vs, l, st, false);
+    let lf = bool_of(lv);
+    let rs0 = match lf { Some(f) -> [if op == "&&" { f } else { f_not(f) }, ..st], None -> st };
+    let (rv, vs, _) = sym(ve, vs, r, rs0, false);
+    match (lf, bool_of(rv)) { (Some(a), Some(b)) -> (Some(SVBool(if op == "&&" { f_and(a, b) } else { f_or(a, b) })), vs, st), _ -> (None, vs, st) }
+  } else {
+    let (lv, vs, st) = sym(ve, vs, l, st, false);
+    let (rv, vs, st) = sym(ve, vs, r, st, false);
+    let ty = node_ty(ve, id);
+    if op == "+" { match (int_of(lv), int_of(rv)) { (Some(a), Some(b)) -> (Some(SVInt(add_terms(a, b))), vs, st), _ -> { let (x, vs) = fresh_sv(ve, vs, ty, "+", false); (x, vs, st) } } }
+    else if op == "-" { match (int_of(lv), int_of(rv)) { (Some(a), Some(b)) -> (Some(SVInt(sub_terms(a, b))), vs, st), _ -> { let (x, vs) = fresh_sv(ve, vs, ty, "-", false); (x, vs, st) } } }
+    else if op == "*" {
+      match (int_of(lv), int_of(rv)) {
+        (Some(a), Some(b)) -> if is_const(a) { (Some(SVInt(scale_term(b, term_c(a)))), vs, st) } else if is_const(b) { (Some(SVInt(scale_term(a, term_c(b)))), vs, st) } else { let (x, vs) = fresh_sv(ve, vs, ty, "*", false); (x, vs, st) },
+        _ -> { let (x, vs) = fresh_sv(ve, vs, ty, "*", false); (x, vs, st) },
+      }
+    }
+    else if op == "/" || op == "%" {
+      let d = int_of(rv);
+      let (vs, st) = partial(ve, vs, s, e, match d { Some(dt) -> Some(f_not(compare("==", dt, konst(BS(0))))), None -> None }, st, "the divisor is not zero");
+      match (int_of(lv), d) {
+        (Some(xt), Some(dt)) -> if is_const(dt) && b_le(BS(1), term_c(dt)) {
+          let c = term_c(dt);
+          let (qid, vs) = vs_new_atom(vs, op, int_min_b(), int_max_b(), false);
+          let q = atom_term(qid);
+          let rem = sub_terms(xt, scale_term(q, c));
+          let shift = b_bit_length(c) - 1;
+          let (xlo, xhi) = term_interval(vs_atoms(vs), xt);
+          let vs = widen(ve, vs, qid, b_quot(xlo, c), b_quot(xhi, c));
+          let vs = if b_eq(c, b_pow2(shift)) { vs_def(vs, FDiv2(qid, xt, shift)) } else {
+            let nonneg = compare(">=", xt, konst(BS(0)));
+            let hi = if ve_mutant(ve) == "refine-div-range" { b_sub(c, BS(2)) } else { b_sub(c, BS(1)) };
+            vs_def(vs, f_or(f_and(nonneg, f_and(compare(">=", rem, konst(BS(0))), compare("<=", rem, konst(hi)))),
+              f_and(f_not(nonneg), f_and(compare("<=", rem, konst(BS(0))), compare(">=", rem, konst(b_neg(hi)))))))
+          };
+          (Some(SVInt(if op == "/" { q } else { rem })), vs, st)
+        } else { let (x, vs) = fresh_sv(ve, vs, ty, op, false); (x, vs, st) },
+        _ -> { let (x, vs) = fresh_sv(ve, vs, ty, op, false); (x, vs, st) },
+      }
+    }
+    else if op == "++" { match (len_of(lv), len_of(rv)) { (Some(a), Some(b)) -> (Some(SVLen(add_terms(a, b), None)), vs, st), _ -> { let (x, vs) = fresh_sv(ve, vs, ty, "++", false); (x, vs, st) } } }
+    else { match (int_of(lv), int_of(rv)) { (Some(a), Some(b)) -> (Some(SVBool(compare(op, a, b))), vs, st), _ -> (None, vs, st) } }
+  }
+}
+
+fn arg_at(args, i) { match nth(args, i) { Some(v) -> v, None -> None } }
+
+fn sym_call(ve, vs, id, f, args, s, e, st) {
+  let cs = ve_cs(ve);
+  let ty = node_ty(ve, id);
+  let builtin = match f { EVar(fid, _, _, _) -> match cs_ref(cs, fid) { RBuiltin(b) -> Some(b), _ -> None }, _ -> None };
+  match builtin {
+    Some(name) -> {
+      let (av, vs, st) = sym_all(ve, vs, args, st);
+      let a0 = arg_at(av, 0);
+      let a1 = arg_at(av, 1);
+      if name == "array_length" || name == "string_length" { match len_of(a0) { Some(t) -> (Some(SVInt(t)), vs, st), None -> { let (x, vs) = fresh_sv(ve, vs, ty, name ++ "(..)", false); (x, vs, st) } } }
+      else if name == "array_get" {
+        let (vs, st) = partial(ve, vs, s, e, in_bounds(int_of(a1), len_of(a0)), st, "the index is in bounds");
+        let (r, vs) = fresh_sv(ve, vs, ty, "array_get(..)", false);
+        match (r, el_of(a0)) {
+          (Some(_), Some(parts)) -> {
+            let (fact, vs) = elem_holds(ve, vs, parts, r);
+            let st = match fact { Some(ff) -> [ff, ..st], None -> st };
+            let r2 = match r { Some(SVLen(t, _)) -> Some(SVLen(t, el_inner(Some(parts)))), other -> other };
+            (r2, vs, st)
+          },
+          _ -> (r, vs, st),
+        }
+      }
+      else if name == "array_set" {
+        let (vs, st) = partial(ve, vs, s, e, in_bounds(int_of(a1), len_of(a0)), st, "the index is in bounds");
+        let el = el_union(el_of(a0), el_just(arg_at(av, 2)));
+        match len_of(a0) { Some(t) -> (Some(SVLen(t, el)), vs, st), None -> { let (x, vs) = fresh_sv(ve, vs, ty, "array_set(..)", false); (x, vs, st) } }
+      }
+      else if name == "char_code_at" {
+        let (vs, st) = partial(ve, vs, s, e, in_bounds(int_of(a1), len_of(a0)), st, "the index is in bounds");
+        let (rid, vs) = vs_new_atom(vs, "char_code_at(..)", BS(0), BS(255), false);
+        (Some(SVInt(atom_term(rid))), vs, st)
+      }
+      else if name == "array_make" {
+        let n = int_of(a0);
+        let (vs, st) = partial(ve, vs, s, e, match n { Some(nt) -> Some(compare(">=", nt, konst(BS(0)))), None -> None }, st, "the length is not negative");
+        match n {
+          None -> { let (x, vs) = fresh_sv(ve, vs, ty, "array_make(..)", false); (x, vs, st) },
+          Some(nt) -> (Some(SVLen(nt, el_just(a1))), vs, [compare("<=", nt, konst(max_array_b())), ..st]),
+        }
+      }
+      else if name == "array_push" {
+        let el = if ve_mutant(ve) == "refine-push-forgets" { el_of(a0) } else { el_union(el_of(a0), el_just(a1)) };
+        match len_of(a0) { Some(t) -> (Some(SVLen(add_terms(t, konst(BS(1))), el)), vs, st), None -> { let (x, vs) = fresh_sv(ve, vs, ty, "array_push(..)", false); (x, vs, st) } }
+      }
+      else if name == "array_empty" { (Some(SVLen(konst(BS(0)), Some([]))), vs, st) }
+      else if name == "char_from_code" { (Some(SVLen(konst(BS(1)), None)), vs, st) }
+      else if name == "int_to_string" { let (rid, vs) = vs_new_atom(vs, "string_length(int_to_string(..))", BS(1), BS(20), false); (Some(SVLen(atom_term(rid), None)), vs, st) }
+      else if name == "random_int" {
+        let (r, vs) = fresh_sv(ve, vs, ty, "random_int(..)", false);
+        let st = match (int_of(a0), int_of(a1), r) {
+          (Some(lo), Some(hi), Some(SVInt(rt))) -> [f_or(f_and(compare("<=", lo, rt), compare("<=", rt, hi)), f_and(compare("<=", hi, rt), compare("<=", rt, lo))), ..st],
+          _ -> st,
+        };
+        (r, vs, st)
+      }
+      else if name == "panic" { let (x, vs) = fresh_sv(ve, vs, ty, "panic(..)", false); (x, vs, [FFalse, ..st]) }
+      else { let (x, vs) = fresh_sv(ve, vs, ty, name ++ "(..)", false); (x, vs, st) }
+    },
+    None -> {
+      // A direct call: check its refined parameters, assume its refined result.
+      let (decl, vs, st) = match f {
+        EVar(fid, _, _, _) -> match cs_ref(cs, fid) {
+          RGlobal(key) -> (find_fn_by_key(ve, key), vs, st),
+          RLocal(lid) -> match vs_local_fn(vs, lid) {
+            Some(lf) -> (Some(lf), vs, st),
+            None -> { let (_, vs, st) = sym(ve, vs, f, st, false); (None, vs, st) },
+          },
+          _ -> { let (_, vs, st) = sym(ve, vs, f, st, false); (None, vs, st) },
+        },
+        _ -> { let (_, vs, st) = sym(ve, vs, f, st, false); (None, vs, st) },
+      };
+      let (av, vs, st) = sym_all(ve, vs, args, st);
+      match decl {
+        None -> { let (x, vs) = fresh_sv(ve, vs, ty, match f { EVar(_, n, _, _) -> n ++ "(..)", _ -> "call(..)" }, false); (x, vs, st) },
+        Some(d) -> sym_direct_call(ve, vs, d, av, args, ty, st),
+      }
+    },
+  }
+}
+
+fn decl_scope(ve, vs, d) { let sc = cs_fscope(ve_cs(ve), fn_id(d)); if sc == "" { vs_scope(vs) } else { sc } }
+
+fn sym_direct_call(ve, vs, d, av, args, ty, st) {
+  let params = map(fn_params(d), |p| param_info(ve, p));
+  let (binding, vs) = fold(enumerate(params), ([], vs), |acc, ip| match (acc, ip) {
+    ((b, vs), (i, (lid, pty, pname, _, _))) -> match arg_at(av, i) {
+      Some(v) -> (append(b, [(lid, Some(v))]), vs),
+      None -> { let (v, vs) = fresh_sv(ve, vs, pty, pname, false); (append(b, [(lid, v)]), vs) },
+    },
+  });
+  let dname = fn_name(d);
+  let sc = decl_scope(ve, vs, d);
+  let (vs, st) = fold(enumerate(params), (vs, st), |acc, ip| match (acc, ip) {
+    ((vs, st), (i, (lid, _, pname, refine, _))) -> match refine {
+      None -> (vs, st),
+      Some(RefineInfo(vid, _, pred, _, _, ps, pe)) -> {
+        let bv = match find(binding, |b| match b { (k, _) -> k == lid }) { Some((_, v)) -> v, None -> None };
+        let (goal, vs) = predicate(ve, vs, pred, append(filter(binding, |b| match b { (k, _) -> k != vid }), [(vid, bv)]));
+        let arg = list_get(args, i);
+        let (o, vs, st) = oblige(ve, vs, "argument", goal, st, "", ex_s(arg), ex_e(arg), "argument `" ++ pname ++ "` of `" ++ dname ++ "`");
+        if ob_status(o) != "proved" {
+          v_err(vs, "cannot prove that argument `" ++ pname ++ "` of `" ++ dname ++ "` satisfies `" ++ text_of(ve, ps, pe, sc) ++ "`", ex_s(arg), ex_e(arg), ob_note(o))
+        } else { (vs, st) }
+      },
+    },
+  });
+  let vs = fold(enumerate(params), vs, |vs, ip| match ip {
+    (i, (_, pty, pname, _, elem)) -> match elem {
+      None -> vs,
+      Some(_) -> {
+        let arg = list_get(args, i);
+        let (bad, vs) = implies(ve, vs, el_of(arg_at(av, i)), el_declared(elem, binding), pty, st, "argument", ex_s(arg), ex_e(arg), "argument `" ++ pname ++ "` of `" ++ dname ++ "`");
+        match bad {
+          Some((o, sp)) -> v_err(vs, "cannot prove that the elements of argument `" ++ pname ++ "` of `" ++ dname ++ "` satisfy `" ++ spec_pred_text(ve, sp, sc) ++ "`", ex_s(arg), ex_e(arg), ob_note(o)),
+          None -> vs,
+        }
+      },
+    },
+  });
+  let (r, vs) = fresh_sv(ve, vs, ty, dname ++ "(..)", false);
+  let cs = ve_cs(ve);
+  let (vs, st) = match (cs_refine(cs, fn_id(d)), r) {
+    (Some(RefineInfo(vid, _, pred, _, _, _, _)), Some(_)) -> {
+      let (fact, vs) = predicate(ve, vs, pred, append(filter(binding, |b| match b { (k, _) -> k != vid }), [(vid, r)]));
+      (vs, match fact { Some(ff) -> [ff, ..st], None -> st })
+    },
+    _ -> (vs, st),
+  };
+  let r2 = match (cs_elem(cs, fn_id(d)), r) { (Some(sp), Some(_)) -> with_el(r, el_declared(Some(sp), binding)), _ -> r };
+  (r2, vs, st)
+}
+
+// A function body: refined parameters are facts; a refined result is an obligation.
+fn v_body(ve, vs, params, b, decl, st) {
+  let cs = ve_cs(ve);
+  let (vs, st) = fold(params, (vs, st), |acc, p| match acc {
+    (vs, st) -> {
+      let (lid, pty, pname, refine, elem) = param_info(ve, p);
+      let vs = match elem {
+        Some(_) -> { let (v, vs) = var_sym(ve, vs, lid, pty, pname); match v { Some(_) -> vs_env_set(vs, lid, with_el(v, el_declared(elem, []))), None -> vs } },
+        None -> vs,
+      };
+      match refine {
+        None -> (vs, st),
+        Some(RefineInfo(vid, _, pred, _, _, _, _)) -> {
+          let (v, vs) = var_sym(ve, vs, lid, pty, pname);
+          let (fact, vs) = predicate(ve, vs, pred, [(vid, v)]);
+          (vs, match fact { Some(ff) -> [ff, ..st], None -> st })
+        },
+      }
+    },
+  });
+  let (r, vs, st) = sym(ve, vs, b, st, false);
+  let (rs, re) = match b { EBlock(_, _, Some(res), _, _) -> (ex_s(res), ex_e(res)), _ -> (ex_s(b), ex_e(b)) };
+  match decl {
+    None -> vs,
+    Some(d) -> {
+      let dname = fn_name(d);
+      let sc = decl_scope(ve, vs, d);
+      let vs = match cs_elem(cs, fn_id(d)) {
+        Some(sp) -> {
+          let dty = match cs_ty(cs, fn_id(d)) { Some(t) -> match prune(cs_st(cs), t) { TF(_, ret, _) -> Some(ret), other -> Some(other) }, None -> None };
+          let (bad, vs) = implies(ve, vs, el_of(r), el_declared(Some(sp), []), dty, st, "result", fn_ns(d), fn_ne(d), "the result of `" ++ dname ++ "`");
+          match bad {
+            Some((o, wsp)) -> v_err(vs, "cannot prove that the elements of the result of `" ++ dname ++ "` satisfy `" ++ spec_pred_text(ve, wsp, sc) ++ "`", rs, re, ob_note(o)),
+            None -> vs,
+          }
+        },
+        None -> vs,
+      };
+      match cs_refine(cs, fn_id(d)) {
+        Some(RefineInfo(vid, _, pred, _, _, ps, pe)) -> {
+          let (goal, vs) = predicate(ve, vs, pred, [(vid, r)]);
+          let (o, vs, _) = oblige(ve, vs, "result", goal, st, "", fn_ns(d), fn_ne(d), "the result of `" ++ dname ++ "`");
+          if ob_status(o) != "proved" { v_err(vs, "cannot prove that the result of `" ++ dname ++ "` satisfies `" ++ text_of(ve, ps, pe, sc) ++ "`", rs, re, ob_note(o)) } else { vs }
+        },
+        None -> vs,
+      }
+    },
+  }
+}
+
+// The verification of a checked program: safe sites, notes on unproved
+// sites, and the obligations.
+type Verified { Verified(Map<Bool>, List<(String, String)>, List<Oblig>) }
+
+fn verify(checked, src, mutant, keep) {
+  let ve = VEnv(checked, mutant, keep, src);
+  let vs0 = VS(array_empty(), [], MEmpty, MEmpty, MEmpty, [], [], "user", Cache(MEmpty));
+  let fns = match checked { Checked(_, _, _, fns, _, _, _, _, _, _) -> fns };
+  let cs = ve_cs(ve);
+  let vs = fold(fns, vs0, |vs, f| {
+    let sc = cs_fscope(cs, fn_id(f));
+    let vs = vs_set_scope(vs, sc);
+    v_body(ve, vs, fn_params(f), fn_body(f), Some(f), [])
+  });
+  match vs { VS(_, _, _, _, safe, un, ob, _, _) -> Verified(safe, reverse(un), reverse(ob)) }
+}
+
+// The whole check: types first with every partial operation assumed safe,
+// then the proofs, then types and effects again with only the proved ones safe.
+fn check(src, grants, entry, mutant, keep) {
+  let first = check_once(src, Opts(grants, entry, true, MEmpty, MEmpty));
+  let v = verify(first, src, mutant, keep);
+  match v {
+    Verified(safe, un, _) -> {
+      let notes = fold(un, MEmpty, |m, e| match e { (k, n) -> m_set(m, k, n) });
+      (check_once(src, Opts(grants, entry, false, safe, notes)), v)
+    },
+  }
+}

@@ -1,0 +1,298 @@
+// ============================================================== inlining
+// Small-function inlining on the monomorphic IR, before reference counting
+// (inline.js). A call to a small, non-recursive named function becomes the
+// function's body, its parameters replaced by the arguments and its other
+// variables renamed. Functions are rewritten in order, each round seeing the
+// functions rewritten before it.
+
+fn in_size(e) {
+  match e {
+    ILet(_, r, b) -> 1 + (match r { RExpr(x) -> in_size(x), _ -> 0 }) + in_size(b),
+    IRet(r) -> 1 + (match r { RExpr(x) -> in_size(x), _ -> 0 }),
+    IIf(_, t, el) -> 1 + in_size(t) + in_size(el),
+    _ -> 1,
+  }
+}
+fn in_calls(e, name) {
+  let r = |x| match x { RCall(f, _) -> f == name, RExpr(y) -> in_calls(y, name), _ -> false };
+  match e {
+    ILet(_, x, b) -> r(x) || in_calls(b, name),
+    IRet(x) -> r(x),
+    IIf(_, t, el) -> in_calls(t, name) || in_calls(el, name),
+    _ -> false,
+  }
+}
+
+// The caller's state while it is rewritten: the renaming counter, its
+// variables (newest first), its borrowed variables (newest first).
+type IG { IG(Int, List<(String, Ty)>, List<String>) }
+
+fn subst_rhs(r, atom, expr) {
+  match r {
+    RAtom(a) -> RAtom(atom(a)),
+    RPrim(op, args, t) -> RPrim(op, map(args, atom), t),
+    RCmp(op, t, args) -> RCmp(op, t, map(args, atom)),
+    RCall(f, args) -> RCall(f, map(args, atom)),
+    RCtor(t, tag, args, ru) -> RCtor(t, tag, map(args, atom), ru),
+    RTuple(t, args, ru) -> RTuple(t, map(args, atom), ru),
+    RBuiltinCall(n, args, t, ats) -> RBuiltinCall(n, map(args, atom), t, ats),
+    RCallc(f, args) -> RCallc(atom(f), map(args, atom)),
+    RClosure(f, t, caps, ctys) -> RClosure(f, t, map(caps, atom), ctys),
+    RField(x, p, t, o) -> RField(atom(x), p, t, o),
+    RPeek(x, p, t, o) -> RPeek(atom(x), p, t, o),
+    RTestTag(x, p, o, t, tag) -> RTestTag(atom(x), p, o, t, tag),
+    RTestLit(x, p, o, t, lit) -> RTestLit(atom(x), p, o, t, lit),
+    RExpr(e) -> RExpr(expr(e)),
+    other -> other,
+  }
+}
+
+// Copies callee f's body into the caller: parameters become the argument
+// atoms, other variables get fresh names (in the order they are met). The
+// state is the renaming and the caller's IG; cx is the callee's variables
+// and borrowed variables.
+fn ini_name(cx, v, st) {
+  match (cx, st) { ((fvars, fbor), (sub, g)) -> match m_get(sub, v) {
+    Some(QVar(w)) -> (w, st),
+    Some(_) -> internal("inline: renamed to a constant"),
+    None -> match g { IG(fresh, vars, bor) -> {
+      let w = v ++ "~" ++ int_to_string(fresh);
+      let t = match var_ty(fvars, v) { Some(t) -> t, None -> internal("inline: no type for " ++ v) };
+      let bor2 = if contains_str(fbor, v) { [w, ..bor] } else { bor };
+      (w, (m_set(sub, v, QVar(w)), IG(fresh + 1, [(w, t), ..vars], bor2)))
+    } },
+  } }
+}
+fn ini_atom(cx, a, st) {
+  match a {
+    QVar(v) -> match st { (sub, _) -> match m_get(sub, v) { Some(b) -> (b, st), None -> { let (w, st) = ini_name(cx, v, st); (QVar(w), st) } } },
+    _ -> (a, st),
+  }
+}
+fn ini_atoms(cx, xs, st) {
+  let (out, st) = fold(xs, ([], st), |acc, a| match acc { (out, st) -> { let (b, st) = ini_atom(cx, a, st); ([b, ..out], st) } });
+  (reverse(out), st)
+}
+fn ini_rhs(cx, r, st) {
+  match r {
+    RAtom(a) -> { let (b, st) = ini_atom(cx, a, st); (RAtom(b), st) },
+    RPrim(op, args, t) -> { let (xs, st) = ini_atoms(cx, args, st); (RPrim(op, xs, t), st) },
+    RCmp(op, t, args) -> { let (xs, st) = ini_atoms(cx, args, st); (RCmp(op, t, xs), st) },
+    RCall(fname, args) -> { let (xs, st) = ini_atoms(cx, args, st); (RCall(fname, xs), st) },
+    RCtor(t, tag, args, ru) -> { let (xs, st) = ini_atoms(cx, args, st); (RCtor(t, tag, xs, ru), st) },
+    RTuple(t, args, ru) -> { let (xs, st) = ini_atoms(cx, args, st); (RTuple(t, xs, ru), st) },
+    RBuiltinCall(n, args, t, ats) -> { let (xs, st) = ini_atoms(cx, args, st); (RBuiltinCall(n, xs, t, ats), st) },
+    RCallc(fa, args) -> { let (b, st) = ini_atom(cx, fa, st); let (xs, st) = ini_atoms(cx, args, st); (RCallc(b, xs), st) },
+    RClosure(fname, t, caps, ctys) -> { let (xs, st) = ini_atoms(cx, caps, st); (RClosure(fname, t, xs, ctys), st) },
+    RField(x, p, t, o) -> { let (b, st) = ini_atom(cx, x, st); (RField(b, p, t, o), st) },
+    RPeek(x, p, t, o) -> { let (b, st) = ini_atom(cx, x, st); (RPeek(b, p, t, o), st) },
+    RTestTag(x, p, o, t, tag) -> { let (b, st) = ini_atom(cx, x, st); (RTestTag(b, p, o, t, tag), st) },
+    RTestLit(x, p, o, t, lit) -> { let (b, st) = ini_atom(cx, x, st); (RTestLit(b, p, o, t, lit), st) },
+    RExpr(e) -> { let (x, st) = ini_expr(cx, e, st); (RExpr(x), st) },
+    other -> (other, st),
+  }
+}
+fn ini_expr(cx, e, st) {
+  match e {
+    ILet(v, r, b) -> { let (r2, st) = ini_rhs(cx, r, st); let (w, st) = ini_name(cx, v, st); let (b2, st) = ini_expr(cx, b, st); (ILet(w, r2, b2), st) },
+    IRet(r) -> { let (r2, st) = ini_rhs(cx, r, st); (IRet(r2), st) },
+    IIf(c, t, el) -> { let (c2, st) = ini_atom(cx, c, st); let (t2, st) = ini_expr(cx, t, st); let (e2, st) = ini_expr(cx, el, st); (IIf(c2, t2, e2), st) },
+    other -> (other, st),
+  }
+}
+fn in_instantiate(f, args, g) {
+  let sub = fold(zip(irf_params(f), args), MEmpty, |m, pa| match pa { ((p, _), a) -> m_set(m, p, a) });
+  let (body, st) = ini_expr((irf_vars(f), irf_borrowed(f)), irf_body(f), (sub, g));
+  match st { (_, g) -> (body, g) }
+}
+
+// Inlines small functions everywhere; returns the rewritten functions.
+fn inline_small(fns, main) {
+  let size_limit = 14;
+  fn candidate(by, name) {
+    match m_get(by, name) {
+      Some(f) -> if !irf_env(f) && name != main && in_size(irf_body(f)) <= size_limit && !in_calls(irf_body(f), name) { Some(f) } else { None },
+      None -> None,
+    }
+  }
+  fn walk(by, e, gname, g) {
+    match e {
+      ILet(v, r, b) -> {
+        let f = match r { RCall(fname, _) -> if fname != gname { candidate(by, fname) } else { None }, _ -> None };
+        match (f, r) {
+          (Some(callee), RCall(_, args)) -> {
+            let (body, g) = in_instantiate(callee, args, g);
+            let r2 = match body { IRet(x) -> match x { RExpr(_) -> RExpr(body), _ -> x }, _ -> RExpr(body) };
+            let (b2, g) = walk(by, b, gname, g);
+            (ILet(v, r2, b2), g)
+          },
+          _ -> {
+            let (r2, g) = match r { RExpr(x) -> { let (y, g) = walk(by, x, gname, g); (RExpr(y), g) }, _ -> (r, g) };
+            let (b2, g) = walk(by, b, gname, g);
+            (ILet(v, r2, b2), g)
+          },
+        }
+      },
+      IRet(r) -> {
+        let f = match r { RCall(fname, _) -> if fname != gname { candidate(by, fname) } else { None }, _ -> None };
+        match (f, r) {
+          (Some(callee), RCall(_, args)) -> in_instantiate(callee, args, g),
+          _ -> match r { RExpr(x) -> { let (y, g) = walk(by, x, gname, g); (IRet(RExpr(y)), g) }, _ -> (e, g) },
+        }
+      },
+      IIf(c, t, el) -> { let (t2, g) = walk(by, t, gname, g); let (e2, g) = walk(by, el, gname, g); (IIf(c, t2, e2), g) },
+      _ -> (e, g),
+    }
+  }
+  let names = map(fns, irf_name);
+  let by0 = fold(fns, MEmpty, |m, f| m_set(m, irf_name(f), f));
+  fn round(by, fresh) {
+    fold(names, (by, fresh), |acc, nm| match acc { (by, fresh) -> {
+      let f = match m_get(by, nm) { Some(f) -> f, None -> internal("inline") };
+      let (body, g) = walk(by, irf_body(f), nm, IG(fresh, reverse(irf_vars(f)), reverse(irf_borrowed(f))));
+      match g { IG(fresh, vars, bor) -> (m_set(by, nm, irf_with_borrowed(irf_with_vars(irf_with_body(f, body), reverse(vars)), reverse(bor))), fresh) }
+    } })
+  }
+  let (by1, fresh1) = round(by0, 0);
+  let (by2, _) = round(by1, fresh1);
+  map(names, |nm| match m_get(by2, nm) { Some(f) -> f, None -> internal("inline") })
+}
+
+// ========================================================== simplification
+// After inlining (simplify.js): straight-line nested expressions are
+// flattened, fields of constructors built in the function are their
+// arguments, tag tests of them are constants, and pure instructions whose
+// results are unused are removed. Variables keep their entries in `vars`.
+
+// The rewriting state: variable -> the atom it stands for; variable -> the
+// tag and arguments of the constructor that built it.
+type SS { SS(Map<At>, Map<(Int, List<At>)>) }
+
+fn sm_atom(ss, a) {
+  match a { QVar(v) -> match ss { SS(sub, _) -> match m_get(sub, v) { Some(b) -> sm_atom(ss, b), None -> a } }, _ -> a }
+}
+fn sm_rhs(ss, r) { subst_rhs(r, |a| sm_atom(ss, a), |e| e) }
+fn sm_straight(e) {
+  match e {
+    ILet(_, r, b) -> match r { RExpr(_) -> false, _ -> sm_straight(b) },
+    IRet(r) -> match r { RExpr(_) -> false, _ -> true },
+    _ -> false,
+  }
+}
+fn sm_sub(ss, v, a) { match ss { SS(sub, known) -> SS(m_set(sub, v, a), known) } }
+fn sm_known(ss, v) { match ss { SS(_, known) -> m_get(known, v) } }
+
+fn sm_walk(ss, e) {
+  match e {
+    ILet(v, RExpr(x), b) -> {
+      let (inner, ss) = sm_walk(ss, x);
+      if sm_straight(inner) { sm_splice(ss, inner, v, b) }
+      else { let (b2, ss) = sm_walk(ss, b); (ILet(v, RExpr(inner), b2), ss) }
+    },
+    ILet(v, r0, b) -> {
+      let r = sm_rhs(ss, r0);
+      let field_of = match r {
+        RField(QVar(x), [i], _, _) -> match sm_known(ss, x) { Some((_, args)) -> Some(list_get(args, i)), None -> None },
+        RPeek(QVar(x), [i], _, _) -> match sm_known(ss, x) { Some((_, args)) -> Some(list_get(args, i)), None -> None },
+        RTestTag(QVar(x), [], _, _, tag) -> match sm_known(ss, x) { Some((t, _)) -> Some(QBool(t == tag)), None -> None },
+        RAtom(a) -> Some(a),
+        _ -> None,
+      };
+      match field_of {
+        Some(a) -> sm_walk(sm_sub(ss, v, a), b),
+        None -> {
+          let ss = match r {
+            RCtor(_, tag, args, _) -> if is_empty(args) { ss } else { match ss { SS(sub, known) -> SS(sub, m_set(known, v, (tag, args))) } },
+            RTuple(_, args, _) -> match ss { SS(sub, known) -> SS(sub, m_set(known, v, (0, args))) },
+            _ -> ss,
+          };
+          let (b2, ss) = sm_walk(ss, b);
+          (ILet(v, r, b2), ss)
+        },
+      }
+    },
+    IRet(RExpr(x)) -> { let (inner, ss) = sm_walk(ss, x); if sm_straight(inner) { (inner, ss) } else { (IRet(RExpr(inner)), ss) } },
+    IRet(r) -> (IRet(sm_rhs(ss, r)), ss),
+    IIf(c0, t, el) -> {
+      let c = sm_atom(ss, c0);
+      match c {
+        QBool(b) -> sm_walk(ss, if b { t } else { el }),
+        _ -> { let (t2, ss) = sm_walk(ss, t); let (e2, ss) = sm_walk(ss, el); (IIf(c, t2, e2), ss) },
+      }
+    },
+    _ -> (e, ss),
+  }
+}
+// Splices a straight-line expression's lets before `let v = <its result>; body`.
+fn sm_splice(ss, inner, v, body) {
+  match inner {
+    IRet(r) -> sm_walk(ss, ILet(v, r, body)),
+    ILet(w, r, b) -> { let (b2, ss) = sm_splice(ss, b, v, body); (ILet(w, r, b2), ss) },
+    _ -> internal("splice"),
+  }
+}
+
+// Dead code: instructions that cannot fail and whose results are unused.
+fn sm_pure(r) { match r { RCtor(_, _, _, _) -> true, RTuple(_, _, _) -> true, RPeek(_, _, _, _) -> true, RField(_, _, _, _) -> true, RTestTag(_, _, _, _, _) -> true, RTestLit(_, _, _, _, _) -> true, RStaticfn(_, _) -> true, RClosure(_, _, _, _) -> true, _ -> false } }
+fn use_add(used, a) { match a { QVar(v) -> m_set(used, v, true), _ -> used } }
+fn rhs_uses(r, used) {
+  match r {
+    RAtom(a) -> use_add(used, a),
+    RCallc(f, args) -> fold(args, use_add(used, f), use_add),
+    RClosure(_, _, caps, _) -> fold(caps, used, use_add),
+    RField(x, _, _, _) -> use_add(used, x),
+    RPeek(x, _, _, _) -> use_add(used, x),
+    RTestTag(x, _, _, _, _) -> use_add(used, x),
+    RTestLit(x, _, _, _, _) -> use_add(used, x),
+    RPrim(_, args, _) -> fold(args, used, use_add),
+    RCmp(_, _, args) -> fold(args, used, use_add),
+    RCall(_, args) -> fold(args, used, use_add),
+    RCtor(_, _, args, _) -> fold(args, used, use_add),
+    RTuple(_, args, _) -> fold(args, used, use_add),
+    RBuiltinCall(_, args, _, _) -> fold(args, used, use_add),
+    _ -> used,
+  }
+}
+fn m_union(a, b) { fold(m_entries(b), a, |m, e| match e { (k, v) -> m_set(m, k, v) }) }
+fn m_delete(m, k) {
+  match m {
+    MEmpty -> MEmpty,
+    MNode(l, key, v, r, _) -> if k < key { m_balance(m_delete(l, k), key, v, r) } else if k > key { m_balance(l, key, v, m_delete(r, k)) }
+      else { match m_pop_min(r) { None -> l, Some((mk, mv, rest)) -> m_balance(l, mk, mv, rest) } },
+  }
+}
+fn m_pop_min(m) {
+  match m {
+    MEmpty -> None,
+    MNode(MEmpty, k, v, r, _) -> Some((k, v, r)),
+    MNode(l, k, v, r, _) -> match m_pop_min(l) { Some((mk, mv, rest)) -> Some((mk, mv, m_balance(rest, k, v, r))), None -> None },
+  }
+}
+fn sm_dce(e) {
+  match e {
+    ILet(v, r, b) -> {
+      let (body, used) = sm_dce(b);
+      if sm_pure(r) && !m_has(used, v) { (body, used) }
+      else {
+        let used = m_delete(used, v);
+        match r {
+          RExpr(x) -> { let (inner, u) = sm_dce(x); (ILet(v, RExpr(inner), body), m_union(used, u)) },
+          _ -> (ILet(v, r, body), rhs_uses(r, used)),
+        }
+      }
+    },
+    IRet(RExpr(x)) -> { let (inner, u) = sm_dce(x); (IRet(RExpr(inner)), u) },
+    IRet(r) -> (e, rhs_uses(r, MEmpty)),
+    IIf(c, t, el) -> {
+      let (t2, ut) = sm_dce(t);
+      let (e2, uf) = sm_dce(el);
+      (IIf(c, t2, e2), use_add(m_union(ut, uf), c))
+    },
+    _ -> (e, MEmpty),
+  }
+}
+fn simplify(f) {
+  let (b, _) = sm_walk(SS(MEmpty, MEmpty), irf_body(f));
+  let (b2, _) = sm_dce(b);
+  irf_with_body(f, b2)
+}

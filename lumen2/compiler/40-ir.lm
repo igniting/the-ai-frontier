@@ -1,0 +1,61 @@
+// ======================================================================= IR
+// The monomorphic intermediate language (as in lower.js): an expression is a
+// chain of `let v = rhs` ending in `ret rhs`, with `if` nodes in between; a
+// nested expression can be a let's right-hand side. Types are concrete (no
+// variables; function types have no effects). After reference counting the
+// tree also has dup, drop, drop-reuse, free-token and unpack nodes.
+
+type At { QVar(String), QInt(Int), QBool(Bool), QUnit, QStr(String) }
+type Rhs {
+  RAtom(At),
+  RPrim(String, List<At>, Option<Ty>),             // op, args, the operand type (comparisons)
+  RCmp(String, Ty, List<At>),                      // op, type, args
+  RCall(String, List<At>),
+  RCallc(At, List<At>),
+  RCtor(Ty, Int, List<At>, Option<String>),        // type, tag, args, reuse token
+  RTuple(Ty, List<At>, Option<String>),
+  RClosure(String, Ty, List<At>, List<Ty>),        // code, type, captures, their types
+  RStaticfn(String, Ty),
+  RField(At, List<Int>, Ty, Ty),                   // value, path, field type, object type
+  RPeek(At, List<Int>, Ty, Ty),
+  RTestTag(At, List<Int>, Ty, Ty, Int),            // value, path, object type, field type, tag
+  RTestLit(At, List<Int>, Ty, Ty, At),             // value, path, object type, field type, literal
+  REnvfield(Int, Ty),
+  RBuiltinCall(String, List<At>, Ty, List<Ty>),    // name, args, result type, argument types
+  RExpr(IR)
+}
+type IR {
+  ILet(String, Rhs, IR), IRet(Rhs), IIf(At, IR, IR), IUnreachable,
+  IDup(String, IR), IDrop(String, IR), IDropReuse(String, String, IR), IFreeToken(String, Int, IR),
+  IUnpack(String, List<(String, Int)>, Option<String>, List<Ty>, IR)   // value, moved (var, field), reuse token, fields
+}
+// name, closure code?, params, result, body, variables (in order), borrowed
+// variables, capture types, parameter modes
+type IRFn { IRFn(String, Bool, List<(String, Ty)>, Ty, IR, List<(String, Ty)>, List<String>, List<Ty>, List<String>) }
+
+fn irf_name(f) { match f { IRFn(n, _, _, _, _, _, _, _, _) -> n } }
+fn irf_env(f) { match f { IRFn(_, e, _, _, _, _, _, _, _) -> e } }
+fn irf_params(f) { match f { IRFn(_, _, ps, _, _, _, _, _, _) -> ps } }
+fn irf_ret(f) { match f { IRFn(_, _, _, r, _, _, _, _, _) -> r } }
+fn irf_body(f) { match f { IRFn(_, _, _, _, b, _, _, _, _) -> b } }
+fn irf_vars(f) { match f { IRFn(_, _, _, _, _, vs, _, _, _) -> vs } }
+fn irf_borrowed(f) { match f { IRFn(_, _, _, _, _, _, bs, _, _) -> bs } }
+fn irf_captures(f) { match f { IRFn(_, _, _, _, _, _, _, cs, _) -> cs } }
+fn irf_modes(f) { match f { IRFn(_, _, _, _, _, _, _, _, ms) -> ms } }
+fn irf_with_body(f, b) { match f { IRFn(n, e, ps, r, _, vs, bs, cs, ms) -> IRFn(n, e, ps, r, b, vs, bs, cs, ms) } }
+fn irf_with_vars(f, vs) { match f { IRFn(n, e, ps, r, b, _, bs, cs, ms) -> IRFn(n, e, ps, r, b, vs, bs, cs, ms) } }
+fn irf_with_borrowed(f, bs) { match f { IRFn(n, e, ps, r, b, vs, _, cs, ms) -> IRFn(n, e, ps, r, b, vs, bs, cs, ms) } }
+fn irf_with_modes(f, ms) { match f { IRFn(n, e, ps, r, b, vs, bs, cs, _) -> IRFn(n, e, ps, r, b, vs, bs, cs, ms) } }
+fn var_ty(vars, v) { match find(vars, |e| match e { (k, _) -> k == v }) { Some((_, t)) -> Some(t), None -> None } }
+
+// Concrete types as keys (instances, per-type functions).
+fn tkey(t) {
+  match t {
+    TC(n, args) -> if is_empty(args) { n } else { n ++ "<" ++ join(map(args, tkey), ",") ++ ">" },
+    TT(es) -> "(" ++ join(map(es, tkey), ",") ++ ")",
+    TF(ps, r, _) -> "fn(" ++ join(map(ps, tkey), ",") ++ ")->" ++ tkey(r),
+    _ -> internal("tkey"),
+  }
+}
+fn valtype(t) { match t { TC("Int", _) -> "i64", _ -> "i32" } }
+fn conc_head(t) { match t { TC(n, _) -> Some(n), TT(es) -> Some("(" ++ int_to_string(length(es)) ++ ")"), _ -> None } }

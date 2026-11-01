@@ -74,6 +74,12 @@ test('closures, local functions, guards and nested patterns', () => {
       println(show_list(map(fs, |h| h(10)), int_to_string));
       println(match Some(Some(7)) { Some(Some(n)) if n > 9 -> "big", Some(Some(n)) -> int_to_string(n), _ -> "none" })
     }`);
+  // A refinement's bound variable inside a lambda is not captured.
+  agree(`fn main() {
+      let n = 5;
+      let f = |a: Int| { let x: {v: Int | v > 0 && v < n} = 3; x + a };
+      println(int_to_string(f(1)))
+    }`);
 });
 
 test('traits: impls are resolved at compile time, and user Ord reaches structural comparison', () => {

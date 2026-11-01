@@ -150,7 +150,8 @@ export function lowerProgram(program, { mutant = null } = {}) {
   // Lowers a lambda or local function into a lifted IR function plus a closure value.
   function lowerClosure(node, params, body, ctx, selfId = null) {
     const fnTy = conc(node.ty, ctx.S);
-    const captured = freeLocals(node, selfId);
+    // A refinement's bound variable is not a runtime value: only ids with an atom are captured.
+    const captured = freeLocals(node, selfId).filter((id) => ctx.atoms.has(id));
     const name = `lambda${tmp++}:${ctx.fn.name}`;
     const fn = { name, env: true, params: [], ret: fnTy.ret, vars: new Map(), borrowed: new Set(), captures: [] };
     fn.params = [{ v: 'env', ty: fnTy }, ...params.map((p, i) => ({ v: newVar(fn, fnTy.params[i], p.name), ty: fnTy.params[i] }))];

@@ -84,3 +84,62 @@ fn d_ast(a) {
     ], "\n--\n")
   }
 }
+
+// The IR (parity.mjs's dumpIR). Lines are gathered newest first.
+fn di_at(a) { match a { QVar(v) -> "$" ++ v, QInt(n) -> "#" ++ int_to_string(n), QBool(b) -> if b { "true" } else { "false" }, QUnit -> "()", QStr(s) -> json_str(s) } }
+fn di_ats(xs) { "[" ++ join(map(xs, di_at), " ") ++ "]" }
+fn di_tys(xs) { "[" ++ join(map(xs, tkey), " ") ++ "]" }
+fn di_path(p) { "[" ++ join(map(p, int_to_string), " ") ++ "]" }
+fn di_opt_ty(t) { match t { Some(x) -> tkey(x), None -> "-" } }
+fn di_opt(o) { match o { Some(x) -> x, None -> "-" } }
+fn di_rhs(r) {
+  match r {
+    RAtom(a) -> "atom " ++ di_at(a),
+    RPrim(op, args, t) -> "prim " ++ op ++ " " ++ di_ats(args) ++ " " ++ di_opt_ty(t),
+    RCmp(op, t, args) -> "cmp " ++ op ++ " " ++ tkey(t) ++ " " ++ di_ats(args),
+    RCall(f, args) -> "call " ++ f ++ " " ++ di_ats(args),
+    RCallc(f, args) -> "callc " ++ di_at(f) ++ " " ++ di_ats(args),
+    RCtor(t, tag, args, ru) -> "ctor " ++ tkey(t) ++ " " ++ int_to_string(tag) ++ " " ++ di_ats(args) ++ " " ++ di_opt(ru),
+    RTuple(t, args, ru) -> "tuple " ++ tkey(t) ++ " " ++ di_ats(args) ++ " " ++ di_opt(ru),
+    RClosure(f, t, caps, ctys) -> "closure " ++ f ++ " " ++ tkey(t) ++ " " ++ di_ats(caps) ++ " " ++ di_tys(ctys),
+    RStaticfn(f, t) -> "static " ++ f ++ " " ++ tkey(t),
+    RField(x, p, t, o) -> "field " ++ di_at(x) ++ " " ++ di_path(p) ++ " " ++ tkey(t) ++ " " ++ tkey(o),
+    RPeek(x, p, t, o) -> "peek " ++ di_at(x) ++ " " ++ di_path(p) ++ " " ++ tkey(t) ++ " " ++ tkey(o),
+    RTestTag(x, p, o, t, tag) -> "testtag " ++ di_at(x) ++ " " ++ di_path(p) ++ " " ++ tkey(o) ++ " " ++ tkey(t) ++ " " ++ int_to_string(tag),
+    RTestLit(x, p, o, t, lit) -> "testlit " ++ di_at(x) ++ " " ++ di_path(p) ++ " " ++ tkey(o) ++ " " ++ tkey(t) ++ " " ++ di_at(lit),
+    REnvfield(i, t) -> "envfield " ++ int_to_string(i) ++ " " ++ tkey(t),
+    RBuiltinCall(n, args, t, ats) -> "builtin " ++ n ++ " " ++ di_ats(args) ++ " " ++ tkey(t) ++ " " ++ di_tys(ats),
+    RExpr(_) -> "expr",
+  }
+}
+fn di_rhs_lines(r, acc) { match r { RExpr(e) -> ["end", ..di_ir(e, acc)], _ -> acc } }
+fn di_ir(e, acc) {
+  match e {
+    ILet(v, r, body) -> di_ir(body, di_rhs_lines(r, ["let " ++ v ++ " " ++ di_rhs(r), ..acc])),
+    IRet(r) -> di_rhs_lines(r, ["ret " ++ di_rhs(r), ..acc]),
+    IIf(c, t, el) -> ["end", ..di_ir(el, ["else", ..di_ir(t, ["if " ++ di_at(c), ..acc])])],
+    IUnreachable -> ["unreachable", ..acc],
+    IDup(v, b) -> di_ir(b, ["dup " ++ v, ..acc]),
+    IDrop(v, b) -> di_ir(b, ["drop " ++ v, ..acc]),
+    IDropReuse(v, r, b) -> di_ir(b, ["dropreuse " ++ r ++ " " ++ v, ..acc]),
+    IFreeToken(v, size, b) -> di_ir(b, ["free " ++ v ++ " " ++ int_to_string(size), ..acc]),
+    IUnpack(v, xs, r, fs, b) -> di_ir(b, ["unpack " ++ v ++ " [" ++ join(map(xs, |x| match x { (n, i) -> n ++ ":" ++ int_to_string(i) }), " ") ++ "] " ++ di_opt(r) ++ " " ++ di_tys(fs), ..acc]),
+  }
+}
+fn di_vars(vs) { join(map(vs, |p| match p { (v, t) -> v ++ ":" ++ tkey(t) }), " ") }
+fn d_ir(p) {
+  match p { IRProg(fns, main, ords) -> {
+    let acc = fold(fns, [], |acc, f| match f { IRFn(name, env, params, ret, body, vars, bor, caps, modes) -> {
+      let acc = ["fn " ++ name ++ " env=" ++ (if env { "true" } else { "false" }) ++ " ret=" ++ tkey(ret), ..acc];
+      let acc = ["params " ++ di_vars(params), ..acc];
+      let acc = ["vars " ++ di_vars(vars), ..acc];
+      let acc = ["borrowed " ++ join(bor, " "), ..acc];
+      let acc = ["captures " ++ di_tys(caps), ..acc];
+      let acc = if is_empty(modes) { acc } else { ["modes " ++ join(modes, " "), ..acc] };
+      di_ir(body, acc)
+    } });
+    let acc = ["main " ++ main, ..acc];
+    let acc = fold(ords, acc, |acc, o| match o { (k, v) -> ["ord " ++ k ++ " " ++ v, ..acc] });
+    join(reverse(acc), "\n")
+  } }
+}

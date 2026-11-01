@@ -1,0 +1,79 @@
+// ======================================================= double emulation
+// The reference SAT solver keeps its variable activities as JavaScript
+// numbers (IEEE 754 doubles), and its decisions depend on comparing them. So
+// the port computes them exactly as doubles would: a non-negative double is
+// F(m, e), the value m * 2^e, with m a 53-bit mantissa (2^52 <= m < 2^53),
+// or F(0, 0) for zero. Addition and multiplication round to nearest, ties to
+// even, as IEEE 754 does. (No value here gets near the subnormal range.)
+
+type F { F(Int, Int) }
+
+fn f_two52() { 4503599627370496 }
+fn f_two53() { 9007199254740992 }
+fn f_zero() { F(0, 0) }
+fn f_one() { F(4503599627370496, 0 - 52) }
+fn f_inv095() { F(4740631186705785, 0 - 52) }   // 1 / 0.95
+fn f_1e100() { F(5147557589468029, 280) }
+fn f_1em100() { F(7880401239278896, 0 - 385) }
+
+fn f_gt(a, b) {
+  match (a, b) {
+    (F(0, _), _) -> false,
+    (_, F(0, _)) -> true,
+    (F(ma, ea), F(mb, eb)) -> if ea != eb { ea > eb } else { ma > mb },
+  }
+}
+
+// Rounds S (a mantissa with three extra low bits: guard, round, sticky) at exponent e.
+fn f_round3(s, e) {
+  let low = s % 8;
+  let m = s / 8;
+  let m2 = if low > 4 || (low == 4 && m % 2 == 1) { m + 1 } else { m };
+  if m2 == f_two53() { F(f_two52(), e + 1) } else { F(m2, e) }
+}
+
+fn f_add(a, b) {
+  match (a, b) {
+    (F(0, _), _) -> b,
+    (_, F(0, _)) -> a,
+    (F(ma0, ea0), F(mb0, eb0)) -> {
+      let (ma, ea, mb, eb) = if ea0 >= eb0 { (ma0, ea0, mb0, eb0) } else { (mb0, eb0, ma0, ea0) };
+      let d = ea - eb;
+      if d >= 56 { F(ma, ea) }
+      else {
+        let big_a = ma * 8;
+        let small_b = if d <= 3 { mb * pow2_small(3 - d) } else {
+          let k = pow2_small(d - 3);
+          let q = mb / k;
+          if mb % k != 0 { q - q % 2 + 1 } else { q }
+        };
+        let s = big_a + small_b;
+        // s is at exponent ea - 3; it may have one bit too many.
+        if s >= f_two53() * 8 {
+          let h = s / 2;
+          let sticky = s % 2 == 1 || h % 2 == 1;
+          f_round3(h - h % 2 + (if sticky { 1 } else { 0 }), ea + 1)
+        } else { f_round3(s, ea) }
+      }
+    },
+  }
+}
+
+fn f_mul(a, b) {
+  match (a, b) {
+    (F(0, _), _) -> f_zero(),
+    (_, F(0, _)) -> f_zero(),
+    (F(ma, ea), F(mb, eb)) -> {
+      let p = b_mul(BS(ma), BS(mb));
+      let shift = b_bit_length(p) - 53;
+      let k = b_pow2(shift);
+      let q = b_quot(p, k);
+      let r = b_rem(p, k);
+      let half = b_pow2(shift - 1);
+      let qi = match q { BS(v) -> v, _ -> internal("float") };
+      let up = b_lt(half, r) || (b_eq(r, half) && qi % 2 == 1);
+      let m = if up { qi + 1 } else { qi };
+      if m == f_two53() { F(f_two52(), ea + eb + shift + 1) } else { F(m, ea + eb + shift) }
+    },
+  }
+}

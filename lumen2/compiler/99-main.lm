@@ -23,6 +23,34 @@ fn option(words, key) {
   match find(words, |w| starts_at(w, 0, key ++ "=")) { Some(w) -> Some(substring(w, string_length(key) + 1, string_length(w))), None -> None }
 }
 
+fn split_lines(s) {
+  fn go(i, start, acc) {
+    if i >= string_length(s) { reverse([substring(s, start, i), ..acc]) }
+    else if char_code_at(s, i) == 10 { go(i + 1, i + 1, [substring(s, start, i), ..acc]) }
+    else { go(i + 1, start, acc) }
+  }
+  go(0, 0, [])
+}
+fn int_of_dec(s) { match b_from_dec(s) { BS(v) -> v, _ -> 0 } }
+fn f_show(f) { match f { F(m, e) -> int_to_string(m) ++ " " ++ int_to_string(e) } }
+fn numtest(w) {
+  let a = |i| list_get(w, i);
+  let op = a(0);
+  if op == "fadd" { f_show(f_add(F(int_of_dec(a(1)), int_of_dec(a(2))), F(int_of_dec(a(3)), int_of_dec(a(4))))) }
+  else if op == "fmul" { f_show(f_mul(F(int_of_dec(a(1)), int_of_dec(a(2))), F(int_of_dec(a(3)), int_of_dec(a(4))))) }
+  else if op == "fgt" { if f_gt(F(int_of_dec(a(1)), int_of_dec(a(2))), F(int_of_dec(a(3)), int_of_dec(a(4)))) { "true" } else { "false" } }
+  else if op == "badd" { b_to_string(b_add(b_from_dec(a(1)), b_from_dec(a(2)))) }
+  else if op == "bsub" { b_to_string(b_sub(b_from_dec(a(1)), b_from_dec(a(2)))) }
+  else if op == "bmul" { b_to_string(b_mul(b_from_dec(a(1)), b_from_dec(a(2)))) }
+  else if op == "bquot" { b_to_string(b_quot(b_from_dec(a(1)), b_from_dec(a(2)))) }
+  else if op == "brem" { b_to_string(b_rem(b_from_dec(a(1)), b_from_dec(a(2)))) }
+  else if op == "bcmp" { int_to_string(b_cmp(b_from_dec(a(1)), b_from_dec(a(2)))) }
+  else if op == "buint" { b_to_string(b_as_uint(int_of_dec(a(1)), b_from_dec(a(2)))) }
+  else if op == "bbits" { int_to_string(b_bit_length(b_from_dec(a(1)))) }
+  else if op == "bbit" { int_to_string(b_bit(b_from_dec(a(1)), int_of_dec(a(2)))) }
+  else { "?" }
+}
+
 fn main() {
   let input = read_input();
   fn line_end(i) { if i >= string_length(input) || char_code_at(input, i) == 10 { i } else { line_end(i + 1) } }
@@ -41,5 +69,33 @@ fn main() {
       },
     }
   }
+  else if mode == "check" {
+    let mutant = match option(words, "mutant") { Some(m) -> m, None -> "" };
+    match check(src, grants, entry, mutant, false) {
+      (Checked(_, _, _, _, _, _, _, sigs, warns, _), Verified(safe, un, obs)) -> {
+        each(sigs, |s| match s { (n, t, _, _) -> println("sig " ++ n ++ ": " ++ t) });
+        each(warns, |w| match w { (m, s, e) -> println("warn " ++ m ++ " @" ++ int_to_string(s) ++ "-" ++ int_to_string(e)) });
+        each(sort(map(m_entries(safe), |e| match e { (k, _) -> k })), |k| println("safe " ++ k));
+        each(sort(map(un, |e| match e { (k, n) -> k ++ ": " ++ n })), |x| println("unproved " ++ x));
+        each(filter(obs, |o| match o { Oblig(_, sc, _, _, _, _, _, _, _, _, _, _, _) -> sc == "user" }), |o| match o {
+          Oblig(kind, _, site, s, e, what, status, lemmas, clauses, ce, _, _, _) ->
+            println("ob " ++ kind ++ " " ++ site ++ " @" ++ int_to_string(s) ++ "-" ++ int_to_string(e) ++ " " ++ what ++ " " ++ status ++ " " ++ int_to_string(lemmas) ++ " " ++ int_to_string(clauses) ++ " " ++ ce),
+        })
+      },
+    }
+  }
+  else if mode == "lower1" || mode == "opt1" {
+    let mutant = match option(words, "mutant") { Some(m) -> m, None -> "" };
+    let checked = check_once(src, Opts(grants, entry, true, MEmpty, MEmpty));
+    match checked {
+      Checked(_, _, _, _, None, _, _, _, _, _) -> println("NOMAIN"),
+      _ -> {
+        let ir = lower_program(checked, mutant);
+        let ir = if mode == "opt1" { match ir { IRProg(fns, main, ords) -> IRProg(map(inline_small(fns, main), simplify), main, ords) } } else { ir };
+        println(d_ir(ir))
+      },
+    }
+  }
+  else if mode == "numtest" { each(filter(split_lines(src), |l| l != ""), |l| println(numtest(split_spaces(l)))) }
   else { panic("unknown mode " ++ mode) }
 }

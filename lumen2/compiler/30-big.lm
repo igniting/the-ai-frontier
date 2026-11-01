@@ -1,0 +1,197 @@
+// ================================================================= bignums
+// Arbitrary-precision integers, for the refinement checker's terms (the
+// reference uses JavaScript BigInt). A value that fits comfortably in an Int
+// is BS(v); a larger one is BL(negative?, magnitude), the magnitude in base
+// 2^30, least significant limb first, with no trailing zero limbs.
+
+type Big { BS(Int), BL(Bool, List<Int>) }
+
+fn b_base() { 1073741824 }
+fn b_lim() { 4611686018427387903 }   // 2^62 - 1: |v| <= this stays small
+
+fn big(n) { if n >= 0 - b_lim() && n <= b_lim() { BS(n) } else { BL(n < 0, int_limbs(n)) } }
+// The magnitude of any Int (even the most negative) as limbs.
+fn int_limbs(n) {
+  fn go(n, acc) { if n == 0 { reverse(acc) } else { let r = n % b_base(); go(n / b_base(), [if r < 0 { 0 - r } else { r }, ..acc]) } }
+  go(n, [])
+}
+fn mag_trim(m) { reverse(drop_zeros(reverse(m))) }
+fn drop_zeros(m) { match m { [0, ..rest] -> drop_zeros(rest), _ -> m } }
+// A magnitude and sign, small when it fits.
+fn b_norm(neg, m) {
+  let t = mag_trim(m);
+  if length(t) <= 2 {
+    let v = match t { [] -> 0, [a] -> a, [a, b] -> a + b * b_base(), _ -> 0 };
+    if neg { BS(0 - v) } else { BS(v) }
+  } else if length(t) == 3 && list_get(t, 2) < 4 {
+    let v = list_get(t, 0) + list_get(t, 1) * b_base() + list_get(t, 2) * b_base() * b_base();
+    if neg { BS(0 - v) } else { BS(v) }
+  } else { BL(neg, t) }
+}
+fn b_sign_mag(x) { match x { BS(v) -> (v < 0, int_limbs(v)), BL(n, m) -> (n, m) } }
+
+fn mag_cmp(a, b) {
+  let la = length(a);
+  let lb = length(b);
+  if la != lb { if la < lb { 0 - 1 } else { 1 } } else {
+    fn go(xs, ys) { match (xs, ys) { ([x, ..xr], [y, ..yr]) -> if x != y { if x < y { 0 - 1 } else { 1 } } else { go(xr, yr) }, _ -> 0 } }
+    go(reverse(a), reverse(b))
+  }
+}
+fn mag_add(a, b) {
+  fn go(xs, ys, carry, acc) {
+    match (xs, ys) {
+      ([], []) -> reverse(if carry > 0 { [carry, ..acc] } else { acc }),
+      ([x, ..xr], []) -> { let s = x + carry; go(xr, [], s / b_base(), [s % b_base(), ..acc]) },
+      ([], [y, ..yr]) -> { let s = y + carry; go([], yr, s / b_base(), [s % b_base(), ..acc]) },
+      ([x, ..xr], [y, ..yr]) -> { let s = x + y + carry; go(xr, yr, s / b_base(), [s % b_base(), ..acc]) },
+    }
+  }
+  go(a, b, 0, [])
+}
+// a - b for a >= b.
+fn mag_sub(a, b) {
+  fn go(xs, ys, borrow, acc) {
+    match (xs, ys) {
+      ([], _) -> mag_trim(reverse(acc)),
+      ([x, ..xr], []) -> { let s = x - borrow; if s < 0 { go(xr, [], 1, [s + b_base(), ..acc]) } else { go(xr, [], 0, [s, ..acc]) } },
+      ([x, ..xr], [y, ..yr]) -> { let s = x - y - borrow; if s < 0 { go(xr, yr, 1, [s + b_base(), ..acc]) } else { go(xr, yr, 0, [s, ..acc]) } },
+    }
+  }
+  go(a, b, 0, [])
+}
+fn mag_mul_small(a, k) {
+  // k < 2^30
+  fn go(xs, carry, acc) { match xs { [] -> reverse(if carry > 0 { [carry, ..acc] } else { acc }), [x, ..xr] -> { let p = x * k + carry; go(xr, p / b_base(), [p % b_base(), ..acc]) } } }
+  if k == 0 { [] } else { go(a, 0, []) }
+}
+fn mag_mul(a, b) {
+  fn go(ys, shift, acc) { match ys { [] -> acc, [y, ..yr] -> go(yr, [0, ..shift], mag_add(acc, append(shift, mag_mul_small(a, y)))) } }
+  mag_trim(go(b, [], []))
+}
+// (a / k, a % k) for 0 < k < 2^30.
+fn mag_divmod_small(a, k) {
+  fn go(xs, rem, acc) { match xs { [] -> (mag_trim(acc), rem), [x, ..xr] -> { let cur = rem * b_base() + x; go(xr, cur % k, [cur / k, ..acc]) } } }
+  go(reverse(a), 0, [])
+}
+fn mag_bits(a) {
+  match reverse(a) {
+    [] -> 0,
+    [top, ..rest] -> { fn bl(x, n) { if x == 0 { n } else { bl(x / 2, n + 1) } } bl(top, 0) + 30 * length(rest) },
+  }
+}
+// Binary long division of magnitudes: (q, r).
+fn mag_divmod(a, b) {
+  if mag_cmp(a, b) < 0 { ([], a) }
+  else if length(b) == 1 { let (q, r) = mag_divmod_small(a, list_get(b, 0)); (q, if r == 0 { [] } else { [r] }) }
+  else {
+    let shift = mag_bits(a) - mag_bits(b);
+    fn go(i, r, q) {
+      if i < 0 { (mag_trim(q), r) }
+      else {
+        let d = mag_shl(b, i);
+        if mag_cmp(r, d) >= 0 { go(i - 1, mag_sub(r, d), mag_add(q, mag_shl([1], i))) } else { go(i - 1, r, q) }
+      }
+    }
+    go(shift, a, [])
+  }
+}
+fn mag_shl(a, k) {
+  let limbs = k / 30;
+  let bits = k % 30;
+  let shifted = if bits == 0 { a } else { mag_mul_small(a, pow2_small(bits)) };
+  if is_empty(shifted) { [] } else { append(map(range(0, limbs), |_| 0), shifted) }
+}
+fn pow2_small(k) { fn go(k, acc) { if k == 0 { acc } else { go(k - 1, acc * 2) } } go(k, 1) }
+
+fn b_zero() { BS(0) }
+fn b_is_zero(x) { match x { BS(0) -> true, _ -> false } }
+fn b_neg(x) { match x { BS(v) -> BS(0 - v), BL(n, m) -> BL(!n, m) } }
+fn b_is_neg(x) { match x { BS(v) -> v < 0, BL(n, _) -> n } }
+fn b_abs(x) { if b_is_neg(x) { b_neg(x) } else { x } }
+fn b_add(x, y) {
+  match (x, y) {
+    (BS(a), BS(b)) -> big(a + b),
+    _ -> {
+      let (na, ma) = b_sign_mag(x);
+      let (nb, mb) = b_sign_mag(y);
+      if na == nb { b_norm(na, mag_add(ma, mb)) }
+      else if mag_cmp(ma, mb) >= 0 { b_norm(na, mag_sub(ma, mb)) } else { b_norm(nb, mag_sub(mb, ma)) }
+    },
+  }
+}
+fn b_sub(x, y) { b_add(x, b_neg(y)) }
+fn b_mul(x, y) {
+  match (x, y) {
+    (BS(a), BS(b)) -> if a > 0 - 2147483648 && a < 2147483648 && b > 0 - 2147483648 && b < 2147483648 { BS(a * b) } else { b_mul_big(x, y) },
+    _ -> b_mul_big(x, y),
+  }
+}
+fn b_mul_big(x, y) { let (na, ma) = b_sign_mag(x); let (nb, mb) = b_sign_mag(y); b_norm(na != nb, mag_mul(ma, mb)) }
+fn b_cmp(x, y) {
+  match (x, y) {
+    (BS(a), BS(b)) -> if a < b { 0 - 1 } else if a > b { 1 } else { 0 },
+    _ -> {
+      let (na, ma) = b_sign_mag(x);
+      let (nb, mb) = b_sign_mag(y);
+      if na != nb { if na { 0 - 1 } else { 1 } }
+      else { let c = mag_cmp(ma, mb); if na { 0 - c } else { c } }
+    },
+  }
+}
+fn b_lt(x, y) { b_cmp(x, y) < 0 }
+fn b_le(x, y) { b_cmp(x, y) <= 0 }
+fn b_eq(x, y) { b_cmp(x, y) == 0 }
+fn b_max(x, y) { if b_cmp(x, y) >= 0 { x } else { y } }
+// Truncating division and remainder (as BigInt's / and %).
+fn b_quot(x, y) {
+  match (x, y) {
+    (BS(a), BS(b)) -> BS(a / b),
+    _ -> { let (na, ma) = b_sign_mag(x); let (nb, mb) = b_sign_mag(y); let (q, _) = mag_divmod(ma, mb); b_norm(na != nb, q) },
+  }
+}
+fn b_rem(x, y) {
+  match (x, y) {
+    (BS(a), BS(b)) -> BS(a % b),
+    _ -> { let (na, ma) = b_sign_mag(x); let (_, mb) = b_sign_mag(y); let (_, r) = mag_divmod(ma, mb); b_norm(na, r) },
+  }
+}
+fn b_pow2(k) { if k <= 61 { BS(pow2_small(k)) } else { b_norm(false, mag_shl([1], k)) } }
+// The number of binary digits of |x| (BigInt's toString(2).length, for x != 0).
+fn b_bit_length(x) { let (_, m) = b_sign_mag(x); if is_empty(m) { 1 } else { mag_bits(m) } }
+// x mod 2^w, as a non-negative value (BigInt.asUintN).
+fn b_as_uint(w, x) {
+  let p = b_pow2(w);
+  let r = b_rem(x, p);
+  if b_is_neg(r) { b_add(r, p) } else { r }
+}
+// Bit i of a non-negative value.
+fn b_bit(x, i) {
+  match x {
+    BS(v) -> if i >= 62 { 0 } else { (v / pow2_small(i)) % 2 },
+    BL(_, m) -> match nth(m, i / 30) { Some(limb) -> (limb / pow2_small(i % 30)) % 2, None -> 0 },
+  }
+}
+fn b_to_string(x) {
+  match x {
+    BS(v) -> int_to_string(v),
+    BL(n, m) -> {
+      fn go(m, acc) {
+        if is_empty(m) { acc }
+        else {
+          let (q, r) = mag_divmod_small(m, 1000000000);
+          let piece = int_to_string(r);
+          if is_empty(q) { [piece, ..acc] } else { go(q, [repeat_string("0", 9 - string_length(piece)) ++ piece, ..acc]) }
+        }
+      }
+      (if n { "-" } else { "" }) ++ concat_strings(go(m, []))
+    },
+  }
+}
+
+fn b_from_dec(s) {
+  let neg = substring(s, 0, 1) == "-";
+  let start = if neg { 1 } else { 0 };
+  let v = fold(range(start, string_length(s)), BS(0), |acc, i| b_add(b_mul(acc, BS(10)), BS(char_code_at(s, i) - 48)));
+  if neg { b_neg(v) } else { v }
+}
