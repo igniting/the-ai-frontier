@@ -14,7 +14,7 @@
 // condition (K0 <= K1), the weakest one that makes it provable is kept.
 
 import { SIG, WIDTH, run, typeOf, apply, constValue, Circuit } from './semantics.js';
-import { solve } from '../src/sat.js';
+import { solve } from './sat.js';
 import { checkRefutation } from '../src/rup.js';
 
 // ----------------------------------------------------------------- cost --

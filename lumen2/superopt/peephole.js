@@ -1,14 +1,17 @@
-// Applies the superoptimizer's rewrite rules (src/rules.js) to the
-// WebAssembly the code generator emits: a peephole pass over straight-line
-// code. Every rule was found by search and proved equal for all inputs by
-// the SAT solver, with the proof checked (superopt/verify.js re-proves them).
+// Applies the superoptimizer's rewrite rules (compiler/rules.js) to
+// WebAssembly instructions: a peephole pass over straight-line code. The
+// compiler has its own (compiler/45-wasm.lm); this one is the superoptimizer's,
+// which rewrites its corpus between search rounds and is tested against the
+// rules' side conditions. Every rule was found by search and proved equal for
+// all inputs by the SAT solver, with the proof checked (superopt/verify.js
+// re-proves them).
 //
 // A rule's left side is a sequence of instructions with placeholders: x0, x1
 // for locals and K0, K1 for constants. A right-side constant can be an
 // expression over them (K1-K0), and a rule can carry side conditions on the
 // constants (K0 <= K1), checked here before rewriting.
 
-import { RULES } from './rules.js';
+import { RULES } from '../compiler/rules.js';
 
 const WIDTH = { i32: 32, i64: 64 };
 

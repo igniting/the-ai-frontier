@@ -51,6 +51,43 @@ fn numtest(w) {
   else { "?" }
 }
 
+// report: check a program (types, effects, refinements); print the report.
+// compile: check it and compile it; print the report, a newline, the bytes.
+// With given=N, the next N lines hold the verification of an earlier report,
+// which is used instead of proving again.
+fn drive(mode, words, input, grants, entry) {
+  let flag = |f| contains_str(words, f);
+  let mutant = match option(words, "mutant") { Some(m) -> m, None -> "" };
+  let keep = flag("keep");
+  let n_given = match option(words, "given") { Some(n) -> int_of_dec(n), None -> 0 - 1 };
+  // The source starts after the given lines.
+  fn skip(i, k) { if k == 0 { i } else { fn eol(j) { if j >= string_length(input) || char_code_at(input, j) == 10 { j } else { eol(j + 1) } } skip(eol(i) + 1, k - 1) } }
+  let start = if n_given > 0 { skip(0, n_given) } else { 0 };
+  let src = substring(input, min(start, string_length(input)), string_length(input));
+  let (checked, safe, un, obs) = if n_given >= 0 {
+    let (safe, un) = read_given(split_lines(substring(input, 0, min(start, string_length(input)))));
+    (check_once(src, Opts(grants, entry, false, safe, un)), safe, map(m_entries(un), |e| e), [])
+  } else {
+    match check(src, grants, entry, mutant, keep, flag("cache")) { (c, Verified(safe, un, obs)) -> (c, safe, un, obs) }
+  };
+  match checked { Checked(_, _, _, _, main_fn, _, _, sigs, warns, _) -> {
+    print("{");
+    print_check_report(sigs, warns, safe, un, obs, keep);
+    print(",\"main\":" ++ jbool(is_some(main_fn)));
+    if mode == "compile" {
+      match main_fn {
+        None -> println("}"),
+        Some(_) -> {
+          let c = back_end(checked, CgOpts(!flag("noinline"), !flag("noborrow"), !flag("noreuse"), !flag("nospec"), !flag("nosuperopt"), flag("paranoid"), mutant));
+          print_compile_report(c, flag("ir"), flag("funcs"));
+          println("}");
+          match c { Compiled(bytes, _, _, _, _, _) -> print_bytes(bytes) }
+        },
+      }
+    } else { println("}") }
+  } }
+}
+
 fn main() {
   let input = read_input();
   fn line_end(i) { if i >= string_length(input) || char_code_at(input, i) == 10 { i } else { line_end(i + 1) } }
@@ -60,7 +97,8 @@ fn main() {
   let src = substring(input, nl + 1, string_length(input));
   let grants = match option(words, "grants") { Some(g) -> Some(filter(split_commas(g), |x| x != "")), None -> None };
   let entry = match option(words, "entry") { Some(e) -> e, None -> "main" };
-  if mode == "ast" { let (ast, _) = parse(src, 0); println(d_ast(ast)) }
+  if mode == "report" || mode == "compile" { drive(mode, words, src, grants, entry) }
+  else if mode == "ast" { let (ast, _) = parse(src, 0); println(d_ast(ast)) }
   else if mode == "check1" {
     match check_once(src, Opts(grants, entry, true, MEmpty, MEmpty)) {
       Checked(_, _, _, _, _, _, _, sigs, warns, _) -> {
@@ -71,7 +109,7 @@ fn main() {
   }
   else if mode == "check" {
     let mutant = match option(words, "mutant") { Some(m) -> m, None -> "" };
-    match check(src, grants, entry, mutant, false) {
+    match check(src, grants, entry, mutant, false, false) {
       (Checked(_, _, _, _, _, _, _, sigs, warns, _), Verified(safe, un, obs)) -> {
         each(sigs, |s| match s { (n, t, _, _) -> println("sig " ++ n ++ ": " ++ t) });
         each(warns, |w| match w { (m, s, e) -> println("warn " ++ m ++ " @" ++ int_to_string(s) ++ "-" ++ int_to_string(e)) });

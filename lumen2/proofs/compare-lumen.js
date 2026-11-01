@@ -7,7 +7,7 @@
 
 import { readFileSync } from 'node:fs';
 import { compileSource } from '../src/api.js';
-import { runWasm } from '../src/codegen.js';
+import { runWasm } from '../src/runtime.js';
 import { makeHost } from '../src/host.js';
 import { referenceEncoding } from './prove-schur.js';
 import { solverWasm } from '../../proofs/lumen-sat.js';

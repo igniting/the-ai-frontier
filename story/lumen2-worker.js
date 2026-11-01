@@ -2,10 +2,10 @@
 // statistics, planted bugs, and the Schur proof, all with the Lumen 2
 // compiler running in this worker.
 
-import { checkSource, compileSource, formatDiagnostic, decodeBytes, makeHost } from '../lumen2/src/api.js';
-import { runWasm } from '../lumen2/src/codegen.js';
+import { checkSource, compileSource, formatDiagnostic, decodeBytes, makeHost, runWasm } from '../lumen2/src/api.js';
 import { checkRefutation } from '../lumen2/src/rup.js';
 import { lineCol } from '../lumen2/src/diagnostics.js';
+import { makeCompiler } from '../lumen2/src/lumen2c.js';
 import { compile as compileLumen, runWasm as runLumen } from '../src/compiler.js';
 import { parseDimacs, referenceEncoding, sameFormula, groupsOf, checkSplit, parseSolverOutput } from '../proofs/schur-core.js';
 
@@ -26,7 +26,7 @@ function obligations({ source }) {
   if (!c.ok) return { ok: false, errors: errors(source, c.errors) };
   return {
     ok: true, ms: since(t),
-    obligations: c.program.verification.obligations.filter((o) => o.scope === 'user').map((o) => ({
+    obligations: c.verification.obligations.filter((o) => o.scope === 'user').map((o) => ({
       kind: o.kind, what: o.what, status: o.status, lemmas: o.lemmas ?? 0, clauses: o.clauses ?? 0, counterexample: o.counterexample ?? null,
       line: o.span ? lineCol(source, o.span.s).line : null,
     })),
@@ -142,8 +142,24 @@ async function bootstrap(_, post) {
   return { same: s2.length === s3.length && s2.every((b, i) => b === s3[i]) };
 }
 
+// The compiler compiles its own source: lumen2c.wasm, given compiler/*.lm
+// (put together with the prelude and the rewrite rules), must write lumen2c.wasm.
+async function selfCompile(_, post) {
+  const [src, wasm] = await Promise.all([
+    text('../lumen2/compiler/lumen2c.lm'),
+    fetch(new URL('../lumen2/compiler/lumen2c.wasm', import.meta.url)).then((r) => r.arrayBuffer()).then((b) => new Uint8Array(b)),
+  ]);
+  const digest = async (b) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', b))].slice(0, 8).map((x) => x.toString(16).padStart(2, '0')).join('');
+  post({ step: 'load', bytes: wasm.length, hash: await digest(wasm), lines: src.split('\n').length });
+  const t = performance.now();
+  const c = makeCompiler(wasm).compile(src, { grants: null });
+  if (!c.ok) throw new Error(c.errors[0].message);
+  post({ step: 'build', bytes: c.bytes.length, ms: since(t), hash: await digest(c.bytes) });
+  return { same: c.bytes.length === wasm.length && c.bytes.every((b, i) => b === wasm[i]) };
+}
+
 const HANDLERS = { signatures, obligations, run, plant };
-const STREAMING = { schur, bootstrap };
+const STREAMING = { schur, bootstrap, selfCompile };
 self.onmessage = async ({ data: m }) => {
   try {
     if (STREAMING[m.type]) {

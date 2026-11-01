@@ -1,3 +1,8 @@
+// The reference front end: type and effect inference, for the reference
+// interpreter (interp.js), which walks the typed tree it makes. The compiler
+// (compiler/*.lm) has its own front end, which is authoritative: it reports
+// the errors, and proves the refinements whose results are passed in here.
+//
 // Type and effect inference.
 //
 // Hindley–Milner with row-polymorphic effects. Every expression is checked
@@ -17,11 +22,10 @@
 // functions in it gets a derived `impl Show` unless the program writes one.
 //
 // Refinements: a partial operation (`/`, `%`, array indexing) adds `fail`
-// unless refine.js proves it cannot fail, and refinement types (`{i: Int |
-// 0 <= i}`) on parameters, results and lets are proved at every use. So
-// checking runs three times over: types first, treating every partial
-// operation as safe; then the proofs; then types and effects again with only
-// the proved operations safe.
+// unless the compiler proved it cannot fail (options.safeSites), and
+// refinement types (`{i: Int | 0 <= i}`) on parameters, results and lets are
+// proved by the compiler at every use; here they are only checked to be
+// well formed, and kept on the tree for the interpreter to test at run time.
 //
 // Capabilities: the effects other than `fail` are granted to `main` by
 // whoever runs the program. With a grant, `main` is checked as if it were
@@ -38,7 +42,10 @@ import { parse } from './parser.js';
 import { PRELUDE } from './prelude.js';
 import { LumenError } from './diagnostics.js';
 import { makeExhaustiveness } from './exhaust.js';
-import { verify, PARTIAL_BUILTINS, siteKey } from './refine.js';
+
+// The builtins that can fail, and the key of a site where one is called.
+export const PARTIAL_BUILTINS = new Set(['array_get', 'array_set', 'char_code_at', 'array_make']);
+export const siteKey = (scope, span) => `${scope}:${span.s}:${span.e}`;
 import {
   GENERIC, newVar, newRowVar, tcon, tfun, ttuple, row, prune, pruneRow, makeUnifier, UnifyError, EffectError, TraitError,
   generalize, instantiate, openEffect, substParams, TypePrinter, INT, BOOL, STRING, UNIT, LABELS,
@@ -46,7 +53,7 @@ import {
 
 // ---------------------------------------------------------------- builtins --
 // Each builtin's type, with generic variables. (Which arguments the back end
-// consumes and which it only borrows is in perceus.js.)
+// consumes and which it only borrows is in the compiler, compiler/43-rc.lm.)
 function builtinTable() {
   const a = () => { const v = newVar(GENERIC); return v; };
   const fn = (params, ret, labels = []) => tfun(params, ret, row(labels));
@@ -88,15 +95,8 @@ const EFFECT_WORDS = { input: 'read input', output: 'write output', clock: 'read
 // options.grants: the capabilities granted to `main` (null: no restriction).
 // options.entry: the function a run starts from (`main` unless a test harness
 // says otherwise). A program made only of properties needs no entry.
-// options.keepProofs: keep each obligation's formula and DRUP proof.
-export function check(source, options = {}) {
-  const first = checkOnce(source, { ...options, assumeSafe: true });
-  const v = verify(first, { user: source, prelude: PRELUDE }, options);
-  const program = checkOnce(source, { ...options, safeSites: v.safe, unproved: v.unproved });
-  program.verification = v;
-  return program;
-}
-
+// options.safeSites: the sites of partial operations proved safe;
+// options.unproved: why the others were not (site -> reason).
 export function checkOnce(source, { grants = null, entry = 'main', assumeSafe = false, safeSites = null, unproved = null } = {}) {
   // Whether the partial operation at this span was proved safe.
   const isSafe = (ctx, span) => assumeSafe || !!safeSites?.has(siteKey(ctx.scopeName, span));

@@ -7,9 +7,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { SIG, WIDTH, apply, Circuit } from '../superopt/semantics.js';
 import { verifyRule } from '../superopt/verify.js';
-import { RULES } from '../src/rules.js';
-import { peephole } from '../src/peephole.js';
-import { Module } from '../src/wasm.js';
+import { RULES } from '../compiler/rules.js';
+import { peephole } from '../superopt/peephole.js';
+import { Module } from '../superopt/wasm.js';
 import { runSource, makeHost } from '../src/api.js';
 
 function values(seed) {

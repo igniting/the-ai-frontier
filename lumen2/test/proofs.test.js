@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { interpretSource, runSource, compileSource, makeHost } from '../src/api.js';
-import { runWasm } from '../src/codegen.js';
+import { runWasm } from '../src/runtime.js';
 import { checkRefutation } from '../src/rup.js';
 import { proveSchur, parseSolverOutput, referenceEncoding } from '../proofs/prove-schur.js';
 

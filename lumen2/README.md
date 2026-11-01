@@ -33,8 +33,11 @@ no garbage collector.** Lumen 2 is a fresh design, not an extension of
 - **Proved rewrite rules.** A superoptimizer searched the compiler's
   WebAssembly for cheaper equivalent code; every rule it found is proved
   with a checked SAT refutation, including side conditions on constants.
-- **Self-hosted.** A second compiler, written in Lumen 2, compiles itself
-  to a fixed point: compiled by itself, it reproduces itself byte for byte.
+- **Written in itself.** The compiler is a Lumen 2 program
+  ([`compiler/`](compiler/), about 8,200 lines), and it compiles itself to
+  itself byte for byte. It began as a JavaScript program; the port wrote
+  identical modules for every program in a 1,086-program corpus before the
+  JavaScript compiler was deleted.
 - **64-bit integers that never wrap silently.** Overflow is a runtime error,
   not a wrong answer.
 - **A theorem, proved in it.** A SAT solver written in Lumen 2 proves the
@@ -54,7 +57,7 @@ counting, property tests and certificates, all in the browser) ·
 
 ```sh
 cd lumen2
-npm test                                         # 48 tests, about 1.5 minutes
+npm test                                         # 50 tests, about 3.5 minutes
 node bin/lumen2.js check examples/refine.lm      # inferred types, effects, refinements
 node bin/lumen2.js run examples/tour.lm          # compile to wasm and run
 node bin/lumen2.js test examples/properties.lm   # check the properties
@@ -379,16 +382,16 @@ to fit in one string (at most 16 MB). `node proofs/check-drup.js` runs it:
 
 ```
 $ node proofs/check-drup.js schur-4-45.cnf schur-4-45.drup
-rup.lm: proved (no function can fail) and compiled by the reference compiler in 17.4 s (12834 bytes)
+rup.lm: proved (no function can fail) and compiled by the compiler in 17.4 s (12834 bytes)
 s VERIFIED  (255663 lemmas in 528.7 s)
 ```
 
 That run shared the machine with other jobs, as did the 303.8 s of
 `src/rup.js` on the same proof in the same session. On smaller proofs the
 Lumen 2 checker takes 1.5 to 2 times as long as the JavaScript one. With
-`--selfhost`, the checker is compiled by the self-hosted compiler instead
-(stage 2 of the bootstrap), so the code that checks the proof comes from
-`lumen2c`'s code generator, not from `src/codegen.js`. Built that way it
+`--selfhost`, the checker is compiled by the first self-hosted compiler
+instead (stage 2 of `selfhost/bootstrap.js`), so the code that checks the
+proof comes from a second, independent code generator. Built that way it
 verified the S(4) proof in 629 s, on the same busy machine. CI runs it that
 way, in its own job, on every push. The tests check that it agrees with `src/rup.js`
 on real proofs and on tampered ones.
@@ -471,7 +474,7 @@ enumerates candidate sequences, shortest first, evaluating them on test
 vectors and keeping only one of any set of partial sequences that leave the
 same values on the stack. A candidate that matches on every vector is proved
 equal for all inputs: both sequences become circuits over the bits of their
-inputs, and `src/sat.js` refutes their difference, with the proof checked by
+inputs, and `superopt/sat.js` refutes their difference, with the proof checked by
 `src/rup.js`. A counterexample becomes a new test vector.
 
 Rules are then generalized. The window's constants become symbolic (`K0`,
@@ -497,8 +500,10 @@ general form.
 [`superopt/RULES.md`](superopt/RULES.md) lists all 19 rules. The rest are
 simpler: `i32.const 0; i32.eq` is `i32.eqz`, `0 xor x` is `x` (from `0 - x`),
 and folds of constant comparisons and arithmetic that inlining leaves
-behind. `src/peephole.js` applies them on every compile (`superopt: false`
-turns them off). `node superopt/verify.js` re-proves all of them, and the
+behind. The compiler applies them on every compile
+([`compiler/45-wasm.lm`](compiler/45-wasm.lm); `superopt: false` turns them
+off), and `superopt/search.js` writes them to
+[`compiler/rules.js`](compiler/rules.js), from which the compiler is built. `node superopt/verify.js` re-proves all of them, and the
 test suite does too.
 
 The result is modest, and the reason is instructive. On the corpus, the
@@ -509,76 +514,109 @@ them cleaning up after its tagged 31-bit integers. Lumen 2's integers are
 untagged i64 values, so its code generator leaves much less behind, and the
 engine's own optimizing compiler already performs rewrites like these.
 
-## Self-hosting
+## The compiler, in Lumen 2
 
-[`selfhost/lumen2c.lm`](selfhost/lumen2c.lm) is a Lumen 2 compiler written
-in Lumen 2, about 2,800 lines. It reads a program on standard input and
+The compiler is written in Lumen 2: [`compiler/`](compiler/) holds it, in
+the order of its passes, about 8,200 lines. It runs as WebAssembly.
+[`compiler/lumen2c.wasm`](compiler/lumen2c.wasm) is the compiler compiled
+by itself, and [`src/lumen2c.js`](src/lumen2c.js) hands it a program and
+reads back its report and module. A change to the compiler is built by the
+previous build:
+
+```
+$ node compiler/bootstrap.js
+stage 1: 1517876 bytes (f43367a03042ef50) in 19678 ms
+stage 2: 1517876 bytes (f43367a03042ef50) in 19275 ms
+fixed point: compiler/lumen2c.wasm compiles its source to itself
+```
+
+Stage 1 is the committed build compiling the source; stage 2 is stage 1
+compiling it again. They are the same bytes, and so is the committed build:
+the compiler, compiled by itself, compiles itself to itself.
+`node compiler/bootstrap.js --write` replaces the build after a change, and
+CI and the tests check the fixed point on every push.
+
+It was ported pass by pass from a JavaScript compiler, and every pass was
+compared with the original before the next one was written: the syntax
+tree, the types and warnings, the safe sites and every proof obligation
+with its lemma and clause counts, the IR after lowering, after inlining and
+after reference counting, the certificates' statistics and their rejection
+messages, and finally the module's bytes. The corpus was every Lumen 2
+program in the repository (the compiler's own source among them), 200
+generated programs, 600 broken ones that must fail with the same error at
+the same place, and 270 programs from the test suite, under every back-end
+option and every planted bug. The ported compiler wrote the same bytes for
+all of them, and then compiled itself to the bytes that the JavaScript
+compiler had made of it. The JavaScript compiler was deleted after that.
+
+Byte-identical output meant copying the original's accidents too. Its
+SAT solver ranks variables by activities stored as JavaScript numbers, and
+its decisions follow comparisons between them, so the port computes IEEE
+754 doubles exactly, rounding to nearest even, with integers. JavaScript
+`Map`s and `Set`s iterate in insertion order, and the order of drops,
+captured variables and per-type functions follows from it, so the port
+keeps ordered lists where the original had them. The port also found a bug
+in the original: a refined `let` inside a lambda crashed it, because the
+refinement's bound variable was taken for a captured one.
+
+What stays in JavaScript: the reference interpreter
+([`src/interp.js`](src/interp.js)), with its own front end
+([`src/check.js`](src/check.js)), which is the second implementation that
+compiled code is compared with; property testing; the small host that runs
+compiled modules ([`src/runtime.js`](src/runtime.js)); and
+[`src/rup.js`](src/rup.js), an independent checker for the proofs the
+compiler writes.
+
+| Stage | File | What it does |
+| --- | --- | --- |
+| Lexer, parser | `10-lexer.lm`, `11-parser.lm` | Byte strings, nested comments; lists and `\|>` desugared |
+| Checker | `20-types.lm` … `24-check.lm` | Hindley–Milner with row-polymorphic effects, trait constraints, generalization per strongly connected component; traits, impls and derived `Show`; capability grants; exhaustiveness by Maranget's usefulness algorithm, with witnesses |
+| Refinements | `35-refine.lm` | Symbolic walk of each function; proof obligations for partial operations and refinements |
+| Proofs | `30-big.lm` … `34-blast.lm` | Bignums and exact doubles; bit-blasting to CNF; a CDCL solver that writes DRUP proofs; an independent RUP checker for each proof |
+| Lowering | `40-ir.lm`, `41-lower.lm` | Monomorphization (an `Int` is never boxed, trait methods become direct calls); A-normal form; closures lifted; matches compiled to tests that borrow |
+| Inlining | `42-opt.lm` | Small functions inlined; known-constructor field reads, flattening and dead-code removal |
+| Perceus | `43-rc.lm` | Ownership: dup where a value is needed twice, drop as soon as it is dead; borrowed parameters and projections, inferred; reuse of dropped cells; drop specialization |
+| Certificates | `44-certify.lm` | Independent checkers for the IR's types and its reference counting |
+| Code generator | `45-wasm.lm`, `46-codegen.lm` | WebAssembly with i64, tail calls and bulk memory; checked arithmetic and array reads inline; a size-class allocator; per-type drop and compare functions; the superoptimizer's proved rewrite rules; a binary encoder, with no external toolchain |
+| Driver | `47-backend.lm`, `98-driver.lm`, `99-main.lm` | The passes in order; the report the host reads |
+
+The prelude and the rewrite rules are compiled into it as data by
+[`compiler/build.js`](compiler/build.js).
+
+## The first self-hosted compiler
+
+Before the port, [`selfhost/lumen2c.lm`](selfhost/lumen2c.lm) was the
+first Lumen 2 compiler written in Lumen 2, about 2,800 lines and written
+from scratch rather than ported. It reads a program on standard input and
 writes a WebAssembly module on standard output, with the same stages as the
-reference compiler: a lexer and a recursive-descent parser; Hindley–Milner
-inference with traits and derived `Show`, generalized per strongly
-connected component of the call graph (found with Tarjan's algorithm);
+compiler: a lexer and a recursive-descent parser; Hindley–Milner inference
+with traits and derived `Show`, generalized per strongly connected
+component of the call graph (found with Tarjan's algorithm);
 monomorphization and lowering to A-normal form, with closures for lambdas
 and local functions and tag tests for matches; Perceus reference counting;
-code generation with the reference compiler's runtime conventions; and a
-binary encoder. Its own data structures are AVL trees, and arrays that it
-updates in place because it never shares them.
+code generation with the same runtime conventions; and a binary encoder.
+Its own data structures are AVL trees, and arrays that it updates in place
+because it never shares them.
 
 ```
 $ node selfhost/bootstrap.js
-stage 1: lumen2c.lm (2853 lines) compiled by the reference compiler: 574696 bytes, 90b42ec3efe34ab6 (3808 ms)
+stage 1: lumen2c.lm (2853 lines) compiled by the compiler: 574696 bytes, 90b42ec3efe34ab6 (3808 ms)
 stage 2: compiled by stage 1: 288477 bytes, 4b24d99b486f9b55 (660 ms, 5241087 allocations, nothing leaked)
 stage 3: compiled by stage 2: 288477 bytes, 4b24d99b486f9b55 (953 ms, 10081718 allocations, nothing leaked)
 FIXED POINT: stage 2 and stage 3 are byte-identical
 ```
 
-Stage 1 is the compiler as the reference compiler builds it. Stage 2 is the
-compiler as it builds itself, and stage 3, built by stage 2, is the same
-bytes: the compiler reproduces itself. Stage 1 and stage 2 are different
-programs from different compilers, so the test suite also checks that both
-behave like the reference interpreter. On every example, the SAT solver,
-the Schur encoder, the DRUP checker and 1,000 generated programs, the
-modules they write print exactly what the interpreter prints, stop with
-the same error, and free every object. That run found one bug: a trait
-method called on a type that inference leaves undetermined, as in
-`size([])`, which both compilers default to `()`, where `()` has no impl. The reference compiler emits
-`unreachable` there, because such a call is never reached with a value, and
-now so does `lumen2c`.
-
-What it leaves out, deliberately: it checks types but not effects,
-capabilities, exhaustiveness or refinements, so it relies on the reference
-compiler to reject invalid programs. A refinement type is read as its base
-type, and every partial operation keeps its run-time check. It makes none
-of the reference compiler's optimizations except tail calls. The SAT
-solver it compiles finds the split of 1..44 in 19.6 s instead of 2.4 s,
-with the same output, which matches the reference compiler before its five
-optimizations (19.0 s, in the table above).
-
-Writing it found a bug in the reference compiler too. Its lowering passes
-continuations, so its stack depth grows with the number of bindings in one
-function. A list literal of about 800 elements overflows it, and so did
-`lumen2c`'s table of runtime routines, until each routine became a function
-of its own.
-
-## How it works
-
-| Stage | File | What it does |
-| --- | --- | --- |
-| Lexer, parser | `src/lexer.js`, `src/parser.js` | Byte strings, nested comments; lists and `\|>` desugared |
-| Checker | `src/check.js`, `src/types.js` | Hindley–Milner with row-polymorphic effects, trait constraints, generalization per strongly connected component; traits, impls and derived `Show`; capability grants |
-| Exhaustiveness | `src/exhaust.js` | Maranget's usefulness algorithm, with witnesses |
-| Refinements | `src/refine.js` | Symbolic walk of each function; proof obligations for partial operations and refinements |
-| Proofs | `src/blast.js`, `src/sat.js`, `src/rup.js` | Bit-blasting to CNF, a CDCL solver that writes DRUP proofs, and an independent RUP checker |
-| Interpreter | `src/interp.js` | The reference semantics: BigInt arithmetic checked against 64 bits, trampolined tail calls, and a run-time re-check of everything the checker proved |
-| Properties | `src/props.js` | Type-directed generation and shrinking; compiled replay |
-| Lowering | `src/lower.js` | Monomorphization (an `Int` is never boxed, trait methods become direct calls); A-normal form; closures lifted; matches compiled to tests that borrow |
-| Inlining | `src/inline.js`, `src/simplify.js` | Small functions inlined; known-constructor field reads, flattening and dead-code removal |
-| Perceus | `src/perceus.js` | Ownership: dup where a value is needed twice, drop as soon as it is dead; borrowed parameters and projections, inferred |
-| Reuse | `src/reuse.js` | `drop` followed by a same-size allocation becomes `drop-reuse` and an in-place constructor |
-| Drop specialization | `src/specialize.js` | Taking apart a unique cell moves its fields instead of dup-ing and releasing them |
-| Certificates | `src/certify.js` | Independent checkers for the IR's types and its reference counting |
-| Code generator | `src/codegen.js` | WebAssembly with i64, tail calls and bulk memory; checked arithmetic and array reads inline; a size-class allocator; per-type drop and compare functions that free and compare long lists in constant stack |
-| Peephole | `src/peephole.js`, `src/rules.js` | The superoptimizer's proved rewrite rules, with their side conditions |
-| Encoder | `src/wasm.js` | A binary encoder; no external toolchain |
+Stage 2 is that compiler as it builds itself, and stage 3, built by stage 2,
+is the same bytes. Its code generator is a second, independent one, so the
+test suite checks that what it writes behaves like the reference
+interpreter. On every example, the SAT solver, the Schur encoder, the DRUP
+checker and 1,000 generated programs, its modules print exactly what the
+interpreter prints, stop with the same error, and free every object. It
+checks types but not effects, capabilities, exhaustiveness or refinements,
+and makes none of the compiler's optimizations except tail calls. Writing
+it found that a lowering that passes continuations overflows its stack on a
+list literal of about 800 elements; both compilers split such tables into
+one function per entry.
 
 The language is defined in [SPEC.md](SPEC.md).
 
@@ -714,9 +752,9 @@ inside records, are out of reach. A function with refined parameters cannot
 be passed as a value. Proofs run at a width of about 66 bits, and a hard obligation can
 take a second; results are cached by the query's canonical form.
 
-The reference compiler's lowering recurses once per binding in a function,
-so a function with many hundreds of bindings, such as a list literal of
-about 800 elements, overflows its stack.
+The compiler's lowering recurses once per binding in a function, so a
+function with many hundreds of bindings, such as a list literal of about
+800 elements, can overflow its stack.
 
 Traits have no default methods or superclasses, and only types declared in
 the program can have their own `Ord` or `Show`. Equality is `Ord`'s
@@ -732,14 +770,17 @@ wasm stack.
 ## Layout
 
 ```
-src/        lexer, parser, checker, exhaustiveness, refinements, SAT solver,
-            proof checker, interpreter, properties, lowering, inlining,
-            Perceus, reuse, drop specialization, certificate checkers,
-            code generator, wasm encoder
+compiler/   the compiler, in Lumen 2: lexer, parser, checker, refinements,
+            SAT solver and proof checker, lowering, inlining, Perceus,
+            certificate checkers, code generator, wasm encoder; its build,
+            lumen2c.wasm, and bootstrap.js, which rebuilds it
+src/        the host that runs the compiler (lumen2c.js) and compiled
+            programs (runtime.js); the reference interpreter and its front
+            end; property testing; an independent DRUP proof checker
 proofs/     a SAT solver, a Schur encoder and a DRUP checker proved free of
             run-time errors, all written in Lumen 2; S(4) = 44
 superopt/   the superoptimizer: corpus, synthesis, proofs, RULES.md
-selfhost/   a Lumen 2 compiler written in Lumen 2, and the bootstrap
+selfhost/   the first self-hosted compiler, and its bootstrap
 bin/        the lumen2 command
 test/       node:test suites and the differential fuzzer with planted bugs
 examples/   example programs

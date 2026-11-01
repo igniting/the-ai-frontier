@@ -15,13 +15,11 @@
 // can drop output still queued for a pipe.
 
 import { readFileSync, writeFileSync } from 'node:fs';
-import { checkSource, interpretSource, compileSource, testSource, certifySource, formatDiagnostic, decodeBytes, utf8, makeHost } from '../src/api.js';
+import { checkSource, interpretSource, compileSource, testSource, certifySource, formatDiagnostic, decodeBytes, utf8, makeHost, runWasm } from '../src/api.js';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { lineCol } from '../src/diagnostics.js';
 import { CAPABILITIES } from '../src/types.js';
-import { runWasm } from '../src/codegen.js';
-import { showIR } from '../src/perceus.js';
 
 const [cmd, file, ...rest] = process.argv.slice(2);
 const opt = (name) => { const i = rest.indexOf(name); return i >= 0 ? rest[i + 1] : null; };
@@ -105,7 +103,7 @@ function main() {
           manifest.push(`${n}  ${what}  (${o.cnf.nvars} variables, ${o.cnf.clauses.length} clauses, ${o.lemmas} lemmas)`);
         });
         writeFileSync(join(out, 'proofs', 'MANIFEST'), `${manifest.join('\n')}\n`);
-        writeFileSync(join(out, 'ir.txt'), r.ir.fns.map((f) => showIR(f)).join('\n\n') + '\n');
+        writeFileSync(join(out, 'ir.txt'), r.ir.fns.map((f) => f.text).join('\n\n') + '\n');
         writeFileSync(join(out, 'program.wasm'), r.bytes);
         console.log(`wrote ${out}/proofs (DIMACS + DRUP), ${out}/ir.txt and ${out}/program.wasm`);
       }
@@ -117,10 +115,10 @@ function main() {
       return 0;
     }
     case 'ir': {
-      const { ir } = compileSource(source);
+      const { ir } = compileSource(source, { ir: true });
       const want = rest[0];
       const shown = (f) => (want ? f.name === want || f.name.startsWith(`${want}<`) : !f.name.includes(':') || f.name.startsWith('lambda'));
-      for (const f of ir.fns) if (shown(f)) console.log(`${showIR(f)}\n`);
+      for (const f of ir.fns) if (shown(f)) console.log(`${f.text}\n`);
       return 0;
     }
     default:

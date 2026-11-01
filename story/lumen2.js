@@ -195,3 +195,25 @@ $('boot2-run').addEventListener('click', () => {
     verdict.textContent = r.same ? '✓ Fixed point: the compiler, compiled by itself, reproduced itself byte for byte.' : '✗ Stage 2 and stage 3 differ.';
   }, (e) => { btn.disabled = false; verdict.hidden = false; verdict.className = 'verdict bad'; verdict.textContent = e.message; });
 });
+
+// ------------------------------------------ the compiler compiles itself --
+$('boot3-run').addEventListener('click', () => {
+  const btn = $('boot3-run'), verdict = $('boot3-verdict');
+  const cell = (step) => document.querySelector(`#boot3-steps tr[data-step="${step}"] td:last-child`);
+  btn.disabled = true;
+  verdict.hidden = true;
+  for (const td of document.querySelectorAll('#boot3-steps td:last-child')) { td.className = 'verdict-cell'; td.textContent = '…'; }
+  cell('load').textContent = 'fetching the compiler and its source…';
+  ask({ type: 'selfCompile' }, (m) => {
+    const c = cell(m.step);
+    c.className = 'verdict-cell ok';
+    if (m.step === 'load') { c.textContent = `${num(m.bytes)} bytes · ${m.hash} · its source: ${num(m.lines)} lines`; cell('build').textContent = 'compiling (this takes a while)…'; }
+    else c.textContent = `${num(m.bytes)} bytes in ${secs(m.ms)} · ${m.hash}`;
+  }).then((r) => {
+    btn.disabled = false;
+    verdict.hidden = false;
+    if (!r.ok) { verdict.className = 'verdict bad'; verdict.textContent = `Failed: ${r.errors.join('; ')}`; return; }
+    verdict.className = `verdict ${r.same ? 'ok' : 'bad'}`;
+    verdict.textContent = r.same ? '✓ Fixed point: the compiler compiled its own source into itself, byte for byte.' : '✗ The output differs from the compiler that wrote it.';
+  }, (e) => { btn.disabled = false; verdict.hidden = false; verdict.className = 'verdict bad'; verdict.textContent = e.message; });
+});

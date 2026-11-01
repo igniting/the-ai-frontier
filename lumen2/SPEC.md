@@ -1,8 +1,10 @@
 # The Lumen 2 language
 
 This document defines Lumen 2. The reference interpreter (`src/interp.js`)
-is the executable form of the dynamic semantics. Where this text and the
-interpreter disagree, that is a bug in one of them.
+is the executable form of the dynamic semantics, and the compiler
+(`compiler/`, written in Lumen 2) of the static semantics: the errors, the
+types and effects, and the proofs. Where this text and either of them
+disagree, that is a bug in one of them.
 
 A Lumen 2 program is a set of type, trait, impl, function and property
 declarations, usually with a `main` function. Programs are pure except for
@@ -474,8 +476,8 @@ prove safe (§6).
 
 ### 10.4 The prelude
 
-The prelude is ordinary Lumen 2 source (`src/prelude.js`), checked with the
-program. It declares the traits `Ord` and `Show` and the `Show` impls for
+The prelude is ordinary Lumen 2 source (`src/prelude.js`, which the
+compiler is built with), checked with the program. It declares the traits `Ord` and `Show` and the `Show` impls for
 built-in types. Its functions are `fold rev_append reverse append map
 filter flat_map concat each length sum is_empty range any all contains find
 head nth take drop zip min max abs unwrap_or map_option sort_by sort

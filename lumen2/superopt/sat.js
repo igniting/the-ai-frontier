@@ -1,10 +1,11 @@
 // A CDCL SAT solver that writes a DRUP proof when it finds a formula
-// unsatisfiable.
+// unsatisfiable: the superoptimizer's, for proving rewrite rules. (The
+// compiler has its own, in compiler/32-sat.lm, the same algorithm.)
 //
 // Clauses use DIMACS literals: v or -v for variable v >= 1. On UNSAT the
 // proof is the list of clauses the solver learned, in order, ending with the
 // empty clause. Each learned clause follows from the formula and the clauses
-// before it by unit propagation (it is RUP), so rup.js, which shares no code
+// before it by unit propagation (it is RUP), so src/rup.js, which shares no code
 // with this file, can check the whole refutation independently. Nothing this
 // solver says is trusted: an UNSAT answer counts only once its proof checks.
 //

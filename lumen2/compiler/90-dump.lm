@@ -1,6 +1,7 @@
 // ===================================================== debugging dumps
-// Canonical text for intermediate results, which the port's parity tests
-// compare with the reference compiler's (compiler/parity.mjs).
+// Canonical text for intermediate results (the syntax tree, the IR after each
+// pass), which compared the port with the JavaScript compiler pass by pass.
+// They are kept for debugging: the modes ast, lower1, opt1, rc1 and wasm1.
 
 fn d_sp(s, e) { "@" ++ int_to_string(s) ++ "-" ++ int_to_string(e) }
 fn d_list(xs, f) { "(" ++ join(map(xs, f), " ") ++ ")" }

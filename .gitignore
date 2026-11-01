@@ -5,3 +5,5 @@ fuzz/failures/
 selfhost/failures/
 superopt-proofs/
 schur-proof/
+lumen2/compiler/lumen2c.lm
+!lumen2/compiler/lumen2c.wasm

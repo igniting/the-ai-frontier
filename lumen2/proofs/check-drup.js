@@ -5,7 +5,7 @@
 //
 //   node proofs/check-drup.js FORMULA.cnf PROOF.drup [--selfhost]
 //
-// By default rup.lm is compiled by the reference compiler (src/), which proves
+// By default rup.lm is compiled by the compiler (compiler/lumen2c.wasm), which proves
 // it first and stops if any function could fail. With --selfhost it is
 // compiled by the self-hosted compiler instead (stage 2 of
 // selfhost/bootstrap.js, the module that reproduces itself byte for byte).
@@ -14,7 +14,7 @@
 
 import { readFileSync } from 'node:fs';
 import { compileSource } from '../src/api.js';
-import { runWasm } from '../src/codegen.js';
+import { runWasm } from '../src/runtime.js';
 import { makeHost } from '../src/host.js';
 import { stage1, compileWith } from '../selfhost/bootstrap.js';
 
@@ -32,7 +32,7 @@ export function checker({ selfhost = false } = {}) {
   if (!c.ok) throw new Error(`rup.lm: ${c.errors[0].message}`);
   const failing = c.signatures.filter((s) => s.type.includes('fail')).map((s) => s.name);
   if (failing.length) throw new Error(`rup.lm: these functions can fail: ${failing.join(', ')}`);
-  return { bytes: c.bytes, how: 'proved (no function can fail) and compiled by the reference compiler', ms: performance.now() - t };
+  return { bytes: c.bytes, how: 'proved (no function can fail) and compiled by the compiler', ms: performance.now() - t };
 }
 
 export function checkDrup(bytes, cnf, drup) {

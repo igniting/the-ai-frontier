@@ -1,4 +1,6 @@
-// A small WebAssembly module builder and binary encoder.
+// A small WebAssembly module builder and binary encoder, for testing the
+// superoptimizer's instruction semantics against the engine. (The compiler's
+// encoder is compiler/45-wasm.lm.)
 //
 // Instructions are arrays [opcode-name, ...immediates]. Functions, globals,
 // locals, types and branch labels are referred to by name; the encoder

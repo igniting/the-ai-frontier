@@ -10,9 +10,8 @@
 // from the variables in scope, literals, operators, constructors, matches,
 // closures, prelude functions and earlier generated functions.
 
-import { checkSource } from '../src/api.js';
+import { checkSource, compileSource, runWasm } from '../src/api.js';
 import { interpret } from '../src/interp.js';
-import { compileProgram, runWasm } from '../src/codegen.js';
 
 // ------------------------------------------------------------------ types --
 const T = {
@@ -397,7 +396,7 @@ export function differential(src, { mutant = null, maxSteps = 3000000 } = {}) {
   const modes = [{ paranoid: false }, { paranoid: true }, { reuse: false }];
   for (const mode of modes) {
     let r;
-    try { r = runWasm(compileProgram(c.program, { ...mode, mutant }).bytes); } catch (e) { return `${JSON.stringify(mode)}: compiler crashed: ${e.stack}`; }
+    try { r = runWasm(compileSource(src, { ...mode, mutant }).bytes); } catch (e) { return `${JSON.stringify(mode)}: compiler crashed: ${e.stack}`; }
     if (r.output !== ref.output || r.error !== ref.error) {
       return `${JSON.stringify(mode)}: interpreter printed ${JSON.stringify(ref.output.slice(-200))} and stopped with ${ref.error}; wasm printed ${JSON.stringify(r.output.slice(-200))} and stopped with ${r.error}`;
     }

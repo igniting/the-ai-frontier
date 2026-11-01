@@ -1,4 +1,4 @@
-// Re-proves every rewrite rule the compiler applies (src/rules.js) from
+// Re-proves every rewrite rule the compiler applies (compiler/rules.js) from
 // scratch: for all values of the inputs, locals and symbolic constants that
 // satisfy the rule's side conditions, both sides compute the same value.
 // Each refutation is checked by src/rup.js before it counts.
@@ -6,7 +6,7 @@
 //   node superopt/verify.js [--emit DIR]   (DIR gets rule-N.cnf and rule-N.drup)
 
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { RULES } from '../src/rules.js';
+import { RULES } from '../compiler/rules.js';
 import { typeOf } from './semantics.js';
 import { prove } from './synth.js';
 

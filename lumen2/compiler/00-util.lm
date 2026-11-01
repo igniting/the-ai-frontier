@@ -1,10 +1,14 @@
 // lumen2c: the Lumen 2 compiler, written in Lumen 2.
 //
-// It is a port of the reference compiler that was written in JavaScript
-// (lumen2/src/ before it was retired), pass for pass, and it produces the same
+// It is a port of the compiler that was written in JavaScript (lumen2/src/,
+// last present in commit 674542d), pass for pass, and it produced the same
 // output byte for byte: the same diagnostics, signatures, proof obligations
-// and WebAssembly. The files of this directory are concatenated in name order
-// (compiler/build.js) into one program.
+// and WebAssembly. Comments that mention "the reference", or a .js file, mean
+// that compiler: where the port follows an order or a rule that would
+// otherwise look arbitrary, it is the order or rule the original had. The
+// files of this directory are concatenated in name order (compiler/build.js)
+// into one program, which compiler/bootstrap.js compiles with the previous
+// build of itself.
 //
 // ================================================================ utilities
 

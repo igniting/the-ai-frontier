@@ -59,20 +59,32 @@ fn f_add(a, b) {
   }
 }
 
+// The exact product of two 53-bit mantissas, rounded to 53 bits. The 106-bit
+// product is P = h * 2^52 + l (0 <= l < 2^52), computed from 26- and 27-bit
+// halves so that every partial product fits in 64 bits.
 fn f_mul(a, b) {
   match (a, b) {
     (F(0, _), _) -> f_zero(),
     (_, F(0, _)) -> f_zero(),
     (F(ma, ea), F(mb, eb)) -> {
-      let p = b_mul(BS(ma), BS(mb));
-      let shift = b_bit_length(p) - 53;
-      let k = b_pow2(shift);
-      let q = b_quot(p, k);
-      let r = b_rem(p, k);
-      let half = b_pow2(shift - 1);
-      let qi = match q { BS(v) -> v, _ -> internal("float") };
-      let up = b_lt(half, r) || (b_eq(r, half) && qi % 2 == 1);
-      let m = if up { qi + 1 } else { qi };
+      let t26 = 67108864;
+      let t52 = 4503599627370496;
+      let a1 = ma / t26;
+      let a0 = ma % t26;
+      let b1 = mb / t26;
+      let b0 = mb % t26;
+      let mid = a1 * b0 + a0 * b1;
+      let l0 = a0 * b0 + (mid % t26) * t26;
+      let h = a1 * b1 + mid / t26 + l0 / t52;
+      let l = l0 % t52;
+      // The product has 105 bits (h < 2^53) or 106; q is its top 53 bits, r the rest.
+      let wide = h >= f_two53();
+      let shift = if wide { 53 } else { 52 };
+      let q = if wide { h / 2 } else { h };
+      let r = if wide { (h % 2) * t52 + l } else { l };
+      let half = if wide { t52 } else { t52 / 2 };
+      let up = r > half || (r == half && q % 2 == 1);
+      let m = if up { q + 1 } else { q };
       if m == f_two53() { F(f_two52(), ea + eb + shift + 1) } else { F(m, ea + eb + shift) }
     },
   }

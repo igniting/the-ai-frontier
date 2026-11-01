@@ -207,7 +207,36 @@ fn cone(facts, goal) {
 }
 
 // The query cache: key -> result (a refuted model by canonical atom number).
-type Cache { Cache(Map<ProveResult>) }
+// With the flag, results are also shared with the host across runs: the
+// compiler asks for a key it has not proved by printing it (after byte 1 and
+// `?`) and reading the answer with read_line, and tells the host what it
+// proved (after byte 1 and `!`). Proofs that are kept are not shared.
+type Cache { Cache(Map<ProveResult>, Bool) }
+
+fn enc_result(r) {
+  match r {
+    Proved(lemmas, ncl, nv, _, _) -> "P " ++ int_to_string(lemmas) ++ " " ++ int_to_string(ncl) ++ " " ++ int_to_string(nv),
+    Refuted(model) -> "R" ++ concat_strings(map(model, |e| match e { (i, MInt(v)) -> " " ++ int_to_string(i) ++ ":i" ++ b_to_string(v), (i, MBool(b)) -> " " ++ int_to_string(i) ++ (if b { ":t" } else { ":f" }) })),
+    Unknown -> "-",
+  }
+}
+fn dec_result(line) {
+  let words = split_spaces(if ends_with_nl(line) { substring(line, 0, string_length(line) - 1) } else { line });
+  match words {
+    ["P", a, b, c] -> Some(Proved(int_of_dec(a), int_of_dec(b), int_of_dec(c), [], [])),
+    ["R", ..entries] -> Some(Refuted(map(entries, |w| {
+      fn colon(i) { if char_code_at(w, i) == 58 { i } else { colon(i + 1) } }
+      let k = colon(0);
+      let i = int_of_dec(substring(w, 0, k));
+      let tag = substring(w, k + 1, k + 2);
+      (i, if tag == "i" { MInt(b_from_dec(substring(w, k + 2, string_length(w)))) } else { MBool(tag == "t") })
+    }))),
+    _ -> None,
+  }
+}
+fn ends_with_nl(s) { string_length(s) > 0 && char_code_at(s, string_length(s) - 1) == 10 }
+fn cache_ask(key) { print(char_from_code(1) ++ "?" ++ key ++ "\n"); dec_result(read_line()) }
+fn cache_tell(key, r) { print(char_from_code(1) ++ "!" ++ key ++ "\t" ++ enc_result(r) ++ "\n") }
 
 fn prove(atoms, facts, goal, mutant, max_conflicts, keep, cache) {
   let (used_p, relevant) = cone(facts, goal);
@@ -217,14 +246,22 @@ fn prove(atoms, facts, goal, mutant, max_conflicts, keep, cache) {
   let body = join(reverse(parts), ";") ++ "|" ++ gs;
   let key = body ++ "|" ++ join(map(canon, |e| match e { (id, _) -> match array_get(atoms, id) { ABool(_, _) -> "B", AInt(lo, hi, _, _) -> b_to_string(lo) ++ ":" ++ b_to_string(hi) } }), ",") ++ (if keep { "|keep" } else { "" });
   let cached = mutant != "blast-carry" && mutant != "sat-claims-unsat" && mutant != "rup-accept-all";
-  let hit = match cache { Cache(m) -> if cached { m_get(m, key) } else { None } };
+  let shared = match cache { Cache(_, x) -> x && cached && !keep };
+  let local = match cache { Cache(m, _) -> if cached { m_get(m, key) } else { None } };
+  let (hit, cache) = match local {
+    Some(r) -> (Some(r), cache),
+    None -> if shared {
+      match cache_ask(key) { Some(r) -> match cache { Cache(m, x) -> (Some(r), Cache(m_set(m, key, r), x)) }, None -> (None, cache) }
+    } else { (None, cache) },
+  };
   match hit {
     Some(Refuted(model)) -> (Refuted(map(model, |e| match e { (i, v) -> (match find(canon, |c| match c { (_, n) -> n == i }) { Some((id, _)) -> id, None -> 0 - 1 }, v) })), cache),
     Some(r) -> (r, cache),
     None -> {
       let r = prove_fresh(atoms, used, relevant, goal, mutant, max_conflicts, keep);
       let stored = match r { Refuted(model) -> Refuted(flat_map(model, |e| match e { (id, v) -> match find(canon, |c| match c { (k, _) -> k == id }) { Some((_, n)) -> [(n, v)], None -> [] } })), other -> other };
-      let cache2 = match (cache, r) { (_, Unknown) -> cache, (Cache(m), _) -> if !cached { cache } else { Cache(m_set(if m_size_over(m, 20000) { MEmpty } else { m }, key, stored)) } };
+      let cache2 = match (cache, r) { (_, Unknown) -> cache, (Cache(m, x), _) -> if !cached { cache } else { Cache(m_set(if m_size_over(m, 20000) { MEmpty } else { m }, key, stored), x) } };
+      match r { Unknown -> (), _ -> if shared { cache_tell(key, stored) } else { () } };
       (r, cache2)
     },
   }

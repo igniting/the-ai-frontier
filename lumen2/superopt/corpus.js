@@ -19,8 +19,8 @@ export function compileCorpus({ fuzz = 60 } = {}) {
   for (let seed = 1; seed <= fuzz; seed++) sources.push({ name: `fuzz:${seed}`, src: generate(seed) });
   const modules = [];
   for (const { name, src } of sources) {
-    const c = compileSource(src, { grants: null, superopt: false });
-    if (c.ok) modules.push({ name, funcs: c.module.funcs });
+    const c = compileSource(src, { grants: null, superopt: false, funcs: true });
+    if (c.ok) modules.push({ name, funcs: c.funcs });
   }
   return modules;
 }

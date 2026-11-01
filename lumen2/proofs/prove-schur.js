@@ -17,7 +17,7 @@
 
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { compileSource } from '../src/api.js';
-import { runWasm } from '../src/codegen.js';
+import { runWasm } from '../src/runtime.js';
 import { makeHost } from '../src/host.js';
 import { checkRefutation } from '../src/rup.js';
 

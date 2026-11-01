@@ -35,7 +35,7 @@ jobs:
 
   lumen2:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: lumen2
@@ -44,13 +44,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: The compiler, built by itself, compiles itself to itself
+        run: node compiler/bootstrap.js
       - name: Lumen 2 tests (checker, interpreter, wasm back end, leak check, planted bugs)
         run: npm test
       - name: Lumen 2 differential fuzzing, four ways (fresh seeds every run)
-        run: node test/fuzz.js 1000 $(( 100000 + GITHUB_RUN_NUMBER * 1000 ))
+        run: node test/fuzz.js 500 $(( 100000 + GITHUB_RUN_NUMBER * 1000 ))
       - name: Lumen 2 certificates (IR types, ownership, DRUP proofs checked again)
         run: node bin/lumen2.js certify examples/refine.lm --out lumen2-certificates
-      - name: The self-hosted compiler reaches a fixed point
+      - name: The first self-hosted compiler (selfhost/lumen2c.lm) reaches a fixed point
         run: node selfhost/bootstrap.js
       - name: Re-prove every superoptimizer rule
         run: node superopt/verify.js

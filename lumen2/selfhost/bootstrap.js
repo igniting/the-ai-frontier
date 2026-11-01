@@ -1,6 +1,6 @@
 // The self-hosting fixed point.
 //
-//   stage 1 = lumen2c.lm compiled by the reference compiler (src/)
+//   stage 1 = lumen2c.lm compiled by the compiler (compiler/lumen2c.wasm)
 //   stage 2 = lumen2c.lm compiled by stage 1
 //   stage 3 = lumen2c.lm compiled by stage 2
 //
@@ -14,7 +14,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { compileSource } from '../src/api.js';
-import { runWasm } from '../src/codegen.js';
+import { runWasm } from '../src/runtime.js';
 import { makeHost } from '../src/host.js';
 import { utf8 } from '../src/lexer.js';
 
@@ -44,7 +44,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const out = i >= 0 ? process.argv[i + 1] : null;
   let t = performance.now();
   const s1 = stage1();
-  console.log(`stage 1: lumen2c.lm (${src.split('\n').length} lines) compiled by the reference compiler: ${s1.length} bytes, ${sha(s1)} (${Math.round(performance.now() - t)} ms)`);
+  console.log(`stage 1: lumen2c.lm (${src.split('\n').length} lines) compiled by the compiler: ${s1.length} bytes, ${sha(s1)} (${Math.round(performance.now() - t)} ms)`);
   const s2 = compileWith(s1, src);
   console.log(`stage 2: compiled by stage 1: ${s2.bytes.length} bytes, ${sha(s2.bytes)} (${Math.round(s2.ms)} ms, ${s2.allocs} allocations, nothing leaked)`);
   if (!WebAssembly.validate(s2.bytes)) throw new Error('stage 2 is not a valid module');

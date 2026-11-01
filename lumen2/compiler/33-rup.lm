@@ -6,34 +6,71 @@
 
 type RupResult { RupOk(Int), RupBad(String) }
 
-// vals (by variable), trail, clauses, watch lists and their lengths,
-// counters (0 top, 1 base, 2 head, 3 refuted?)
-type Rup { Rup(Array<Int>, Array<Int>, Array<Array<Int>>, Array<Array<Int>>, Array<Int>, Array<Int>) }
+// vals (by variable), trail, the clause arena (every clause's literals, one
+// after another) and each clause's start in it (with the arena's length at
+// the end), watch lists and their lengths, counters (0 top, 1 base, 2 head,
+// 3 refuted?), marks by variable (for removing duplicate literals)
+type Rup { Rup(Array<Int>, Array<Int>, Array<Int>, Array<Int>, Array<Array<Int>>, Array<Int>, Array<Int>, Array<Int>) }
 
 fn r_slot(l) { if l > 0 { 2 * l } else { 0 - 2 * l + 1 } }
 fn r_abs(l) { if l < 0 { 0 - l } else { l } }
-fn r_value(r, l) { match r { Rup(vals, _, _, _, _, _) -> { let v = array_get(vals, r_abs(l)); if l > 0 { v } else { 0 - v } } } }
-fn r_int(r, i) { match r { Rup(_, _, _, _, _, ints) -> array_get(ints, i) } }
-fn r_set_int(r, i, v) { match r { Rup(a, b, c, d, e, ints) -> Rup(a, b, c, d, e, array_set(ints, i, v)) } }
-fn r_trail(r, i) { match r { Rup(_, t, _, _, _, _) -> array_get(t, i) } }
+fn r_value(r, l) { match r { Rup(x, _, _, _, _, _, _, _) -> { let v = array_get(x, r_abs(l)); if l > 0 { v } else { 0 - v } } } }
+fn r_int(r, i) { match r { Rup(_, _, _, _, _, _, x, _) -> array_get(x, i) } }
+fn r_set_int(r, i, v) { match r { Rup(f0, f1, f2, f3, f4, f5, f6, f7) -> Rup(f0, f1, f2, f3, f4, f5, array_set(f6, i, v), f7) } }
+fn r_trail(r, i) { match r { Rup(_, x, _, _, _, _, _, _) -> array_get(x, i) } }
+fn r_lit(r, i) { match r { Rup(_, _, x, _, _, _, _, _) -> array_get(x, i) } }
+fn r_set_lit(r, i, v) { match r { Rup(f0, f1, f2, f3, f4, f5, f6, f7) -> Rup(f0, f1, array_set(f2, i, v), f3, f4, f5, f6, f7) } }
+fn r_cstart(r, ci) { match r { Rup(_, _, _, x, _, _, _, _) -> array_get(x, ci) } }
+fn r_clen(r, ci) { match r { Rup(_, _, _, x, _, _, _, _) -> array_get(x, ci + 1) - array_get(x, ci) } }
+fn r_db_len(r) { match r { Rup(_, _, _, x, _, _, _, _) -> array_length(x) - 1 } }
+fn r_mark(r, v) { match r { Rup(_, _, _, _, _, _, _, x) -> array_get(x, v) } }
+fn r_set_mark(r, v, m) { match r { Rup(f0, f1, f2, f3, f4, f5, f6, f7) -> Rup(f0, f1, f2, f3, f4, f5, f6, array_set(f7, v, m)) } }
 
 fn r_make(r, l) {
   let v = r_value(r, l);
   if v == 0 - 1 { (false, r) }
   else if v == 0 {
-    match r { Rup(vals, t, db, ws, wl, ints) -> {
-      let top = array_get(ints, 0);
-      (true, Rup(array_set(vals, r_abs(l), if l > 0 { 1 } else { 0 - 1 }), array_set(t, top, l), db, ws, wl, array_set(ints, 0, top + 1)))
+    match r { Rup(f0, f1, f2, f3, f4, f5, f6, f7) -> {
+      let top = array_get(f6, 0);
+      (true, Rup(array_set(f0, r_abs(l), if l > 0 { 1 } else { 0 - 1 }), array_set(f1, top, l), f2, f3, f4, f5, array_set(f6, 0, top + 1), f7))
     } }
   } else { (true, r) }
 }
-fn r_take_watch(r, w) { match r { Rup(a, b, c, ws, wl, f) -> { let list = array_get(ws, w); (list, array_get(wl, w), Rup(a, b, c, array_set(ws, w, array_empty()), wl, f)) } } }
-fn r_put_watch(r, w, list, len) { match r { Rup(a, b, c, ws, wl, f) -> Rup(a, b, c, array_set(ws, w, list), array_set(wl, w, len), f) } }
+fn r_take_watch(r, w) { match r { Rup(f0, f1, f2, f3, f4, f5, f6, f7) -> { let list = array_get(f4, w); (list, array_get(f5, w), Rup(f0, f1, f2, f3, array_set(f4, w, array_empty()), f5, f6, f7)) } } }
+fn r_put_watch(r, w, list, len) { match r { Rup(f0, f1, f2, f3, f4, f5, f6, f7) -> Rup(f0, f1, f2, f3, array_set(f4, w, list), array_set(f5, w, len), f6, f7) } }
 fn r_watch_push(r, w, x) { let (list, len, r) = r_take_watch(r, w); r_put_watch(r, w, push_at(list, len, x), len + 1) }
-fn r_take_clause(r, ci) { match r { Rup(a, b, db, d, e, f) -> { let c = array_get(db, ci); (c, Rup(a, b, array_set(db, ci, array_empty()), d, e, f)) } } }
-fn r_put_clause(r, ci, c) { match r { Rup(a, b, db, d, e, f) -> Rup(a, b, array_set(db, ci, c), d, e, f) } }
+// Appends a clause (a list of literals) to the arena.
+fn r_push_clause(r, lits) {
+  match r { Rup(f0, f1, f2, f3, f4, f5, f6, f7) -> {
+    let a = fold(lits, f2, array_push);
+    let n = array_length(a);
+    Rup(f0, f1, a, array_push(f3, n), f4, f5, f6, f7)
+  } }
+}
 
 // Propagates from position `head`; true on a conflict.
+fn r_find_k(r, base, k, n) { if k >= n { 0 - 1 } else if r_value(r, r_lit(r, base + k)) != 0 - 1 { k } else { r_find_k(r, base, k + 1, n) } }
+// Visits ws[i..len) for the false literal f; a moved clause is replaced by the last one.
+fn r_visit(r, ws, i, len, f) {
+  if i >= len { (false, r, ws, len) }
+  else {
+    let ci = array_get(ws, i);
+    let base = r_cstart(r, ci);
+    let n = r_clen(r, ci);
+    let r = if r_lit(r, base) == f { let l1 = r_lit(r, base + 1); r_set_lit(r_set_lit(r, base, l1), base + 1, f) } else { r };
+    let first = r_lit(r, base);
+    if r_value(r, first) == 1 { r_visit(r, ws, i + 1, len, f) }
+    else {
+      let k = r_find_k(r, base, 2, n);
+      if k >= 0 {
+        let x = r_lit(r, base + k);
+        let r = r_watch_push(r_set_lit(r_set_lit(r, base + 1, x), base + k, f), r_slot(x), ci);
+        r_visit(r, array_set(ws, i, array_get(ws, len - 1)), i, len - 1, f)
+      } else if r_value(r, first) == 0 - 1 { (true, r, ws, len) }
+      else { let (_, r) = r_make(r, first); r_visit(r, ws, i + 1, len, f) }
+    }
+  }
+}
 fn r_propagate(r) {
   let head = r_int(r, 2);
   if head >= r_int(r, 0) { (false, r) }
@@ -42,31 +79,7 @@ fn r_propagate(r) {
     let r = r_set_int(r, 2, head + 1);
     let w = r_slot(f);
     let (ws, len, r) = r_take_watch(r, w);
-    // Visits ws[i..len); a moved clause is replaced by the last one.
-    fn visit(r, ws, i, len) {
-      if i >= len { (false, r, ws, len) }
-      else {
-        let ci = array_get(ws, i);
-        let (c0, r) = r_take_clause(r, ci);
-        let c = if array_get(c0, 0) == f { array_set(array_set(c0, 0, array_get(c0, 1)), 1, f) } else { c0 };
-        if r_value(r, array_get(c, 0)) == 1 { visit(r_put_clause(r, ci, c), ws, i + 1, len) }
-        else {
-          fn find_k(k) { if k >= array_length(c) { 0 - 1 } else if r_value(r, array_get(c, k)) != 0 - 1 { k } else { find_k(k + 1) } }
-          let k = find_k(2);
-          if k >= 0 {
-            let x = array_get(c, k);
-            let c2 = array_set(array_set(c, 1, x), k, f);
-            let r = r_watch_push(r_put_clause(r, ci, c2), r_slot(x), ci);
-            visit(r, array_set(ws, i, array_get(ws, len - 1)), i, len - 1)
-          } else {
-            let r = r_put_clause(r, ci, c);
-            if r_value(r, array_get(c, 0)) == 0 - 1 { (true, r, ws, len) }
-            else { let (_, r) = r_make(r, array_get(c, 0)); visit(r, ws, i + 1, len) }
-          }
-        }
-      }
-    }
-    let (conflict, r, ws, len2) = visit(r, ws, 0, len);
+    let (conflict, r, ws, len2) = r_visit(r, ws, 0, len, f);
     let r = r_put_watch(r, w, ws, len2);
     if conflict { (true, r) } else { r_propagate(r) }
   }
@@ -76,25 +89,42 @@ fn r_undo_to(r, n) {
     let top = r_int(r, 0);
     if top > n {
       let l = r_trail(r, top - 1);
-      match r { Rup(vals, t, db, ws, wl, ints) -> go(Rup(array_set(vals, r_abs(l), 0), t, db, ws, wl, array_set(ints, 0, top - 1))) }
+      match r { Rup(vals, t, a, st, ws, wl, ints, mk) -> go(Rup(array_set(vals, r_abs(l), 0), t, a, st, ws, wl, array_set(ints, 0, top - 1), mk)) }
     } else { r }
   }
   r_set_int(go(r), 2, n)
 }
 
+// The literals of a clause without repeats (first occurrences, in order), and
+// whether it holds a literal and its negation, in one pass over marks by variable
+// (1 or -1: that sign seen; 2: both). The marks are cleared again.
+fn r_dedupe(r, xs, acc, taut) {
+  match xs {
+    [] -> {
+      let r = fold(acc, r, |r, l| r_set_mark(r, r_abs(l), 0));
+      (reverse(acc), taut, r)
+    },
+    [l, ..rest] -> {
+      let v = r_abs(l);
+      let sg = if l > 0 { 1 } else { 0 - 1 };
+      let m = r_mark(r, v);
+      if m == sg || m == 2 { r_dedupe(r, rest, acc, taut) }
+      else if m == 0 { r_dedupe(r_set_mark(r, v, sg), rest, [l, ..acc], taut) }
+      else { r_dedupe(r_set_mark(r, v, 2), rest, [l, ..acc], true) }
+    },
+  }
+}
 // Adds a clause at the top level (see rup.js).
 fn r_add(r, c) {
-  let lits0 = uniq_ints(c);
-  if any(lits0, |l| any(lits0, |m| m == 0 - l)) { r }
+  let (lits0, taut, r) = r_dedupe(r, c, [], false);
+  if taut { r }
   else {
     let lits = append(filter(lits0, |l| r_value(r, l) != 0 - 1), filter(lits0, |l| r_value(r, l) == 0 - 1));
     let open = length(filter(lits0, |l| r_value(r, l) != 0 - 1));
     let r = if length(lits) >= 2 {
-      match r { Rup(a, b, db, d, e, f) -> {
-        let ci = array_length(db);
-        let r = Rup(a, b, array_push(db, array_from_list(lits)), d, e, f);
-        r_watch_push(r_watch_push(r, r_slot(list_get(lits, 0)), ci), r_slot(list_get(lits, 1)), ci)
-      } }
+      let ci = r_db_len(r);
+      let r = r_push_clause(r, lits);
+      r_watch_push(r_watch_push(r, r_slot(list_get(lits, 0)), ci), r_slot(list_get(lits, 1)), ci)
     } else { r };
     if open == 0 { r_set_int(r, 3, 1) }
     else if open == 1 && r_value(r, list_get(lits, 0)) == 0 {
@@ -108,7 +138,7 @@ fn r_add(r, c) {
 
 fn check_refutation(nvars, clauses, proof, mutant) {
   if mutant == "rup-accept-all" { RupOk(length(proof)) } else {
-    let r0 = Rup(array_make(nvars + 1, 0), array_make(nvars + 1, 0), array_empty(), array_make(2 * nvars + 2, array_empty()), array_make(2 * nvars + 2, 0), array_make(4, 0));
+    let r0 = Rup(array_make(nvars + 1, 0), array_make(nvars + 1, 0), array_empty(), array_make(1, 0), array_make(2 * nvars + 2, array_empty()), array_make(2 * nvars + 2, 0), array_make(4, 0), array_make(nvars + 1, 0));
     fn load(r, cs) {
       match cs {
         [] -> Some(r),

@@ -714,9 +714,10 @@ fn v_body(ve, vs, params, b, decl, st) {
 // sites, and the obligations.
 type Verified { Verified(Map<Bool>, List<(String, String)>, List<Oblig>) }
 
-fn verify(checked, src, mutant, keep) {
+// shared: share proof results with the host (see Cache in 34-blast.lm).
+fn verify(checked, src, mutant, keep, shared) {
   let ve = VEnv(checked, mutant, keep, src);
-  let vs0 = VS(array_empty(), [], MEmpty, MEmpty, MEmpty, [], [], "user", Cache(MEmpty));
+  let vs0 = VS(array_empty(), [], MEmpty, MEmpty, MEmpty, [], [], "user", Cache(MEmpty, shared));
   let fns = match checked { Checked(_, _, _, fns, _, _, _, _, _, _) -> fns };
   let cs = ve_cs(ve);
   let vs = fold(fns, vs0, |vs, f| {
@@ -729,9 +730,9 @@ fn verify(checked, src, mutant, keep) {
 
 // The whole check: types first with every partial operation assumed safe,
 // then the proofs, then types and effects again with only the proved ones safe.
-fn check(src, grants, entry, mutant, keep) {
+fn check(src, grants, entry, mutant, keep, shared) {
   let first = check_once(src, Opts(grants, entry, true, MEmpty, MEmpty));
-  let v = verify(first, src, mutant, keep);
+  let v = verify(first, src, mutant, keep, shared);
   match v {
     Verified(safe, un, _) -> {
       let notes = fold(un, MEmpty, |m, e| match e { (k, n) -> m_set(m, k, n) });

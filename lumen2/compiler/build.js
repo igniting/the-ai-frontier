@@ -6,7 +6,7 @@
 
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { PRELUDE } from '../src/prelude.js';
-import { RULES } from '../src/rules.js';
+import { RULES } from './rules.js';
 
 const here = (p) => new URL(p, import.meta.url);
 

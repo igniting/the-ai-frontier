@@ -1,0 +1,134 @@
+// ================================================================== driver
+// What the compiler prints for its host (src/lumen2c.js): a report as one
+// line of JSON, then (for `compile`) the module's bytes. Spans are byte
+// offsets in the source; the host turns them into character offsets. With
+// the `cache` flag, lines starting with byte 1 are messages to the host about
+// proof results (see Cache in 34-blast.lm), not part of the output.
+
+fn jq(s) { json_str(s) }
+fn jarr(xs) { "[" ++ join(xs, ",") ++ "]" }
+fn jints(xs) { jarr(map(xs, int_to_string)) }
+fn jbool(b) { if b { "true" } else { "false" } }
+
+// The checker's findings: signatures, warnings and the proofs' outcomes.
+fn print_check_report(sigs, warns, safe, un, obs, keep) {
+  print("\"signatures\":" ++ jarr(map(sigs, |s| match s { (n, t, a, b) -> "{\"name\":" ++ jq(n) ++ ",\"type\":" ++ jq(t) ++ ",\"s\":" ++ int_to_string(a) ++ ",\"e\":" ++ int_to_string(b) ++ "}" })));
+  print(",\"warnings\":" ++ jarr(map(warns, |w| match w { (m, a, b) -> "{\"message\":" ++ jq(m) ++ ",\"s\":" ++ int_to_string(a) ++ ",\"e\":" ++ int_to_string(b) ++ "}" })));
+  print(",\"safe\":" ++ jarr(map(m_entries(safe), |e| match e { (k, _) -> jq(k) })));
+  print(",\"unproved\":" ++ jarr(map(un, |e| match e { (k, n) -> "[" ++ jq(k) ++ "," ++ jq(n) ++ "]" })));
+  print(",\"obligations\":[");
+  each(enumerate(obs), |io| match io { (i, Oblig(kind, sc, site, s, e, what, status, lemmas, clauses, ce, nv, cnf, proof)) -> {
+    print((if i > 0 { "," } else { "" }) ++ "{\"kind\":" ++ jq(kind) ++ ",\"scope\":" ++ jq(sc) ++ ",\"site\":" ++ jq(site) ++ ",\"s\":" ++ int_to_string(s) ++ ",\"e\":" ++ int_to_string(e)
+      ++ ",\"what\":" ++ jq(what) ++ ",\"status\":" ++ jq(status) ++ ",\"lemmas\":" ++ int_to_string(lemmas) ++ ",\"clauses\":" ++ int_to_string(clauses) ++ ",\"counterexample\":" ++ jq(ce));
+    if keep && status == "proved" {
+      print(",\"nvars\":" ++ int_to_string(nv) ++ ",\"cnf\":[");
+      each(enumerate(cnf), |ic| match ic { (j, c) -> print((if j > 0 { "," } else { "" }) ++ jints(c)) });
+      print("],\"proof\":[");
+      each(enumerate(proof), |ic| match ic { (j, c) -> print((if j > 0 { "," } else { "" }) ++ jints(c)) });
+      print("]")
+    } else { () };
+    print("}")
+  } });
+  print("]")
+}
+
+// The compiled module's report fields; the bytes follow the line.
+fn print_compile_report(c, with_ir, with_funcs) {
+  match c { Compiled(bytes, (tf, ti), OStats(f, d, dr, ru, bo), stats, IRProg(fns, _, _), wfns) -> {
+    print(",\"types\":{\"functions\":" ++ int_to_string(tf) ++ ",\"instructions\":" ++ int_to_string(ti) ++ "}");
+    print(",\"ownership\":{\"functions\":" ++ int_to_string(f) ++ ",\"dups\":" ++ int_to_string(d) ++ ",\"drops\":" ++ int_to_string(dr) ++ ",\"reuses\":" ++ int_to_string(ru) ++ ",\"borrowed\":" ++ int_to_string(bo) ++ "}");
+    print(",\"rewrites\":" ++ jarr(map(om_keys(stats), |k| "[" ++ k ++ "," ++ int_to_string(match om_get(stats, k) { Some(n) -> n, None -> 0 }) ++ "]")));
+    print(",\"fns\":[");
+    each(enumerate(fns), |iff| match iff { (i, g) -> print((if i > 0 { "," } else { "" }) ++ "{\"name\":" ++ jq(irf_name(g)) ++ (if with_ir { ",\"text\":" ++ jq(show_ir(g)) } else { "" }) ++ "}") });
+    print("]");
+    if with_funcs {
+      print(",\"funcs\":[");
+      each(enumerate(wfns), |iw| match iw { (i, WFn(n, ps, rs, ls, body)) -> {
+        let pairs = |xs| jarr(map(xs, |p| match p { (a, b) -> "[" ++ jq(a) ++ "," ++ jq(b) ++ "]" }));
+        print((if i > 0 { "," } else { "" }) ++ "{\"name\":" ++ jq(n) ++ ",\"params\":" ++ pairs(ps) ++ ",\"results\":" ++ jarr(map(rs, jq)) ++ ",\"locals\":" ++ pairs(ls) ++ ",\"body\":");
+        print(jarr(map(body, ins_json)));
+        print("}")
+      } });
+      print("]")
+    } else { () };
+    print(",\"bytes\":" ++ int_to_string(array_length(bytes)))
+  } }
+}
+// An instruction as [op, argument]: the local, global, function, label, constant or offset.
+fn ins_json(i) {
+  match i {
+    Op(o) -> "[" ++ jq(o) ++ "]",
+    OLocal(o, n) -> "[" ++ jq(o) ++ "," ++ jq(n) ++ "]",
+    OGlobal(o, n) -> "[" ++ jq(o) ++ "," ++ jq(n) ++ "]",
+    OCall(o, n) -> "[" ++ jq(o) ++ "," ++ jq(n) ++ "]",
+    OCallInd(o, ps, rs) -> "[" ++ jq(o) ++ ",{\"params\":" ++ jarr(map(ps, jq)) ++ ",\"results\":" ++ jarr(map(rs, jq)) ++ "}]",
+    OI32(v) -> "[\"i32.const\"," ++ jq(int_to_string(wrap32(v))) ++ "]",
+    OI64(v) -> "[\"i64.const\"," ++ jq(int_to_string(v)) ++ "]",
+    OMem(o, off) -> "[" ++ jq(o) ++ "," ++ int_to_string(off) ++ "]",
+    OBlock(o, l, t) -> "[" ++ jq(o) ++ "," ++ (match l { Some(x) -> jq(x), None -> "null" }) ++ "," ++ (match t { Some(x) -> jq(x), None -> "null" }) ++ "]",
+    OBr(o, l) -> "[" ++ jq(o) ++ "," ++ jq(l) ++ "]",
+  }
+}
+
+// The verification a `compile` was given (from an earlier `check` of the same
+// program): lines `S key` (a safe site) and `U key note` (an unproved one).
+fn read_given(lines) {
+  fold(lines, (MEmpty, MEmpty), |acc, l| match acc { (safe, un) ->
+    if starts_at(l, 0, "S ") { (m_set(safe, substring(l, 2, string_length(l)), true), un) }
+    else if starts_at(l, 0, "U ") {
+      let rest = substring(l, 2, string_length(l));
+      fn sp(i) { if i >= string_length(rest) || char_code_at(rest, i) == 32 { i } else { sp(i + 1) } }
+      let k = sp(0);
+      (safe, m_set(un, substring(rest, 0, k), substring(rest, min(k + 1, string_length(rest)), string_length(rest))))
+    } else { acc } })
+}
+
+// ---------------------------------------------------------------- showIR
+// A readable rendering of an IR function with its reference-count operations
+// (perceus.js's showIR).
+fn js_string(s) {
+  fn piece(c) {
+    if c == 34 { "\\\"" } else if c == 92 { "\\\\" } else if c == 10 { "\\n" } else if c == 13 { "\\r" } else if c == 9 { "\\t" }
+    else if c == 8 { "\\b" } else if c == 12 { "\\f" } else if c < 32 { hex4(c) } else { char_from_code(c) }
+  }
+  "\"" ++ concat_strings(map(range(0, string_length(s)), |i| piece(char_code_at(s, i)))) ++ "\""
+}
+fn si_at(a) { match a { QVar(v) -> v, QInt(n) -> int_to_string(n), QBool(b) -> if b { "true" } else { "false" }, QUnit -> "()", QStr(s) -> js_string(s) } }
+fn si_ats(xs) { join(map(xs, si_at), ", ") }
+fn si_path(x, p) { si_at(x) ++ concat_strings(map(p, |i| "." ++ int_to_string(i))) }
+fn si_ind(n) { concat_strings(map(range(0, n), |_| "  ")) }
+fn si_rhs(r, ind) {
+  match r {
+    RAtom(a) -> si_at(a),
+    RPrim(o, args, _) -> o ++ "(" ++ si_ats(args) ++ ")",
+    RCmp(o, _, args) -> "cmp_" ++ o ++ "(" ++ si_ats(args) ++ ")",
+    RCall(f, args) -> f ++ "(" ++ si_ats(args) ++ ")",
+    RCallc(f, args) -> si_at(f) ++ "(" ++ si_ats(args) ++ ")",
+    RCtor(_, tag, args, ru) -> "ctor#" ++ int_to_string(tag) ++ (match ru { Some(t) -> "@" ++ t, None -> "" }) ++ "(" ++ si_ats(args) ++ ")",
+    RTuple(_, args, ru) -> (match ru { Some(t) -> "@" ++ t, None -> "" }) ++ "(" ++ si_ats(args) ++ ")",
+    RClosure(f, _, caps, _) -> "closure " ++ f ++ " [" ++ si_ats(caps) ++ "]",
+    RStaticfn(f, _) -> "static " ++ f,
+    RField(x, p, _, _) -> "field " ++ si_path(x, p),
+    RPeek(x, p, _, _) -> "peek " ++ si_path(x, p),
+    RTestTag(x, p, _, _, tag) -> "is#" ++ int_to_string(tag) ++ " " ++ si_path(x, p),
+    RTestLit(x, p, _, _, lit) -> "is " ++ si_at(lit) ++ " " ++ si_path(x, p),
+    REnvfield(i, _) -> "env." ++ int_to_string(i),
+    RBuiltinCall(n, args, _, _) -> n ++ "(" ++ si_ats(args) ++ ")",
+    RExpr(e) -> "{\n" ++ si_expr(e, ind + 1) ++ "\n" ++ si_ind(ind) ++ "}",
+  }
+}
+fn si_expr(e, ind) {
+  let p = si_ind(ind);
+  match e {
+    ILet(v, r, b) -> p ++ "let " ++ v ++ " = " ++ si_rhs(r, ind) ++ "\n" ++ si_expr(b, ind),
+    IRet(r) -> p ++ "ret " ++ si_rhs(r, ind),
+    IDup(v, b) -> p ++ "dup " ++ v ++ "\n" ++ si_expr(b, ind),
+    IDrop(v, b) -> p ++ "drop " ++ v ++ "\n" ++ si_expr(b, ind),
+    IDropReuse(v, r, b) -> p ++ "let " ++ r ++ " = drop-reuse " ++ v ++ "\n" ++ si_expr(b, ind),
+    IFreeToken(v, _, b) -> p ++ "free " ++ v ++ "\n" ++ si_expr(b, ind),
+    IUnpack(v, xs, r, _, b) -> p ++ (match r { Some(t) -> "let " ++ t ++ " = ", None -> "" }) ++ "unpack " ++ v ++ " [" ++ join(map(xs, |x| match x { (n, _) -> n }), ", ") ++ "]" ++ (match r { Some(_) -> " for reuse", None -> "" }) ++ "\n" ++ si_expr(b, ind),
+    IIf(c, t, el) -> p ++ "if " ++ si_at(c) ++ " {\n" ++ si_expr(t, ind + 1) ++ "\n" ++ p ++ "} else {\n" ++ si_expr(el, ind + 1) ++ "\n" ++ p ++ "}",
+    IUnreachable -> p ++ "unreachable",
+  }
+}
+fn show_ir(f) { "fn " ++ irf_name(f) ++ "(" ++ join(map(irf_params(f), |q| match q { (v, _) -> v }), ", ") ++ ") {\n" ++ si_expr(irf_body(f), 1) ++ "\n}" }

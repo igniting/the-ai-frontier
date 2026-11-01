@@ -4,11 +4,8 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkSource, interpretSource, compileSource, runSource, testSource, certifySource, makeHost } from '../src/api.js';
-import { compileProgram } from '../src/codegen.js';
-import { CertificateError } from '../src/certify.js';
+import { checkSource, interpretSource, compileSource, runSource, testSource, certifySource, makeHost, CertificateError, runWasm } from '../src/api.js';
 import { checkRefutation } from '../src/rup.js';
-import { runWasm } from '../src/codegen.js';
 import { generate, differential, MUTANTS } from './fuzz.js';
 
 // Runs src compiled (normally and in paranoid mode) and interpreted; all must agree.
@@ -137,7 +134,7 @@ test('refinements: compiled programs agree, and every proof is a checked DRUP ce
     }`;
   assert.equal(agree(src).output, '55 10\n[1, 4, 10]\n');
   const c = checkSource(src, { keepProofs: true });
-  const proved = c.program.verification.obligations.filter((o) => o.status === 'proved' && o.proof);
+  const proved = c.verification.obligations.filter((o) => o.status === 'proved' && o.proof);
   assert.ok(proved.length >= 5);
   for (const o of proved) assert.equal(checkRefutation(o.cnf.nvars, o.cnf.clauses, o.proof).ok, true);
   // A tampered certificate is rejected: drop the lemmas, keep only the empty clause.
@@ -149,9 +146,7 @@ test('refinements: compiled programs agree, and every proof is a checked DRUP ce
 test('certifying passes: independent checkers reject planted bugs at compile time', () => {
   const sources = [1, 2, 3].map((seed) => generate(seed));
   const rejected = (mutant) => sources.some((src) => {
-    const c = checkSource(src, { mutant });
-    if (!c.ok) return false;
-    try { compileProgram(c.program, { mutant }); return false; } catch (e) { if (e instanceof CertificateError) return true; throw e; }
+    try { compileSource(src, { mutant }); return false; } catch (e) { if (e instanceof CertificateError) return true; throw e; }
   });
   for (const mutant of ['perceus-transfer-live', 'perceus-no-post-drop', 'perceus-drop-borrowed', 'reuse-no-free', 'lower-bind-type']) {
     assert.ok(rejected(mutant), `${mutant} is rejected by a certificate checker`);

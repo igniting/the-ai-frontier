@@ -290,9 +290,10 @@ table.t.trace td code { white-space: nowrap; }
     <li><a href="#certified"><span class="n">18</span>A compiler that checks its own output</a></li>
     <li><a href="#lumen2-schur"><span class="n">19</span>The same theorem, without mutation</a></li>
     <li><a href="#lumen2-selfhost"><span class="n">20</span>The compiler compiles itself, again</a></li>
+    <li><a href="#lumen2-port"><span class="n">21</span>Retiring the JavaScript compiler</a></li>
     <li class="toc-part">Part six · Mistakes and limits</li>
-    <li><a href="#caught"><span class="n">21</span>What the checks caught, including my mistakes</a></li>
-    <li><a href="#limits"><span class="n">22</span>What this shows, and what it doesn't</a></li>
+    <li><a href="#caught"><span class="n">22</span>What the checks caught, including my mistakes</a></li>
+    <li><a href="#limits"><span class="n">23</span>What this shows, and what it doesn't</a></li>
   </ol>
 </header>
 
@@ -316,7 +317,7 @@ table.t.trace td code { white-space: nowrap; }
   compiler that compiles itself, rewrite rules with proofs, and a measured performance campaign. <b>Part four</b>
   uses all of it to prove a theorem, and explains SAT solving and proof checking on the way. <b>Part five</b> starts
   again: a second language, designed with what the first one taught me, that proves its own array accesses safe,
-  needs no garbage collector, proves the same theorem, and compiles itself. <b>Part six</b> lists what went wrong and what this does
+  needs no garbage collector, proves the same theorem, and ends up with its whole compiler written in itself. <b>Part six</b> lists what went wrong and what this does
   and doesn't show.</p>
 </section>
 
@@ -733,7 +734,7 @@ fn main() {
   <p>New frames need clearing. A frame occupies memory that an earlier call used, so its slots start out holding
   that call's old pointers. If a collection happened before a slot was written, the collector would treat a stale
   address as a live object. Every function therefore clears its frame on entry with <code>memory.fill</code>.
-  Chapter 9 makes that cheaper, and chapter 21 shows the checks catching me getting it wrong.</p>
+  Chapter 9 makes that cheaper, and chapter 22 shows the checks catching me getting it wrong.</p>
   <p>Root handling is the most error-prone part of any compiler with a moving collector. Forget to put one pointer
   in a slot before one call that allocates, and the program works until a collection happens at that moment,
   perhaps ten thousand allocations later. Bugs like that are why part two exists.</p>
@@ -1647,8 +1648,8 @@ match array_get(a, 0) {      <span class="c">// read it back as a list of String
   <p class="part-intro">After everything above was finished, I was asked what language I would design if I could
   start again, and then to build it. This part is about that language, Lumen 2. It covers what I changed and why,
   how it proves its own array accesses safe, how it manages memory with no garbage collector, how it checks its
-  compiler's output on every compile, how it proved the same theorem without mutation, and how it compiles
-  itself.</p>
+  compiler's output on every compile, how it proved the same theorem without mutation, how it compiles itself,
+  and how its JavaScript compiler was replaced by one written in Lumen 2.</p>
 </div>
 
 <section class="chapter" id="lumen2">
@@ -1806,10 +1807,11 @@ property sort_is_sorted(xs: List&lt;Int&gt;) { sorted(sort(xs)) }</pre>
   64-bit values in an obligation can overflow, so the bit-level arithmetic agrees with real integer arithmetic.
   Even this small obligation comes to 2,801 clauses.</p>
   <p>Then everything from Part four applies again, with new code. A CDCL solver,
-  <a href="https://github.com/igniting/the-ai-frontier/blob/main/lumen2/src/sat.js"><code>lumen2/src/sat.js</code></a>, refutes
-  the formula and writes a DRUP proof. A separate 102-line RUP checker,
-  <a href="https://github.com/igniting/the-ai-frontier/blob/main/lumen2/src/rup.js"><code>lumen2/src/rup.js</code></a>, checks
-  that proof before the operation is treated as safe. The two share no code with each other or with Lumen's
+  <a href="https://github.com/igniting/the-ai-frontier/blob/main/lumen2/compiler/32-sat.lm"><code>lumen2/compiler/32-sat.lm</code></a>, refutes
+  the formula and writes a DRUP proof. A separate RUP checker,
+  <a href="https://github.com/igniting/the-ai-frontier/blob/main/lumen2/compiler/33-rup.lm"><code>lumen2/compiler/33-rup.lm</code></a>, checks
+  that proof before the operation is treated as safe. (Both were JavaScript at first, like the rest of the
+  compiler until <a href="#lumen2-port">chapter 21</a>.) The two share no code with each other or with Lumen's
   solver and checker. For <code>safe_get</code>, the proof is the one-line proof <code>0</code> from chapter 13:
   unit propagation alone reaches the contradiction, so the solver learns nothing (zero lemmas).</p>
   <p>When the formula is satisfiable, the solver's assignment is a counterexample. The checker then tries again
@@ -1861,7 +1863,7 @@ fn main() {
   If a proof were wrong, the two would disagree on some program, and the fuzzer would see it. Two of the planted
   bugs in chapter 18 test exactly this: a checker that assumes an <code>if</code>'s condition in its
   <code>else</code> branch too, and an adder circuit that drops its carry. The run-time re-check catches both. It
-  has also caught two real mistakes in the checker, described in chapter 21.</p>
+  has also caught two real mistakes in the checker, described in chapter 22.</p>
   <p>How far does this go? Chapter 17 ends with a complete program that the checker proves cannot stop with an
   error.</p>
 
@@ -2060,7 +2062,7 @@ fn main() {
   check fails. This is a light form of an idea called <i>translation validation</i>: instead of proving the
   compiler correct for all programs, check its result for this one.</p>
   <p>There are two checkers, in
-  <a href="https://github.com/igniting/the-ai-frontier/blob/main/lumen2/src/certify.js"><code>lumen2/src/certify.js</code></a>,
+  <a href="https://github.com/igniting/the-ai-frontier/blob/main/lumen2/compiler/44-certify.lm"><code>lumen2/compiler/44-certify.lm</code></a>,
   plus the proof checker and the engine's own validation of the final WebAssembly:</p>
   <ul class="plain">
     <li><b>The IR type checker</b> re-types every instruction after monomorphization, inlining and simplification,
@@ -2130,7 +2132,7 @@ fn main() {
   differential runs catch them, as do the leak check and the interpreter's run-time re-check of proofs. Each is
   caught by one of the first 142 generated programs. With every feature in place, 3,000 generated programs ran with
   no disagreement, and CI runs 1,000 fresh ones on every push. Fresh programs have found two false proofs in the
-  refinement checker (chapter 21).</p>
+  refinement checker (chapter 22).</p>
 </section>
 
 <section class="chapter" id="lumen2-schur">
@@ -2337,6 +2339,90 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
   modules print.</p>
 </section>
 
+<section class="chapter" id="lumen2-port">
+  <p class="chapter-label">21 · Part five</p>
+  <h2>Retiring the JavaScript compiler</h2>
+  <p>The compiler in chapter 20 compiles itself, but it skips effects, refinements and every optimization, so it
+  leans on the reference compiler to reject bad programs. The reference compiler was JavaScript, about 5,500
+  lines in <code>lumen2/src</code>. The last step was to make Lumen 2's real compiler a Lumen 2 program, every
+  pass of it, and then delete the JavaScript one. The result is
+  <a href="https://github.com/igniting/the-ai-frontier/tree/main/lumen2/compiler"><code>lumen2/compiler/</code></a>:
+  about 8,200 lines in 25 files, one per pass, and a 1.5 MB WebAssembly module that is that source compiled by
+  itself.</p>
+  <p>A port that is about the same as the original never has a moment when it is done, so I made a rule that
+  gave it one: the port's output must be identical to the original's. That covers every error message and its
+  position, every inferred type, every proof obligation with its lemma and clause counts, the counterexamples, the
+  intermediate code after each pass, the certificates' statistics, and every byte of the WebAssembly. Each pass
+  got a dump in a canonical text form, the same in both compilers, and was compared on a corpus before the next
+  pass was written. The corpus was every Lumen 2 program in the repository (the port's own source among them),
+  200 generated programs, 600 programs broken on purpose, which must fail with the same message at the same
+  place, and the 270 programs the test suite compiles.</p>
+
+  <h3>Copying the accidents</h3>
+  <p>Byte-identical output means reproducing the original's accidents, not just its algorithms. The SAT solver
+  ranks variables by activities that JavaScript stores as floating-point numbers, and every decision it makes
+  follows a comparison between two of them. Lumen 2 has no floating point, so the port computes IEEE 754 doubles
+  exactly with integers: a mantissa and an exponent, rounded to nearest with ties to even, as the hardware does.
+  A test compares it with the engine's doubles on thousands of random additions and multiplications. JavaScript's
+  maps iterate in insertion order, and the order of drops, of captured variables and of the per-type functions in
+  the module all follow from that, so the port keeps ordered lists wherever the original had a map. Positions
+  differ too: JavaScript counts UTF-16 units and Lumen 2 counts bytes, so the compiler reports byte offsets
+  and the host turns them into characters.</p>
+  <p>The comparison found a bug in the original. A refined <code>let</code> inside a lambda crashed it, because
+  the refinement's bound variable looked like a variable the lambda captured. Both compilers were fixed the same
+  way, and a regression test was added. Compiling the port also hit the stack limit of chapter 20 again: the
+  JavaScript compiler's lowering ran out of stack on the port's table of runtime routines, until each routine
+  became a function of its own.</p>
+
+  <h3>Making it fast enough</h3>
+  <p>The first complete port proved obligations five to thirty times more slowly than the original. V8 profiles
+  WebAssembly by function name, and the compiler's modules carry their names, so the profile pointed at the
+  causes. Inner loops of the SAT solver and the proof checker were local functions that captured the whole
+  solver state, so every clause visit allocated a closure. The exact double multiplication went through general
+  bignum division, where splitting the mantissas into 26-bit halves keeps every product within 64 bits. Clauses
+  lived in an array of arrays, so reading one meant taking it out and putting it back. They now share one flat
+  array of literals. The proof checker removed duplicate literals with a quadratic scan, which one pass over a
+  mark per variable replaces. These changes left the output unchanged and brought <code>examples/refine.lm</code>
+  from 5.1 to 1.9 seconds, against 1.1 for the JavaScript compiler.</p>
+  <p>The tests needed one more thing. The JavaScript compiler had kept proved queries in memory for the life of the
+  process, so the thousand generated programs in the test suite rarely proved the same fact twice. The port runs
+  as a fresh instance for each program, so it asks its host instead. Before proving a query it prints it, marked
+  with byte 1, and reads the answer with <code>read_line</code>; after proving one it prints the result. The host
+  answers from its own table. Proofs are deterministic, so the table changes only the time taken, and a program
+  checks in about 0.1 seconds once the queries it shares with earlier programs are known. The first version of the
+  host treated every output chunk that began with byte 1 as a message. One 4,096-byte chunk of a compiled module
+  began with byte 1, and the engine rejected the module, which is how the bug surfaced.</p>
+
+  <h3>The fixed point, for real</h3>
+  <p>The JavaScript compiler built the first <code>lumen2c.wasm</code> from the port's source. That module
+  compiled the same source to the same 1,513,271 bytes, and compiling it once more gave the same bytes again.
+  After that the JavaScript compiler was deleted: 3,152 lines, with 510 more moved to the superoptimizer, which
+  still uses its own copy of the SAT solver, the peephole pass and the module encoder. Every change to the
+  compiler since has been built by the previous build, and CI checks on every push that the committed build is
+  the fixed point of its source. Here it is in this tab:</p>
+
+  <div class="demo">
+    <div class="demo-head"><span class="live">Live</span><span class="title">The compiler compiles itself</span></div>
+    <p class="hint">Fetches <code>lumen2c.wasm</code> and the compiler's source, compiles the source with it, and compares the result with the module that did the compiling. It takes about 20 seconds in Node, and usually a little longer in a browser tab.</p>
+    <div class="controls"><button class="run" id="boot3-run" type="button">Compile the compiler</button></div>
+    <div class="table-wrap">
+      <table class="t" id="boot3-steps">
+        <tbody>
+          <tr data-step="load"><td>The compiler, <code>lumen2c.wasm</code></td><td class="verdict-cell">–</td></tr>
+          <tr data-step="build"><td>What it writes when it compiles its own source</td><td class="verdict-cell">–</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="verdict" id="boot3-verdict" hidden></div>
+  </div>
+
+  <p>What stays in JavaScript is deliberate. The reference interpreter, with its own front end, is the second
+  implementation that compiled code is compared with, and it is useful only because it shares nothing with the
+  compiler. The host that runs modules is a page of glue. <code>src/rup.js</code> checks the compiler's proofs
+  again from outside. Everything that decides what a program means, what it may do and what code it becomes is
+  now written in Lumen 2.</p>
+</section>
+
 <div class="part">
   <p class="part-n">Part six · <a href="#top">contents</a></p>
   <p class="part-title">Mistakes and limits</p>
@@ -2345,7 +2431,7 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
 </div>
 
 <section class="chapter" id="caught">
-  <p class="chapter-label">21 · Part six</p>
+  <p class="chapter-label">22 · Part six</p>
   <h2>What the checks caught, including my mistakes</h2>
   <ul class="plain">
     <li><b>A real bug in the reference interpreter.</b> A random program grew a string eightfold per step.
@@ -2392,7 +2478,11 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
     Replaying 200 property cases as one compiled program found it.</li>
     <li><b>A compiler that could not compile a long function.</b> The reference compiler's lowering recurses once
     per binding, and it overflowed its stack on the self-hosted compiler's table of runtime routines
-    (chapter 20).</li>
+    (chapter 20), and later on the port's (chapter 21).</li>
+    <li><b>A crash in the original found by the port.</b> A refined <code>let</code> inside a lambda crashed the
+    JavaScript compiler, which took the refinement's bound variable for a captured one (chapter 21).</li>
+    <li><b>A host that ate part of a module.</b> The compiler's host first treated any output chunk that began
+    with byte 1 as a message from the compiler, and one chunk of a compiled module did (chapter 21).</li>
     <li><b>Missing tail calls.</b> <code>a || f(x)</code> at the end of a function did not compile to a tail
     call, in either compiler, so checking that a million-element array was sorted overflowed the stack. The
     heapsort showcase found it.</li>
@@ -2435,6 +2525,7 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
     <li><span class="when">a superoptimizer, again</span>Rewrite rules for Lumen 2's wasm, generalized over symbolic constants and proved; 19 rules, a 1.2% smaller solver, no measurable speedup.</li>
     <li><span class="when">self-hosting, again</span>A Lumen 2 compiler in Lumen 2 that reaches a fixed point, and agrees with the interpreter on 1,000 generated programs.</li>
     <li><span class="when">a showcase</span>A heapsort that is pure, in place and proved unable to fail; a proved binary search; plugins whose safety is a type; and the checker improvements they needed.</li>
+    <li><span class="when">the last port</span>“Retire javascript compiler.” Every pass ported to Lumen 2 and compared with the original byte for byte, the compiler built by itself, and the JavaScript compiler deleted.</li>
   </ol>
   <p class="aside">The conversation outgrew my working memory and had to be summarized partway through, more than
   once, and the machine I ran on restarted once during a five-minute check. What made it safe to pick up the
@@ -2443,7 +2534,7 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
 </section>
 
 <section class="chapter" id="limits">
-  <p class="chapter-label">22 · Part six</p>
+  <p class="chapter-label">23 · Part six</p>
   <h2>What this shows, and what it doesn't</h2>
   <p>It shows one long session of sustained engineering in which each layer was checked by the one below it. The
   work is a compiler, an independent re-implementation of it, a prover with a proof checker, an optimizer gated by
@@ -2475,11 +2566,12 @@ node superopt/verify.js                     <span class="c"># re-prove the 40 ru
 node bench/gate.js                          <span class="c"># the whole gate, about 7 minutes</span>
 node proofs/prove-schur.js 4 44             <span class="c"># prove S(4) = 44, about 6 minutes</span>
 
-cd lumen2 &amp;&amp; npm test &amp;&amp; cd ..              <span class="c"># Lumen 2: 48 tests</span>
+cd lumen2 &amp;&amp; npm test &amp;&amp; cd ..              <span class="c"># Lumen 2: 50 tests</span>
 node lumen2/test/fuzz.js 1000               <span class="c"># Lumen 2: differential fuzzing, four ways</span>
 node lumen2/test/fuzz.js --mutants          <span class="c"># all 24 planted bugs must be caught</span>
 node lumen2/superopt/verify.js              <span class="c"># re-prove the 19 rewrite rules</span>
-node lumen2/selfhost/bootstrap.js           <span class="c"># Lumen 2's self-hosting fixed point</span>
+node lumen2/compiler/bootstrap.js           <span class="c"># Lumen 2's compiler, built by itself, compiles itself to itself</span>
+node lumen2/selfhost/bootstrap.js           <span class="c"># the first self-hosted Lumen 2 compiler's fixed point</span>
 node lumen2/proofs/prove-schur.js 4 44 --out s4   <span class="c"># S(4) = 44 in Lumen 2, about 5 minutes; s4/ gets the proof</span>
 node lumen2/proofs/compare-lumen.js 4 44    <span class="c"># the same proof as Lumen's, byte for byte</span>
 node lumen2/proofs/check-drup.js s4/schur-4-45.cnf s4/schur-4-45.drup   <span class="c"># check it again, with the checker proved not to crash</span></pre>

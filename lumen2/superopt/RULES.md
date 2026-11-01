@@ -8,7 +8,7 @@ examples, the Schur proof's two programs and 60 generated programs):
 Every rule was found by enumeration and proved for **all** values of its
 inputs, its locals and its symbolic constants `K` (subject to the side
 conditions shown, which the compiler checks before rewriting), by the SAT
-solver in `src/sat.js`. Each refutation was checked by the independent
+solver in `superopt/sat.js`. Each refutation was checked by the independent
 proof checker in `src/rup.js`. `node superopt/verify.js` re-proves them
 all; with `--emit DIR` it writes each formula and proof in the DIMACS and
 DRUP formats that external checkers read.
