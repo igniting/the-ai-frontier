@@ -1,0 +1,963 @@
+// ========================================================= code generation
+// Reference-counted IR -> WebAssembly (codegen.js): the same runtime, value
+// representation and per-type functions as the reference, made in the same
+// order, so the modules are byte for byte the same.
+//
+// Values: Int is an i64; Bool, () and constructors without fields are i32
+// immediates (below 1024); everything else is an i32 pointer to a heap object
+// with a reference count at offset 0 and a tag at 4, fields in 8-byte slots
+// from 8. Strings hold their length at 4 and bytes from 8; arrays their
+// length at 4, capacity at 8 and elements from 16; closures the table index
+// of their code at 4, of the function releasing their captures at 8, and the
+// captures from 16.
+
+fn k_overflow() { 1 }
+fn k_divzero() { 2 }
+fn k_bounds() { 3 }
+fn k_oom() { 4 }
+fn k_strlong() { 5 }
+fn k_uaf() { 6 }
+fn k_imm() { 1024 }
+fn k_free_lists() { 64 }
+fn k_scratch() { 256 }
+fn k_data() { 1024 }
+fn k_max_len() { 16777215 }
+fn k_max_pages() { 16384 }
+
+// The module under construction: functions (newest first), names of the
+// per-type functions made, static data, string and closure addresses, the
+// function table (newest first), its index and size.
+type CG { CG(List<WFn>, Map<Bool>, Array<Int>, Map<Int>, Map<Int>, List<String>, Map<Int>, Int) }
+// What code generation reads: adts, user Ord impls by type key, the mutant, paranoid, no inlining.
+type GX { GX(OMap<AdtInfo>, List<(String, String)>, String, Bool, Bool) }
+fn gx_adts(gx) { match gx { GX(a, _, _, _, _) -> a } }
+fn gx_mutant(gx) { match gx { GX(_, _, m, _, _) -> m } }
+fn gx_paranoid(gx) { match gx { GX(_, _, _, p, _) -> p } }
+fn gx_noinline(gx) { match gx { GX(_, _, _, _, n) -> n } }
+fn gx_heap(gx, t) { is_heap(gx_adts(gx), t) }
+
+fn cg_made(cg, n) { match cg { CG(_, made, _, _, _, _, _, _) -> m_has(made, n) } }
+fn cg_mark(cg, n) { match cg { CG(f, made, d, s, c, t, ti, tn) -> CG(f, m_set(made, n, true), d, s, c, t, ti, tn) } }
+fn cg_add(cg, f) { match cg { CG(fs, made, d, s, c, t, ti, tn) -> CG([f, ..fs], made, d, s, c, t, ti, tn) } }
+fn cg_data_len(cg) { match cg { CG(_, _, d, _, _, _, _, _) -> array_length(d) } }
+fn cg_push(cg, b) { match cg { CG(f, made, d, s, c, t, ti, tn) -> CG(f, made, array_push(d, b), s, c, t, ti, tn) } }
+fn cg_push_i32(cg, v) {
+  let u = ((v % 4294967296) + 4294967296) % 4294967296;
+  cg_push(cg_push(cg_push(cg_push(cg, u % 256), (u / 256) % 256), (u / 65536) % 256), (u / 16777216) % 256)
+}
+fn cg_pad(cg) { if cg_data_len(cg) % 8 != 0 { cg_pad(cg_push(cg, 0)) } else { cg } }
+fn cg_string(cg, s) {
+  match cg { CG(_, _, _, strs, _, _, _, _) -> match m_get(strs, s) {
+    Some(a) -> (a, cg),
+    None -> {
+      let cg = cg_pad(cg);
+      let addr = k_data() + cg_data_len(cg);
+      let cg = match cg { CG(f, made, d, st, c, t, ti, tn) -> CG(f, made, d, m_set(st, s, addr), c, t, ti, tn) };
+      let cg = cg_push_i32(cg_push_i32(cg, 0 - 1), string_length(s));
+      let cg = fold(range(0, string_length(s)), cg, |cg, i| cg_push(cg, char_code_at(s, i)));
+      (addr, cg_pad(cg))
+    },
+  } }
+}
+fn cg_slot(cg, n) {
+  match cg { CG(f, made, d, s, c, t, ti, tn) -> match m_get(ti, n) {
+    Some(i) -> (i, cg),
+    None -> (tn, CG(f, made, d, s, c, [n, ..t], m_set(ti, n, tn), tn + 1)),
+  } }
+}
+fn cg_closure(cg, n) {
+  match cg { CG(_, _, _, _, clos, _, _, _) -> match m_get(clos, n) {
+    Some(a) -> (a, cg),
+    None -> {
+      let cg = cg_pad(cg);
+      let addr = k_data() + cg_data_len(cg);
+      let cg = match cg { CG(f, made, d, s, c, t, ti, tn) -> CG(f, made, d, s, m_set(c, n, addr), t, ti, tn) };
+      let (slot, cg) = cg_slot(cg, n);
+      (addr, cg_push_i32(cg_push_i32(cg_push_i32(cg_push_i32(cg, 0 - 1), slot), 0), 0))
+    },
+  } }
+}
+fn mkfn(cg, name, params, results, locals, body) { cg_add(cg, WFn(name, params, results, locals, code_flat(body))) }
+
+fn wfail(code) { CL([wi32(code), wcall("rt_fail"), wop("unreachable")]) }
+fn wtrap(code) { CL([wif(), wfail(code), wend()]) }
+fn wload(t, off) { wmem(if valtype(t) == "i64" { "i64.load" } else { "i32.load" }, off) }
+fn wstore(t, off) { wmem(if valtype(t) == "i64" { "i64.store" } else { "i32.store" }, off) }
+fn wchk(gx) { if gx_paranoid(gx) { wcall("rt_chk") } else { wnone() } }
+fn wlen(gx, p) { CL([wget(p), wchk(gx), wmem("i32.load", 4)]) }
+fn wslot(a, i) { CL([wget(a), wget(i), wi32(3), wop("i32.shl"), wop("i32.add")]) }
+fn whead(c) { CL([wget(c), wi32(2), wop("i32.shl")]) }
+fn is_int_ty(t) { match t { TC("Int", _) -> true, _ -> false } }
+fn variants_of(gx, t) {
+  match t {
+    TC(n, args) -> match om_get(gx_adts(gx), n) {
+      Some(d) -> { let sub = zip(adt_params(d), args); map(adt_ctors(d), |c| (ctor_idx(c), map(ctor_fields(c), |f| subst_params(f, sub)))) },
+      None -> internal("codegen: variants of " ++ tkey(t)),
+    },
+    _ -> internal("codegen: variants of " ++ tkey(t)),
+  }
+}
+fn with_fields(vs) { filter(vs, |v| match v { (_, fs) -> !is_empty(fs) }) }
+
+// ---------------------------------------------------------------- runtime
+fn i32p(n) { (n, "i32") }
+fn i64p(n) { (n, "i64") }
+fn bin_i64(cg, name, body) { mkfn(cg, name, [i64p("a"), i64p("b")], ["i64"], [i64p("r")], body) }
+
+fn runtime(gx, cg) {
+  let cg = rt_rt_fail(gx, cg);
+  let cg = rt_rt_class(gx, cg);
+  let cg = rt_rt_alloc(gx, cg);
+  let cg = rt_rt_free(gx, cg);
+  let cg = rt_rt_dup(gx, cg);
+  let cg = rt_rt_release(gx, cg);
+  let cg = rt_rt_chk(gx, cg);
+  let cg = rt_rt_tag(gx, cg);
+  let cg = rt_int_add(gx, cg);
+  let cg = rt_int_sub(gx, cg);
+  let cg = rt_int_mul(gx, cg);
+  let cg = rt_int_div(gx, cg);
+  let cg = rt_int_rem(gx, cg);
+  let cg = rt_int_neg(gx, cg);
+  let cg = rt_str_new(gx, cg);
+  let cg = rt_str_concat(gx, cg);
+  let cg = rt_str_concat_list(gx, cg);
+  let cg = rt_str_cmp(gx, cg);
+  let cg = rt_int_to_string(gx, cg);
+  let cg = rt_str_length(gx, cg);
+  let cg = rt_str_sub(gx, cg);
+  let cg = rt_str_code_at(gx, cg);
+  let cg = rt_str_from_code(gx, cg);
+  let (newline, cg) = cg_string(cg, "\n");
+  let cg = rt_str_print(gx, cg);
+  let cg = rt_str_println(gx, cg, newline);
+  let cg = rt_str_read_input(gx, cg);
+  let cg = rt_str_read_line(gx, cg);
+  let cg = rt_str_panic(gx, cg);
+  let cg = rt_arr_new(gx, cg);
+  rt_arr_length(gx, cg)
+}
+
+fn rt_rt_fail(gx, cg) {
+  let paranoid = gx_paranoid(gx);
+  let mutant = gx_mutant(gx);
+  let chk = wchk(gx);
+  mkfn(cg, "rt_fail", [i32p("code")], [], [], CL([wget("code"), wcall("host_fail"), wop("unreachable")]))
+}
+  // Size class of an allocation: log2 of the block size, at least 16 bytes.
+fn rt_rt_class(gx, cg) {
+  let paranoid = gx_paranoid(gx);
+  let mutant = gx_mutant(gx);
+  let chk = wchk(gx);
+  mkfn(cg, "rt_class", [i32p("size")], ["i32"], [], CL([
+    wget("size"), wi32(16), wop("i32.le_u"), wif_r("i32"), wi32(4),
+    wop("else"), wi32(32), wget("size"), wi32(1), wop("i32.sub"), wop("i32.clz"), wop("i32.sub"), wend(),
+  ]))
+}
+fn rt_rt_alloc(gx, cg) {
+  let paranoid = gx_paranoid(gx);
+  let mutant = gx_mutant(gx);
+  let chk = wchk(gx);
+  mkfn(cg, "rt_alloc", [i32p("size")], ["i32"], [i32p("c"), i32p("p"), i32p("top")], CL([
+    wget("size"), wcall("rt_class"), wset("c"),
+    wblock("have"),
+    if paranoid { wnone() } else { CL([
+      whead("c"), wmem("i32.load", k_free_lists()), wtee("p"), wif(),
+      whead("c"), wget("p"), wmem("i32.load", 8), wmem("i32.store", k_free_lists()), wbr("have"), wend(),
+    ]) },
+    wgget("hp"), wset("p"),
+    wgget("hp"), wi32(1), wget("c"), wop("i32.shl"), wop("i32.add"), wgset("hp"),
+    wop("memory.size"), wi32(16), wop("i32.shl"), wset("top"),
+    wgget("hp"), wget("top"), wop("i32.gt_u"), wif(),
+    wgget("hp"), wget("top"), wop("i32.sub"), wi32(65535), wop("i32.add"), wi32(16), wop("i32.shr_u"),
+    wop("memory.grow"), wi32(0 - 1), wop("i32.eq"), wif(), wfail(k_oom()), wend(), wend(),
+    wend(),
+    wget("p"), wi32(1), wmem("i32.store", 0),
+    wgget("live"), wi32(1), wop("i32.add"), wgset("live"),
+    wgget("allocs"), wi32(1), wop("i32.add"), wgset("allocs"),
+    wget("p"),
+  ]))
+}
+fn rt_rt_free(gx, cg) {
+  let paranoid = gx_paranoid(gx);
+  let mutant = gx_mutant(gx);
+  let chk = wchk(gx);
+  mkfn(cg, "rt_free", [i32p("p"), i32p("size")], [], [i32p("c")], CL([
+    wget("p"), wi32(0), wmem("i32.store", 0),
+    wgget("live"), wi32(1), wop("i32.sub"), wgset("live"),
+    if paranoid { wnone() } else { CL([
+      wget("size"), wcall("rt_class"), wset("c"),
+      wget("p"), whead("c"), wmem("i32.load", k_free_lists()), wmem("i32.store", 8),
+      whead("c"), wget("p"), wmem("i32.store", k_free_lists()),
+    ]) },
+  ]))
+}
+  // dup: one more reference. Immediates and static objects are not counted.
+fn rt_rt_dup(gx, cg) {
+  let paranoid = gx_paranoid(gx);
+  let mutant = gx_mutant(gx);
+  let chk = wchk(gx);
+  mkfn(cg, "rt_dup", [i32p("p")], ["i32"], [i32p("rc")], CL([
+    wget("p"), wi32(k_imm()), wop("i32.ge_u"), wif(),
+    wget("p"), wmem("i32.load", 0), wtee("rc"), wi32(0), wop("i32.gt_s"), wif(),
+    wget("p"), wget("rc"), wi32(1), wop("i32.add"), wmem("i32.store", 0),
+    wop("else"), wget("rc"), wop("i32.eqz"), wif(), wfail(k_uaf()), wend(), wend(),
+    wend(), wget("p"),
+  ]))
+}
+  // One reference fewer; 1 when that was the last one and the object must be freed.
+fn rt_rt_release(gx, cg) {
+  let paranoid = gx_paranoid(gx);
+  let mutant = gx_mutant(gx);
+  let chk = wchk(gx);
+  mkfn(cg, "rt_release", [i32p("p")], ["i32"], [i32p("rc")], CL([
+    wget("p"), wi32(k_imm()), wop("i32.lt_u"), wif(), wi32(0), wop("return"), wend(),
+    wget("p"), wmem("i32.load", 0), wtee("rc"), wi32(1), wop("i32.gt_s"), wif(),
+    wget("p"), wget("rc"), wi32(1), wop("i32.sub"), wmem("i32.store", 0), wi32(0), wop("return"), wend(),
+    wget("rc"), wi32(1), wop("i32.eq"), wif(), wi32(1), wop("return"), wend(),
+    wget("rc"), wop("i32.eqz"), wif(), wfail(k_uaf()), wend(),
+    wi32(0),
+  ]))
+}
+  // Paranoid mode: every read through a pointer checks that the object is live.
+fn rt_rt_chk(gx, cg) {
+  let paranoid = gx_paranoid(gx);
+  let mutant = gx_mutant(gx);
+  let chk = wchk(gx);
+  mkfn(cg, "rt_chk", [i32p("p")], ["i32"], [], CL([
+    wget("p"), wi32(k_imm()), wop("i32.ge_u"), wif(), wget("p"), wmem("i32.load", 0), wop("i32.eqz"), wif(), wfail(k_uaf()), wend(), wend(), wget("p"),
+  ]))
+}
+fn rt_rt_tag(gx, cg) {
+  let paranoid = gx_paranoid(gx);
+  let mutant = gx_mutant(gx);
+  let chk = wchk(gx);
+  mkfn(cg, "rt_tag", [i32p("p")], ["i32"], [], CL([
+    wget("p"), wi32(k_imm()), wop("i32.lt_u"), wif_r("i32"), wget("p"), wop("else"), wget("p"), chk, wmem("i32.load", 4), wend(),
+  ]))
+}
+  // Checked 64-bit arithmetic.
+fn rt_int_add(gx, cg) {
+  let paranoid = gx_paranoid(gx);
+  let mutant = gx_mutant(gx);
+  let chk = wchk(gx);
+  bin_i64(cg, "int_add", CL([
+    wget("a"), wget("b"), wop("i64.add"), wset("r"),
+    if mutant == "add-no-overflow" { wnone() } else { CL([wget("a"), wget("r"), wop("i64.xor"), wget("b"), wget("r"), wop("i64.xor"), wop("i64.and"), wi64(0), wop("i64.lt_s"), wif(), wfail(k_overflow()), wend()]) },
+    wget("r"),
+  ]))
+}
+fn rt_int_sub(gx, cg) {
+  let paranoid = gx_paranoid(gx);
+  let mutant = gx_mutant(gx);
+  let chk = wchk(gx);
+  bin_i64(cg, "int_sub", CL([
+    wget("a"), wget("b"), wop("i64.sub"), wset("r"),
+    wget("a"), wget("b"), wop("i64.xor"), wget("a"), wget("r"), wop("i64.xor"), wop("i64.and"), wi64(0), wop("i64.lt_s"), wif(), wfail(k_overflow()), wend(),
+    wget("r"),
+  ]))
+}
+fn rt_int_mul(gx, cg) {
+  let paranoid = gx_paranoid(gx);
+  let mutant = gx_mutant(gx);
+  let chk = wchk(gx);
+  bin_i64(cg, "int_mul", CL([
+    wget("a"), wop("i64.eqz"), wget("b"), wop("i64.eqz"), wop("i32.or"), wif(), wi64(0), wop("return"), wend(),
+    wget("a"), wi64(0 - 1), wop("i64.eq"), wget("b"), wi64(int_min()), wop("i64.eq"), wop("i32.and"),
+    wget("b"), wi64(0 - 1), wop("i64.eq"), wget("a"), wi64(int_min()), wop("i64.eq"), wop("i32.and"), wop("i32.or"), wif(), wfail(k_overflow()), wend(),
+    wget("a"), wget("b"), wop("i64.mul"), wtee("r"), wget("b"), wop("i64.div_s"), wget("a"), wop("i64.ne"), wif(), wfail(k_overflow()), wend(),
+    wget("r"),
+  ]))
+}
+fn rt_int_div(gx, cg) {
+  let paranoid = gx_paranoid(gx);
+  let mutant = gx_mutant(gx);
+  let chk = wchk(gx);
+  bin_i64(cg, "int_div", CL([
+    wget("b"), wop("i64.eqz"), wif(), wfail(k_divzero()), wend(),
+    wget("a"), wi64(int_min()), wop("i64.eq"), wget("b"), wi64(0 - 1), wop("i64.eq"), wop("i32.and"), wif(), wfail(k_overflow()), wend(),
+    wget("a"), wget("b"), wop("i64.div_s"),
+  ]))
+}
+fn rt_int_rem(gx, cg) {
+  let paranoid = gx_paranoid(gx);
+  let mutant = gx_mutant(gx);
+  let chk = wchk(gx);
+  bin_i64(cg, "int_rem", CL([
+    wget("b"), wop("i64.eqz"), wif(), wfail(k_divzero()), wend(),
+    wget("a"), wget("b"), wop("i64.rem_s"),
+  ]))
+}
+fn rt_int_neg(gx, cg) {
+  let paranoid = gx_paranoid(gx);
+  let mutant = gx_mutant(gx);
+  let chk = wchk(gx);
+  mkfn(cg, "int_neg", [i64p("a")], ["i64"], [], CL([
+    wget("a"), wi64(int_min()), wop("i64.eq"), wif(), wfail(k_overflow()), wend(), wi64(0), wget("a"), wop("i64.sub"),
+  ]))
+}
+  // Strings.
+fn rt_str_new(gx, cg) {
+  let paranoid = gx_paranoid(gx);
+  let mutant = gx_mutant(gx);
+  let chk = wchk(gx);
+  mkfn(cg, "str_new", [i32p("n")], ["i32"], [i32p("p")], CL([
+    wget("n"), wi32(k_max_len()), wop("i32.gt_u"), wif(), wfail(k_strlong()), wend(),
+    wget("n"), wi32(8), wop("i32.add"), wcall("rt_alloc"), wtee("p"), wget("n"), wmem("i32.store", 4), wget("p"),
+  ]))
+}
+fn rt_str_concat(gx, cg) {
+  let paranoid = gx_paranoid(gx);
+  let mutant = gx_mutant(gx);
+  let chk = wchk(gx);
+  mkfn(cg, "str_concat", [i32p("a"), i32p("b")], ["i32"], [i32p("la"), i32p("lb"), i32p("p")], CL([
+    wlen(gx, "a"), wset("la"), wlen(gx, "b"), wset("lb"),
+    wget("la"), wget("lb"), wop("i32.add"), wcall("str_new"), wset("p"),
+    wget("p"), wi32(8), wop("i32.add"), wget("a"), wi32(8), wop("i32.add"), wget("la"), wop("memory.copy"),
+    wget("p"), wi32(8), wop("i32.add"), wget("la"), wop("i32.add"), wget("b"), wi32(8), wop("i32.add"), wget("lb"), wop("memory.copy"),
+    wget("p"),
+  ]))
+}
+  // Joins a List<String> (Cons cells: head at 8, tail at 16; Nil is the immediate 0).
+fn rt_str_concat_list(gx, cg) {
+  let paranoid = gx_paranoid(gx);
+  let mutant = gx_mutant(gx);
+  let chk = wchk(gx);
+  mkfn(cg, "str_concat_list", [i32p("xs")], ["i32"], [i32p("c"), i64p("n"), i32p("p"), i32p("at"), i32p("s")], CL([
+    wget("xs"), wset("c"),
+    wblock("sized"), wloop("size"),
+    wget("c"), wi32(k_imm()), wop("i32.lt_u"), wbr_if("sized"),
+    wget("n"), wget("c"), chk, wmem("i32.load", 8), wmem("i32.load", 4), wop("i64.extend_i32_u"), wop("i64.add"), wset("n"),
+    wget("c"), wmem("i32.load", 16), wset("c"), wbr("size"), wend(), wend(),
+    wget("n"), wi64(k_max_len()), wop("i64.gt_u"), wif(), wfail(k_strlong()), wend(),
+    wget("n"), wop("i32.wrap_i64"), wcall("str_new"), wtee("p"), wi32(8), wop("i32.add"), wset("at"),
+    wget("xs"), wset("c"),
+    wblock("done"), wloop("copy"),
+    wget("c"), wi32(k_imm()), wop("i32.lt_u"), wbr_if("done"),
+    wget("c"), wmem("i32.load", 8), wset("s"),
+    wget("at"), wget("s"), wi32(8), wop("i32.add"), wget("s"), wmem("i32.load", 4), wop("memory.copy"),
+    wget("at"), wget("s"), wmem("i32.load", 4), wop("i32.add"), wset("at"),
+    wget("c"), wmem("i32.load", 16), wset("c"), wbr("copy"), wend(), wend(),
+    wget("p"),
+  ]))
+}
+fn rt_str_cmp(gx, cg) {
+  let paranoid = gx_paranoid(gx);
+  let mutant = gx_mutant(gx);
+  let chk = wchk(gx);
+  mkfn(cg, "str_cmp", [i32p("a"), i32p("b")], ["i32"], [i32p("la"), i32p("lb"), i32p("n"), i32p("i"), i32p("ca"), i32p("cb")], CL([
+    wlen(gx, "a"), wset("la"), wlen(gx, "b"), wset("lb"),
+    wget("la"), wget("lb"), wget("la"), wget("lb"), wop("i32.lt_u"), wop("select"), wset("n"),
+    wblock("done"), wloop("next"),
+    wget("i"), wget("n"), wop("i32.ge_u"), wbr_if("done"),
+    wget("a"), wget("i"), wop("i32.add"), wmem("i32.load8_u", 8), wset("ca"),
+    wget("b"), wget("i"), wop("i32.add"), wmem("i32.load8_u", 8), wset("cb"),
+    wget("ca"), wget("cb"), wop("i32.ne"), wif(), wi32(0 - 1), wi32(1), wget("ca"), wget("cb"), wop("i32.lt_u"), wop("select"), wop("return"), wend(),
+    wget("i"), wi32(1), wop("i32.add"), wset("i"), wbr("next"),
+    wend(), wend(),
+    wget("la"), wget("lb"), wop("i32.gt_u"), wget("la"), wget("lb"), wop("i32.lt_u"), wop("i32.sub"),
+  ]))
+}
+fn rt_int_to_string(gx, cg) {
+  let paranoid = gx_paranoid(gx);
+  let mutant = gx_mutant(gx);
+  let chk = wchk(gx);
+  mkfn(cg, "int_to_string", [i64p("n")], ["i32"], [i32p("neg"), i32p("i"), i32p("p")], CL([
+    wi32(k_scratch() + 32), wset("i"),
+    wget("n"), wi64(0), wop("i64.lt_s"), wset("neg"),
+    wget("neg"), wop("i32.eqz"), wif(), wi64(0), wget("n"), wop("i64.sub"), wset("n"), wend(),
+    // n <= 0 from here on, so the most negative Int needs no special case.
+    wloop("digit"),
+    wget("i"), wi32(1), wop("i32.sub"), wset("i"),
+    wget("i"), wi64(0), wget("n"), wi64(10), wop("i64.rem_s"), wop("i64.sub"), wop("i32.wrap_i64"), wi32(48), wop("i32.add"), wmem("i32.store8", 0),
+    wget("n"), wi64(10), wop("i64.div_s"), wtee("n"), wop("i64.eqz"), wop("i32.eqz"), wbr_if("digit"),
+    wend(),
+    wget("neg"), wif(), wget("i"), wi32(1), wop("i32.sub"), wtee("i"), wi32(45), wmem("i32.store8", 0), wend(),
+    wi32(k_scratch() + 32), wget("i"), wop("i32.sub"), wcall("str_new"), wset("p"),
+    wget("p"), wi32(8), wop("i32.add"), wget("i"), wi32(k_scratch() + 32), wget("i"), wop("i32.sub"), wop("memory.copy"),
+    wget("p"),
+  ]))
+}
+fn rt_str_length(gx, cg) {
+  let paranoid = gx_paranoid(gx);
+  let mutant = gx_mutant(gx);
+  let chk = wchk(gx);
+  mkfn(cg, "str_length", [i32p("s")], ["i64"], [], CL([wlen(gx, "s"), wop("i64.extend_i32_u")]))
+}
+fn rt_str_sub(gx, cg) {
+  let paranoid = gx_paranoid(gx);
+  let mutant = gx_mutant(gx);
+  let chk = wchk(gx);
+  mkfn(cg, "str_sub", [i32p("s"), i64p("a"), i64p("b")], ["i32"], [i64p("n"), i32p("p")], CL([
+    wlen(gx, "s"), wop("i64.extend_i32_u"), wset("n"),
+    wget("a"), wi64(0), wop("i64.lt_s"), wif(), wi64(0), wset("a"), wend(),
+    wget("a"), wget("n"), wop("i64.gt_s"), wif(), wget("n"), wset("a"), wend(),
+    wget("b"), wget("a"), wop("i64.lt_s"), wif(), wget("a"), wset("b"), wend(),
+    wget("b"), wget("n"), wop("i64.gt_s"), wif(), wget("n"), if mutant == "substring-end" { CL([wi64(1), wop("i64.sub")]) } else { wnone() }, wset("b"), wend(),
+    wget("b"), wget("a"), wop("i64.sub"), wop("i32.wrap_i64"), wcall("str_new"), wset("p"),
+    wget("p"), wi32(8), wop("i32.add"), wget("s"), wi32(8), wop("i32.add"), wget("a"), wop("i32.wrap_i64"), wop("i32.add"),
+    wget("b"), wget("a"), wop("i64.sub"), wop("i32.wrap_i64"), wop("memory.copy"),
+    wget("p"),
+  ]))
+}
+fn rt_str_code_at(gx, cg) {
+  let paranoid = gx_paranoid(gx);
+  let mutant = gx_mutant(gx);
+  let chk = wchk(gx);
+  mkfn(cg, "str_code_at", [i32p("s"), i64p("i")], ["i64"], [], CL([
+    wget("i"), wlen(gx, "s"), wop("i64.extend_i32_u"), wop("i64.ge_u"), wif(), wfail(k_bounds()), wend(),
+    wget("s"), wget("i"), wop("i32.wrap_i64"), wop("i32.add"), wmem("i32.load8_u", 8), wop("i64.extend_i32_u"),
+  ]))
+}
+fn rt_str_from_code(gx, cg) {
+  let paranoid = gx_paranoid(gx);
+  let mutant = gx_mutant(gx);
+  let chk = wchk(gx);
+  mkfn(cg, "str_from_code", [i64p("c")], ["i32"], [i32p("p")], CL([
+    wi32(1), wcall("str_new"), wtee("p"), wget("c"), wop("i32.wrap_i64"), wmem("i32.store8", 8), wget("p"),
+  ]))
+}
+fn rt_str_print(gx, cg) {
+  let paranoid = gx_paranoid(gx);
+  let mutant = gx_mutant(gx);
+  let chk = wchk(gx);
+  mkfn(cg, "str_print", [i32p("s")], [], [], CL([wget("s"), wi32(8), wop("i32.add"), wlen(gx, "s"), wcall("host_write")]))
+}
+fn rt_str_println(gx, cg, newline) {
+  let paranoid = gx_paranoid(gx);
+  let mutant = gx_mutant(gx);
+  let chk = wchk(gx);
+  mkfn(cg, "str_println", [i32p("s")], [], [], CL([wget("s"), wcall("str_print"), wi32(newline + 8), wi32(1), wcall("host_write")]))
+}
+fn rt_str_read_input(gx, cg) {
+  let paranoid = gx_paranoid(gx);
+  let mutant = gx_mutant(gx);
+  let chk = wchk(gx);
+  mkfn(cg, "str_read_input", [], ["i32"], [i32p("p")], CL([
+    wcall("host_input_len"), wcall("str_new"), wtee("p"), wi32(8), wop("i32.add"), wcall("host_input_read"), wget("p"),
+  ]))
+}
+fn rt_str_read_line(gx, cg) {
+  let paranoid = gx_paranoid(gx);
+  let mutant = gx_mutant(gx);
+  let chk = wchk(gx);
+  mkfn(cg, "str_read_line", [], ["i32"], [i32p("p")], CL([
+    wcall("host_line_len"), wcall("str_new"), wtee("p"), wi32(8), wop("i32.add"), wcall("host_line_read"), wget("p"),
+  ]))
+}
+fn rt_str_panic(gx, cg) {
+  let paranoid = gx_paranoid(gx);
+  let mutant = gx_mutant(gx);
+  let chk = wchk(gx);
+  mkfn(cg, "str_panic", [i32p("s")], [], [], CL([wget("s"), wi32(8), wop("i32.add"), wlen(gx, "s"), wcall("host_panic"), wop("unreachable")]))
+}
+  // Arrays. Each element type gets its own copy of the array builtins.
+fn rt_arr_new(gx, cg) {
+  let paranoid = gx_paranoid(gx);
+  let mutant = gx_mutant(gx);
+  let chk = wchk(gx);
+  mkfn(cg, "arr_new", [i32p("n"), i32p("cap")], ["i32"], [i32p("p")], CL([
+    wget("cap"), wi32(3), wop("i32.shl"), wi32(16), wop("i32.add"), wcall("rt_alloc"), wtee("p"), wget("n"), wmem("i32.store", 4),
+    wget("p"), wget("cap"), wmem("i32.store", 8), wget("p"),
+  ]))
+}
+fn rt_arr_length(gx, cg) {
+  let chk = wchk(gx);
+  mkfn(cg, "arr_length", [i32p("a")], ["i64"], [], CL([wlen(gx, "a"), wop("i64.extend_i32_u")]))
+}
+
+// ------------------------------------------------------ per-type functions
+// drop:T releases one reference to a heap value of type T; the last heap
+// field is released by a tail call, so dropping a long list takes constant stack.
+fn drop_fn(gx, cg, t) {
+  let name = match t { TF(_, _, _) -> "drop:fun", _ -> "drop:" ++ tkey(t) };
+  if cg_made(cg, name) { (name, cg) } else {
+    let cg = cg_mark(cg, name);
+    let release = CL([wget("p"), wcall("rt_release"), wop("i32.eqz"), wif(), wop("return"), wend()]);
+    // Loads the fields, frees the object, then releases the heap fields: (code, locals, cg).
+    let fields = |cg, tys, base, size, prefix| {
+      let vs = map(enumerate(tys), |ift| match ift { (i, ft) -> (prefix ++ int_to_string(i), ft, i) });
+      let locals = map(vs, |v| match v { (n, ft, _) -> (n, valtype(ft)) });
+      let hf = filter(vs, |v| match v { (_, ft, _) -> gx_heap(gx, ft) });
+      let hf = if gx_mutant(gx) == "drop-skip-last-field" { take(hf, length(hf) - 1) } else { hf };
+      let loads = CL(map(hf, |v| match v { (n, ft, i) -> CL([wget("p"), wload(ft, base + 8 * i), wset(n)]) }));
+      let nh = length(hf);
+      let (rels, cg) = fold(enumerate(hf), ([], cg), |acc, jv| match (acc, jv) {
+        ((out, cg), (j, (n, ft, _))) -> {
+          let (d, cg) = drop_fn(gx, cg, ft);
+          ([CL([wget(n), if j == nh - 1 { C1(OCall("return_call", d)) } else { wcall(d) }]), ..out], cg)
+        },
+      });
+      (CL([loads, wget("p"), wi32(size), wcall("rt_free"), CL(reverse(rels))]), locals, cg)
+    };
+    let (body, locals, cg) = match t {
+      TF(_, _, _) -> (CL([release, wget("p"), wget("p"), wmem("i32.load", 8), C1(OCallInd("call_indirect", ["i32"], []))]), [], cg),
+      TT(es) -> { let (fc, ls, cg) = fields(cg, es, 8, 8 + 8 * length(es), "f"); (CL([release, fc]), ls, cg) },
+      TC("String", _) -> (CL([release, wget("p"), wget("p"), wmem("i32.load", 4), wi32(8), wop("i32.add"), wcall("rt_free")]), [], cg),
+      TC("Array", [et]) -> {
+        let (loop, cg) = if gx_heap(gx, et) {
+          let (d, cg) = drop_fn(gx, cg, et);
+          (CL([
+            wget("p"), wmem("i32.load", 4), wset("n"),
+            wblock("done"), wloop("next"), wget("i"), wget("n"), wop("i32.ge_u"), wbr_if("done"),
+            wslot("p", "i"), wload(et, 16), wcall(d), wget("i"), wi32(1), wop("i32.add"), wset("i"), wbr("next"), wend(), wend(),
+          ]), cg)
+        } else { (wnone(), cg) };
+        (CL([release, loop, wget("p"), wget("p"), wmem("i32.load", 8), wi32(3), wop("i32.shl"), wi32(16), wop("i32.add"), wcall("rt_free")]), [i32p("i"), i32p("n")], cg)
+      },
+      _ -> {
+        let (arms, ls, cg) = fold(with_fields(variants_of(gx, t)), ([], [], cg), |acc, v| match (acc, v) {
+          ((arms, ls, cg), (idx, fs)) -> {
+            let (fc, l2, cg) = fields(cg, fs, 8, 8 + 8 * length(fs), "f" ++ int_to_string(idx) ++ "_");
+            ([CL([wget("tag"), wi32(idx), wop("i32.eq"), wif(), fc, wop("return"), wend()]), ..arms], append(ls, l2), cg)
+          },
+        });
+        (CL([release, wget("p"), wmem("i32.load", 4), wset("tag"), CL(reverse(arms))]), [i32p("tag"), ..ls], cg)
+      },
+    };
+    (name, mkfn(cg, name, [i32p("p")], [], locals, body))
+  }
+}
+
+// reuse:T releases one reference; when it was the last, it releases the
+// fields and returns the cell for a new constructor instead of freeing it.
+fn reuse_fn(gx, cg, t) {
+  let name = "reuse:" ++ tkey(t);
+  if cg_made(cg, name) { (name, cg) } else {
+    let cg = cg_mark(cg, name);
+    let release_fields = |cg, tys| {
+      let (out, cg) = fold(enumerate(tys), ([], cg), |acc, ift| match (acc, ift) {
+        ((out, cg), (i, ft)) -> if gx_heap(gx, ft) { let (d, cg) = drop_fn(gx, cg, ft); ([CL([wget("p"), wload(ft, 8 + 8 * i), wcall(d)]), ..out], cg) } else { (out, cg) },
+      });
+      (CL(reverse(out)), cg)
+    };
+    let (body, cg) = match t {
+      TT(es) -> release_fields(cg, es),
+      _ -> {
+        let (out, cg) = fold(with_fields(variants_of(gx, t)), ([], cg), |acc, v| match (acc, v) {
+          ((out, cg), (idx, fs)) -> { let (rf, cg) = release_fields(cg, fs); ([CL([wget("p"), wmem("i32.load", 4), wi32(idx), wop("i32.eq"), wif(), rf, wend()]), ..out], cg) },
+        });
+        (CL(reverse(out)), cg)
+      },
+    };
+    let shared = if gx_mutant(gx) == "reuse-shared" { CL([wget("p"), wi32(k_imm()), wop("i32.ge_u"), wif(), wget("p"), wop("return"), wend()]) } else { wnone() };
+    (name, mkfn(cg, name, [i32p("p")], ["i32"], [], CL([wget("p"), wcall("rt_release"), wop("i32.eqz"), wif(), shared, wi32(0), wop("return"), wend(), body, wget("p")])))
+  }
+}
+
+// cmp:T compares two values of type T structurally: -1, 0 or 1. The last
+// field is compared by a tail call, so comparing long lists takes constant stack.
+fn cmp_fn(gx, cg, t) {
+  let name = "cmp:" ++ tkey(t);
+  if cg_made(cg, name) { (name, cg) } else {
+    let cg = cg_mark(cg, name);
+    let vt = valtype(t);
+    let fields = |cg, tys| {
+      let n = length(tys);
+      let (out, cg) = fold(enumerate(tys), ([], cg), |acc, ift| match (acc, ift) {
+        ((out, cg), (i, ft)) -> {
+          let operands = CL([wget("a"), wload(ft, 8 + 8 * i), wget("b"), wload(ft, 8 + 8 * i)]);
+          let (c, cg) = cmp_fn(gx, cg, ft);
+          if i == n - 1 { ([CL([operands, C1(OCall("return_call", c))]), ..out], cg) }
+          else { ([CL([operands, wcall(c), wtee("c"), wif(), wget("c"), wop("return"), wend()]), ..out], cg) }
+        },
+      });
+      (CL(reverse(out)), cg)
+    };
+    let user = if gx_mutant(gx) == "ord-ignore-impl" { None } else { match gx { GX(_, ords, _, _, _) -> match find(ords, |o| match o { (k, _) -> k == tkey(t) }) { Some((_, u)) -> Some(u), None -> None } } };
+    let (body, locals, cg) = match user {
+      Some(u) -> {
+        // The program's own compare takes ownership of its arguments; these are borrowed.
+        let own = |x| if gx_heap(gx, t) { CL([wget(x), wcall("rt_dup")]) } else { wget(x) };
+        (CL([own("a"), own("b"), wcall(u), wtee("r"), wi64(0), wop("i64.gt_s"), wget("r"), wi64(0), wop("i64.lt_s"), wop("i32.sub")]), [i32p("c"), i64p("r")], cg)
+      },
+      None -> match t {
+        TC("Int", _) -> (CL([wget("a"), wget("b"), wop("i64.gt_s"), wget("a"), wget("b"), wop("i64.lt_s"), wop("i32.sub")]), [i32p("c")], cg),
+        TT(es) -> { let (fc, cg) = fields(cg, es); (CL([fc, wi32(0)]), [i32p("c")], cg) },
+        TC("String", _) -> (CL([wget("a"), wget("b"), wcall("str_cmp")]), [i32p("c")], cg),
+        TC("Array", [et]) -> {
+          let (c, cg) = cmp_fn(gx, cg, et);
+          (CL([
+            wget("a"), wmem("i32.load", 4), wget("b"), wmem("i32.load", 4), wop("i32.ne"), wif(),
+            wi32(0 - 1), wi32(1), wget("a"), wmem("i32.load", 4), wget("b"), wmem("i32.load", 4), wop("i32.lt_u"), wop("select"), wop("return"), wend(),
+            wget("a"), wmem("i32.load", 4), wset("n"),
+            wblock("done"), wloop("next"), wget("i"), wget("n"), wop("i32.ge_u"), wbr_if("done"),
+            wslot("a", "i"), wload(et, 16), wslot("b", "i"), wload(et, 16), wcall(c), wtee("c"), wif(), wget("c"), wop("return"), wend(),
+            wget("i"), wi32(1), wop("i32.add"), wset("i"), wbr("next"), wend(), wend(),
+            wi32(0),
+          ]), [i32p("c"), i32p("i"), i32p("n")], cg)
+        },
+        TC(_, _) -> if !gx_heap(gx, t) { (CL([wget("a"), wget("b"), wop("i32.gt_u"), wget("a"), wget("b"), wop("i32.lt_u"), wop("i32.sub")]), [i32p("c")], cg) } else {
+          let (arms, cg) = fold(with_fields(variants_of(gx, t)), ([], cg), |acc, v| match (acc, v) {
+            ((out, cg), (idx, fs)) -> { let (fc, cg) = fields(cg, fs); ([CL([wget("ta"), wi32(idx), wop("i32.eq"), wif(), fc, wend()]), ..out], cg) },
+          });
+          (CL([
+            wget("a"), wcall("rt_tag"), wset("ta"), wget("b"), wcall("rt_tag"), wset("tb"),
+            if gx_mutant(gx) == "cmp-ignore-tag" { wnone() } else { CL([wget("ta"), wget("tb"), wop("i32.ne"), wif(), wi32(0 - 1), wi32(1), wget("ta"), wget("tb"), wop("i32.lt_u"), wop("select"), wop("return"), wend()]) },
+            CL(reverse(arms)),
+            wi32(0),
+          ]), [i32p("c"), i32p("ta"), i32p("tb")], cg)
+        },
+        _ -> internal("codegen: comparison of " ++ tkey(t)),
+      },
+    };
+    (name, mkfn(cg, name, [("a", vt), ("b", vt)], ["i32"], locals, body))
+  }
+}
+
+// array_<op>:T: the array builtins for element type T. Returns the name prefix's key.
+fn array_fns(gx, cg, et) {
+  let k = tkey(et);
+  let name = |o| "array_" ++ o ++ ":" ++ k;
+  if cg_made(cg, name("get")) { (k, cg) } else {
+    let cg = cg_mark(cg, name("get"));
+    let vt = valtype(et);
+    let heap = gx_heap(gx, et);
+    let at = TC("Array", [et]);
+    let dup_all = |p, n| if heap { CL([
+      wi32(0), wset("j"), wblock("dd"), wloop("dl"), wget("j"), wget(n), wop("i32.ge_u"), wbr_if("dd"),
+      wslot(p, "j"), wload(et, 16), wcall("rt_dup"), wop("drop"), wget("j"), wi32(1), wop("i32.add"), wset("j"), wbr("dl"), wend(), wend(),
+    ]) } else { wnone() };
+    let (drop_x, cg) = if heap { let (d, cg) = drop_fn(gx, cg, et); (CL([wget("x"), wcall(d)]), cg) } else { (wnone(), cg) };
+    let cg = mkfn(cg, name("make"), [i64p("n"), ("x", vt)], ["i32"], [i32p("p"), i32p("i"), i32p("len")], CL([
+      wget("n"), wi64(0), wop("i64.lt_s"), wif(), wfail(k_bounds()), wend(),
+      wget("n"), wi64(k_max_len()), wop("i64.gt_s"), wif(), wfail(k_oom()), wend(),
+      wget("n"), wop("i32.wrap_i64"), wtee("len"), wget("len"), wcall("arr_new"), wset("p"),
+      wblock("done"), wloop("next"), wget("i"), wget("len"), wop("i32.ge_u"), wbr_if("done"),
+      wslot("p", "i"), wget("x"), if heap { wcall("rt_dup") } else { wnone() }, wstore(et, 16),
+      wget("i"), wi32(1), wop("i32.add"), wset("i"), wbr("next"), wend(), wend(),
+      drop_x,
+      wget("p"),
+    ]));
+    let bounds = CL([wget("i"), wlen(gx, "a"), wop("i64.extend_i32_u"), wop("i64.ge_u"), wif(), wfail(k_bounds()), wend(), wget("i"), wop("i32.wrap_i64"), wset("ix")]);
+    let cg = mkfn(cg, name("get"), [i32p("a"), i64p("i")], [vt], [i32p("ix")], CL([
+      bounds, wslot("a", "ix"), wload(et, 16), if heap { wcall("rt_dup") } else { wnone() },
+    ]));
+    let (de, cg) = if heap { let (d, cg) = drop_fn(gx, cg, et); (Some(d), cg) } else { (None, cg) };
+    let (da, cg) = drop_fn(gx, cg, at);
+    let cg = mkfn(cg, name("set"), [i32p("a"), i64p("i"), ("x", vt)], ["i32"], [i32p("ix"), i32p("b"), i32p("n"), i32p("j")], CL([
+      bounds,
+      wget("a"), wmem("i32.load", 0), wi32(1), wop(if gx_mutant(gx) == "array-set-shared" { "i32.ge_s" } else { "i32.eq" }), wif(),
+      // Unique: update in place.
+      if heap { CL([wslot("a", "ix"), wload(et, 16), wset("b")]) } else { wnone() },
+      wslot("a", "ix"), wget("x"), wstore(et, 16),
+      match de { Some(d) -> CL([wget("b"), wcall(d)]), None -> wnone() },
+      wget("a"), wop("return"), wend(),
+      // Shared: copy, then update the copy.
+      wlen(gx, "a"), wset("n"), wget("n"), wget("n"), wcall("arr_new"), wset("b"),
+      wget("b"), wi32(16), wop("i32.add"), wget("a"), wi32(16), wop("i32.add"), wget("n"), wi32(3), wop("i32.shl"), wop("memory.copy"),
+      dup_all("b", "n"),
+      match de { Some(d) -> CL([wslot("b", "ix"), wload(et, 16), wcall(d)]), None -> wnone() },
+      wslot("b", "ix"), wget("x"), wstore(et, 16),
+      wget("a"), wcall(da),
+      wget("b"),
+    ]));
+    let cg = mkfn(cg, name("push"), [i32p("a"), ("x", vt)], ["i32"], [i32p("n"), i32p("cap"), i32p("b"), i32p("j"), i32p("uniq")], CL([
+      wlen(gx, "a"), wset("n"), wget("a"), wmem("i32.load", 8), wset("cap"),
+      wget("n"), wi32(k_max_len()), wop("i32.ge_u"), wif(), wfail(k_oom()), wend(),
+      wget("a"), wmem("i32.load", 0), wi32(1), wop("i32.eq"), wset("uniq"),
+      wget("uniq"), wget("n"), wget("cap"), wop("i32.lt_u"), wop("i32.and"), wif(),
+      wslot("a", "n"), wget("x"), wstore(et, 16), wget("a"), wget("n"), wi32(1), wop("i32.add"), wmem("i32.store", 4), wget("a"), wop("return"), wend(),
+      // Grow geometrically into a new array.
+      wget("n"), wi32(1), wop("i32.add"),
+      wi32(4), wget("n"), wi32(1), wop("i32.shl"), wget("n"), wi32(4), wop("i32.lt_u"), wop("select"), wset("cap"),
+      wget("cap"), wi32(k_max_len()), wop("i32.gt_u"), wif(), wi32(k_max_len()), wset("cap"), wend(),
+      wget("cap"), wcall("arr_new"), wset("b"),
+      wget("b"), wi32(16), wop("i32.add"), wget("a"), wi32(16), wop("i32.add"), wget("n"), wi32(3), wop("i32.shl"), wop("memory.copy"),
+      wget("uniq"), wif(),
+      // The elements moved: free the old block without releasing them.
+      wget("a"), wget("a"), wmem("i32.load", 8), wi32(3), wop("i32.shl"), wi32(16), wop("i32.add"), wcall("rt_free"),
+      wop("else"), dup_all("b", "n"), wget("a"), wcall(da), wend(),
+      wslot("b", "n"), wget("x"), wstore(et, 16),
+      wget("b"),
+    ]));
+    (k, cg)
+  }
+}
+fn array_name(o, k) { "array_" ++ o ++ ":" ++ k }
+
+// Releases a closure's captures and frees it.
+fn drop_env_fn(gx, cg, code, tys) {
+  let name = "dropenv:" ++ code;
+  if cg_made(cg, name) { (name, cg) } else {
+    let cg = cg_mark(cg, name);
+    let locals = map(enumerate(tys), |it| match it { (i, t) -> ("c" ++ int_to_string(i), valtype(t)) });
+    let heap_caps = filter(enumerate(tys), |it| match it { (_, t) -> gx_heap(gx, t) });
+    let loads = CL(map(heap_caps, |it| match it { (i, t) -> CL([wget("p"), wload(t, 16 + 8 * i), wset("c" ++ int_to_string(i))]) }));
+    let (rels, cg) = fold(heap_caps, ([], cg), |acc, it| match (acc, it) { ((out, cg), (i, t)) -> { let (d, cg) = drop_fn(gx, cg, t); ([CL([wget("c" ++ int_to_string(i)), wcall(d)]), ..out], cg) } });
+    (name, mkfn(cg, name, [i32p("p")], [], locals, CL([loads, wget("p"), wi32(16 + 8 * length(tys)), wcall("rt_free"), CL(reverse(rels))])))
+  }
+}
+
+// ----------------------------------------------------------- IR functions
+fn sig_of(t) { match t { TF(ps, r, _) -> (["i32", ..map(ps, valtype)], [valtype(r)]), _ -> internal("codegen: closure call of a non-function") } }
+fn cmp_op(o) { if o == "eq" { "eq" } else if o == "ne" { "ne" } else if o == "lt" { "lt_s" } else if o == "le" { "le_s" } else if o == "gt" { "gt_s" } else { "ge_s" } }
+fn prim_fn(o) { if o == "add" { Some("int_add") } else if o == "sub" { Some("int_sub") } else if o == "mul" { Some("int_mul") } else if o == "div" { Some("int_div") } else if o == "rem" { Some("int_rem") } else { None } }
+
+// The state while a function is generated: the module, the next block label.
+fn gen_fn(gx, cg, f) {
+  match f { IRFn(fname, _, params, ret, body, vars, _, _, _) -> {
+    let vm = var_map(vars);
+    let vty = |v| vm_ty(vm, v);
+    let pnames = map(params, |p| match p { (v, _) -> v });
+    let locals = append(flat_map(vars, |vt| match vt { (v, t) -> if contains_str(pnames, v) { [] } else { [(v, valtype(t))] } }), [i32p("$p"), i64p("$r")]);
+    let mutant = gx_mutant(gx);
+    let chk = wchk(gx);
+    let atom = |cg, a| match a {
+      QVar(v) -> (wget(v), cg),
+      QInt(n) -> (wi64(n), cg),
+      QBool(b) -> (wi32(if b { 1 } else { 0 }), cg),
+      QUnit -> (wi32(0), cg),
+      QStr(s) -> { let (addr, cg) = cg_string(cg, s); (wi32(addr), cg) },
+    };
+    let atoms = |cg, xs| { let (out, cg) = fold(xs, ([], cg), |acc, a| match acc { (out, cg) -> { let (c, cg) = atom(cg, a); ([c, ..out], cg) } }); (CL(reverse(out)), cg) };
+    // The value at a path of field indices inside x.
+    let walk = |cg, x, path, ty| {
+      let (xa, cg) = atom(cg, x);
+      let n = length(path);
+      (CL([xa, CL(map(enumerate(path), |ji| match ji { (j, i) -> CL([chk, if j == n - 1 { wload(ty, 8 + 8 * i) } else { wmem("i32.load", 8 + 8 * i) }]) }))]), cg)
+    };
+    // A new object, written into the reuse token's cell when there is one.
+    let new_object = |size, tag, slots, reuse| CL([
+      match reuse {
+        Some(r) -> CL([wget(r), wif_r("i32"), wget(r), wop("else"), wi32(size), wcall("rt_alloc"), wend(), wset("$p"), wget("$p"), wi32(1), wmem("i32.store", 0)]),
+        None -> CL([wi32(size), wcall("rt_alloc"), wset("$p")]),
+      },
+      wget("$p"), wi32(tag), wmem("i32.store", 4),
+      CL(map(slots, |s| match s { (code, ty, off) -> CL([wget("$p"), code, wstore(ty, off)]) })),
+      wget("$p"),
+    ]);
+    let konst = |a| match a { QInt(n) -> Some(n), _ -> None };
+    let at_code = |a| match a { QVar(v) -> wget(v), QInt(n) -> wi64(n), QBool(b) -> wi32(if b { 1 } else { 0 }), QUnit -> wi32(0), QStr(_) -> internal("codegen: string operand") };
+    // Checked arithmetic, inline. Operands are atoms, so they can be read twice.
+    let arith = |o, a, b| {
+      let ca = konst(a);
+      let cb = konst(b);
+      if o == "add" || o == "sub" {
+        let w = if o == "add" { "i64.add" } else { "i64.sub" };
+        match cb {
+          Some(k) -> if o == "sub" && k == int_min() { None } else {
+            // x + c overflows exactly when x passes a bound that depends on c.
+            let c = if o == "add" { k } else { 0 - k };
+            if c == 0 { Some(at_code(a)) }
+            else {
+              let test = if c > 0 { CL([at_code(a), wi64(int_max() - c), wop("i64.gt_s")]) } else { CL([at_code(a), wi64(int_min() - c), wop("i64.lt_s")]) };
+              if mutant == "add-no-overflow" && o == "add" { Some(CL([at_code(a), wi64(k), wop(w)])) }
+              else { Some(CL([test, wtrap(k_overflow()), at_code(a), wi64(k), wop(w)])) }
+            }
+          },
+          None -> {
+            // Signs: for a + b, overflow when a and b agree and the result does not;
+            // for a - b, when a and b differ and the result differs from a.
+            let sign = if o == "add" { CL([at_code(a), wget("$r"), wop("i64.xor"), at_code(b), wget("$r"), wop("i64.xor"), wop("i64.and")]) }
+              else { CL([at_code(a), at_code(b), wop("i64.xor"), at_code(a), wget("$r"), wop("i64.xor"), wop("i64.and")]) };
+            if mutant == "add-no-overflow" && o == "add" { Some(CL([at_code(a), at_code(b), wop(w)])) }
+            else { Some(CL([at_code(a), at_code(b), wop(w), wset("$r"), sign, wi64(0), wop("i64.lt_s"), wtrap(k_overflow()), wget("$r")])) }
+          },
+        }
+      } else if o == "mul" {
+        let xc = match cb { Some(k) -> Some((a, k)), None -> match ca { Some(k) -> Some((b, k)), None -> None } };
+        match xc {
+          None -> None,
+          Some((x, c)) -> if c == 0 { Some(wi64(0)) } else if c == 1 { Some(at_code(x)) } else if c == 0 - 1 { None } else {
+            // x * c fits exactly when x lies between MIN / c and MAX / c (rounded inwards).
+            let lo = if c > 0 { int_min() / c } else { int_max() / c };
+            let hi = if c > 0 { int_max() / c } else { int_min() / c };
+            let hi = if mutant == "mul-const-bound" { hi + 1 } else { hi };
+            Some(CL([at_code(x), wi64(lo), wop("i64.lt_s"), at_code(x), wi64(hi), wop("i64.gt_s"), wop("i32.or"), wtrap(k_overflow()), at_code(x), wi64(c), wop("i64.mul")]))
+          },
+        }
+      } else if o == "div" || o == "rem" {
+        // A constant divisor other than 0 and -1 cannot fail.
+        match cb { Some(k) -> if k == 0 || k == 0 - 1 { None } else { Some(CL([at_code(a), wi64(k), wop(if o == "div" { "i64.div_s" } else { "i64.rem_s" })])) }, None -> None }
+      } else { None }
+    };
+    let elem_of = |t| match t { TC("Array", [e]) -> e, _ -> internal("codegen: element type") };
+    let builtin = |cg, name, args, ty, ats| {
+      let (ac, cg) = atoms(cg, args);
+      if name == "print" { (CL([ac, wcall("str_print"), wi32(0)]), cg) }
+      else if name == "println" { (CL([ac, wcall("str_println"), wi32(0)]), cg) }
+      else if name == "read_input" { (wcall("str_read_input"), cg) }
+      else if name == "read_line" { (wcall("str_read_line"), cg) }
+      else if name == "clock_ms" { (wcall("host_clock"), cg) }
+      else if name == "random_int" { (CL([ac, wcall("host_random")]), cg) }
+      else if name == "int_to_string" { (CL([ac, wcall("int_to_string")]), cg) }
+      else if name == "concat_strings" { (CL([ac, wcall("str_concat_list")]), cg) }
+      else if name == "string_length" { (CL([ac, wcall("str_length")]), cg) }
+      else if name == "substring" { (CL([ac, wcall("str_sub")]), cg) }
+      else if name == "char_code_at" { (CL([ac, wcall("str_code_at")]), cg) }
+      else if name == "char_from_code" { (CL([ac, wcall("str_from_code")]), cg) }
+      else if name == "concat" { (CL([ac, wcall("str_concat")]), cg) }
+      else if name == "panic" { (CL([ac, wcall("str_panic"), wop("unreachable")]), cg) }
+      else if name == "array_make" { let (k, cg) = array_fns(gx, cg, list_get(ats, 1)); (CL([ac, wcall(array_name("make", k))]), cg) }
+      else if name == "array_empty" { (CL([wi32(0), wi32(0), wcall("arr_new")]), cg) }
+      else if name == "array_get" {
+        if gx_noinline(gx) { let (k, cg) = array_fns(gx, cg, elem_of(list_get(ats, 0))); (CL([ac, wcall(array_name("get", k))]), cg) }
+        else {
+          // A bounds check and a load.
+          let a = list_get(args, 0);
+          let i = list_get(args, 1);
+          let et = elem_of(list_get(ats, 0));
+          let idx = match konst(i) { Some(n) -> wi32(n), None -> CL([at_code(i), wop("i32.wrap_i64")]) };
+          (CL([
+            at_code(i), at_code(a), chk, wmem("i32.load", 4), wop("i64.extend_i32_u"), wop("i64.ge_u"), wtrap(k_bounds()),
+            at_code(a), idx, wi32(3), wop("i32.shl"), wop("i32.add"), wload(et, 16), if gx_heap(gx, et) { wcall("rt_dup") } else { wnone() },
+          ]), cg)
+        }
+      }
+      else if name == "array_set" { let (k, cg) = array_fns(gx, cg, elem_of(list_get(ats, 0))); (CL([ac, wcall(array_name("set", k))]), cg) }
+      else if name == "array_push" { let (k, cg) = array_fns(gx, cg, elem_of(list_get(ats, 0))); (CL([ac, wcall(array_name("push", k))]), cg) }
+      else if name == "array_length" {
+        if gx_noinline(gx) { (CL([ac, wcall("arr_length")]), cg) } else { (CL([at_code(list_get(args, 0)), chk, wmem("i32.load", 4), wop("i64.extend_i32_u")]), cg) }
+      }
+      else { internal("codegen: builtin " ++ name) }
+    };
+    let rhs = |cg, r| match r {
+      RAtom(a) -> atom(cg, a),
+      RPrim(o, args, ty) -> {
+        let inl = match prim_fn(o) { Some(_) -> if !gx_noinline(gx) { arith(o, list_get(args, 0), list_get(args, 1)) } else { None }, None -> None };
+        match inl {
+          Some(c) -> (c, cg),
+          None -> match prim_fn(o) {
+            Some(pf) -> { let (ac, cg) = atoms(cg, args); (CL([ac, wcall(pf)]), cg) },
+            None -> if o == "neg" { let (c, cg) = atom(cg, list_get(args, 0)); (CL([c, wcall("int_neg")]), cg) }
+              else if o == "not" { let (c, cg) = atom(cg, list_get(args, 0)); (CL([c, wop("i32.eqz")]), cg) }
+              else {
+                let w = match ty { Some(t) -> if is_int_ty(t) { "i64" } else { "i32" }, None -> "i32" };
+                let (ac, cg) = atoms(cg, args);
+                (CL([ac, wop(w ++ "." ++ cmp_op(o))]), cg)
+              },
+          },
+        }
+      },
+      RCmp(o, ty, args) -> {
+        let (ac, cg) = atoms(cg, args);
+        let (c, cg) = cmp_fn(gx, cg, ty);
+        if o == "three" { (CL([ac, wcall(c), wop("i64.extend_i32_s")]), cg) } else { (CL([ac, wcall(c), wi32(0), wop("i32." ++ cmp_op(o))]), cg) }
+      },
+      RCall(g, args) -> { let (ac, cg) = atoms(cg, args); (CL([ac, wcall(g)]), cg) },
+      RCallc(fa, args) -> {
+        let (fc, cg) = atom(cg, fa);
+        let (ac, cg) = atoms(cg, args);
+        let (fc2, cg) = atom(cg, fa);
+        let (ps, rs) = sig_of(match fa { QVar(v) -> vty(v), _ -> internal("codegen: callee") });
+        (CL([fc, ac, fc2, wmem("i32.load", 4), C1(OCallInd("call_indirect", ps, rs))]), cg)
+      },
+      RCtor(ty, tag, args, reuse) -> if is_empty(args) {
+        if tag >= k_imm() { internal("codegen: too many constructors") } else { (wi32(tag), cg) }
+      } else {
+        let fts = match find(variants_of(gx, ty), |v| match v { (i, _) -> i == tag }) { Some((_, fs)) -> fs, None -> internal("codegen: constructor") };
+        let (slots, cg) = fold(enumerate(args), ([], cg), |acc, ia| match (acc, ia) { ((out, cg), (i, a)) -> { let (c, cg) = atom(cg, a); ([(c, list_get(fts, i), 8 + 8 * i), ..out], cg) } });
+        (new_object(8 + 8 * length(args), tag, reverse(slots), reuse), cg)
+      },
+      RTuple(ty, args, reuse) -> {
+        let es = match ty { TT(es) -> es, _ -> internal("codegen: tuple type") };
+        let (slots, cg) = fold(enumerate(args), ([], cg), |acc, ia| match (acc, ia) { ((out, cg), (i, a)) -> { let (c, cg) = atom(cg, a); ([(c, list_get(es, i), 8 + 8 * i), ..out], cg) } });
+        (new_object(8 + 8 * length(args), 0, reverse(slots), reuse), cg)
+      },
+      RClosure(code, _, caps, ctys) -> {
+        let (de, cg) = drop_env_fn(gx, cg, code, ctys);
+        let (ds, cg) = cg_slot(cg, de);
+        let (slots, cg) = fold(enumerate(caps), ([], cg), |acc, ia| match (acc, ia) { ((out, cg), (i, a)) -> { let (c, cg) = atom(cg, a); ([(c, list_get(ctys, i), 16 + 8 * i), ..out], cg) } });
+        let (cs, cg) = cg_slot(cg, code);
+        (new_object(16 + 8 * length(caps), cs, [(wi32(ds), t_unit(), 8), ..reverse(slots)], None), cg)
+      },
+      RStaticfn(code, _) -> { let (addr, cg) = cg_closure(cg, code); (wi32(addr), cg) },
+      RField(x, p, ty, _) -> { let (w, cg) = walk(cg, x, p, ty); (CL([w, if gx_heap(gx, ty) { wcall("rt_dup") } else { wnone() }]), cg) },
+      RPeek(x, p, ty, _) -> walk(cg, x, p, ty),
+      REnvfield(i, ty) -> (CL([wget("env"), chk, wload(ty, 16 + 8 * i), if gx_heap(gx, ty) && mutant != "capture-no-dup" { wcall("rt_dup") } else { wnone() }]), cg),
+      RTestTag(x, p, _, ty, tag) -> { let (w, cg) = walk(cg, x, p, ty); (CL([w, if gx_heap(gx, ty) { wcall("rt_tag") } else { wnone() }, wi32(tag), wop("i32.eq")]), cg) },
+      RTestLit(x, p, _, ty, lit) -> {
+        let (w, cg) = walk(cg, x, p, ty);
+        match lit {
+          QInt(n) -> (CL([w, wi64(n), wop("i64.eq")]), cg),
+          QBool(b) -> (CL([w, wi32(if b { 1 } else { 0 }), wop("i32.eq")]), cg),
+          QStr(s) -> { let (addr, cg) = cg_string(cg, s); (CL([w, wi32(addr), wcall("str_cmp"), wop("i32.eqz")]), cg) },
+          _ -> internal("codegen: literal pattern"),
+        }
+      },
+      RBuiltinCall(name, args, ty, ats) -> builtin(cg, name, args, ty, ats),
+      RExpr(_) -> internal("codegen: nested expression"),
+    };
+    // label None: the expression's value is the function's result. The state:
+    // (code so far, newest first; the module; the next label number).
+    fn expr(st, e, label) {
+      match st { (out, cg, nl) -> match e {
+        ILet(v, RExpr(x), b) -> {
+          let l = "L" ++ int_to_string(nl);
+          let st = expr(([C1(OBlock("block", Some(l), Some(valtype(vty(v))))), ..out], cg, nl + 1), x, Some(l));
+          match st { (out, cg, nl) -> expr(([wset(v), wend(), ..out], cg, nl), b, label) }
+        },
+        ILet(v, r, b) -> { let (c, cg) = rhs(cg, r); expr(([wset(v), c, ..out], cg, nl), b, label) },
+        IRet(r) -> match (label, r) {
+          (None, RCall(g, args)) -> { let (ac, cg) = atoms(cg, args); ([C1(OCall("return_call", g)), ac, ..out], cg, nl) },
+          (None, RCallc(fa, args)) -> {
+            let (fc, cg) = atom(cg, fa);
+            let (ac, cg) = atoms(cg, args);
+            let (fc2, cg) = atom(cg, fa);
+            let (ps, rs) = sig_of(match fa { QVar(v) -> vty(v), _ -> internal("codegen: callee") });
+            ([C1(OCallInd("return_call_indirect", ps, rs)), wmem("i32.load", 4), fc2, ac, fc, ..out], cg, nl)
+          },
+          _ -> { let (c, cg) = rhs(cg, r); ([match label { None -> wop("return"), Some(l) -> wbr(l) }, c, ..out], cg, nl) },
+        },
+        IIf(c, t, el) -> {
+          let (cc, cg) = atom(cg, c);
+          let st = expr(([wif(), cc, ..out], cg, nl), t, label);
+          let st = match st { (out, cg, nl) -> expr(([wop("else"), ..out], cg, nl), el, label) };
+          match st { (out, cg, nl) -> ([wop("unreachable"), wend(), ..out], cg, nl) }
+        },
+        IDup(v, b) -> expr(([wop("drop"), wcall("rt_dup"), wget(v), ..out], cg, nl), b, label),
+        IDrop(v, b) -> { let (d, cg) = drop_fn(gx, cg, vty(v)); expr(([wcall(d), wget(v), ..out], cg, nl), b, label) },
+        IDropReuse(v, r, b) -> { let (d, cg) = reuse_fn(gx, cg, vty(v)); expr(([wset(r), wcall(d), wget(v), ..out], cg, nl), b, label) },
+        IFreeToken(v, size, b) -> expr(([wend(), wcall("rt_free"), wi32(size), wget(v), wif(), wget(v), ..out], cg, nl), b, label),
+        IUnpack(v, xs, r, fields, b) -> {
+          // Unique: the extracted fields move out, the others are released, and
+          // the cell is kept for reuse (or freed). Shared: dup what was extracted.
+          let taken = map(xs, |x| match x { (_, i) -> i });
+          let out = [wif(), wop(if mutant == "unpack-always-unique" { "i32.ge_s" } else { "i32.eq" }), wi32(1), wmem("i32.load", 0), wget(v), ..out];
+          let (out, cg) = fold(enumerate(fields), (out, cg), |acc, jf| match (acc, jf) {
+            ((out, cg), (j, ft)) -> if gx_heap(gx, ft) && !any(taken, |i| i == j) { let (d, cg) = drop_fn(gx, cg, ft); ([wcall(d), wload(ft, 8 + 8 * j), wget(v), ..out], cg) } else { (out, cg) },
+          });
+          let out = match r { Some(tok) -> [wset(tok), wget(v), ..out], None -> [wcall("rt_free"), wi32(8 + 8 * length(fields)), wget(v), ..out] };
+          let out = [wop("else"), ..out];
+          let out = fold(xs, out, |out, x| match x { (n, _) -> [wop("drop"), wcall("rt_dup"), wget(n), ..out] });
+          let (d, cg) = drop_fn(gx, cg, vty(v));
+          let out = [wcall(d), wget(v), ..out];
+          let out = match r { Some(tok) -> [wset(tok), wi32(0), ..out], None -> out };
+          expr(([wend(), ..out], cg, nl), b, label)
+        },
+        IUnreachable -> ([wop("unreachable"), ..out], cg, nl),
+      } }
+    }
+    match expr(([], cg, 0), body, None) {
+      (out, cg, _) -> mkfn(cg, fname, map(params, |p| match p { (v, t) -> (v, valtype(t)) }), [valtype(ret)], locals, CL(reverse(out))),
+    }
+  } }
+}
+
+// The whole back end: the IR (after reference counting) -> the module's bytes
+// and the superoptimizer's rewrite counts (rule id -> uses, in order of first use).
+fn codegen(adts, prog, mutant, paranoid, noinline, superopt, rules) {
+  match prog { IRProg(fns, main, ords) -> {
+    let gx = GX(adts, ords, mutant, paranoid, noinline);
+    let cg = runtime(gx, CG([], MEmpty, array_empty(), MEmpty, MEmpty, [], MEmpty, 0));
+    let cg = fold(fns, cg, |cg, f| gen_fn(gx, cg, f));
+    let main_ret = match find(fns, |f| irf_name(f) == main) { Some(f) -> irf_ret(f), None -> internal("codegen: no main") };
+    let (fin, cg) = if gx_heap(gx, main_ret) { let (d, cg) = drop_fn(gx, cg, main_ret); (wcall(d), cg) } else { (wop("drop"), cg) };
+    let cg = mkfn(cg, "_start", [], [], [], CL([wcall(main), fin]));
+    // Static data, then the heap.
+    let cg = cg_pad(cg);
+    match cg { CG(funcs, _, data, _, _, table, _, _) -> {
+      let heap_start = ((k_data() + array_length(data) + 15) / 16) * 16;
+      let funcs = reverse(funcs);
+      // The superoptimizer's proved rewrite rules, applied to straight-line code.
+      let (funcs, stats) = if superopt {
+        let (out, stats) = fold(funcs, ([], om_empty()), |acc, f| match (acc, f) {
+          ((out, stats), WFn(n, ps, rs, ls, body)) -> { let (b2, stats) = peephole(body, rules, stats, mutant); ([WFn(n, ps, rs, ls, b2), ..out], stats) },
+        });
+        (reverse(out), stats)
+      } else { (funcs, om_empty()) };
+      (encode_module(funcs, reverse(table), data, heap_start, k_max_pages()), stats, funcs)
+    } }
+  } }
+}

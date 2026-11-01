@@ -1,0 +1,362 @@
+// ============================================================ certificates
+// Independent checkers for the back end's passes (certify.js): the IR is
+// re-typed after lowering, and reference counts are replayed along every path
+// after Perceus. A rejected certificate stops the compile; the host reads the
+// message after the "LUMENCERT" prefix.
+
+fn cert_fail(msg) { panic("LUMENCERT" ++ msg) }
+
+// ------------------------------------------------------------------ types
+fn ct_variants(adts, t, pre) {
+  match t {
+    TC(n, args) -> match om_get(adts, n) {
+      Some(d) -> { let sub = zip(adt_params(d), args); map(adt_ctors(d), |c| map(ctor_fields(c), |ft| subst_params(ft, sub))) },
+      None -> cert_fail(pre ++ "unknown type " ++ tkey(t)),
+    },
+    _ -> cert_fail(pre ++ "unknown type " ++ tkey(t)),
+  }
+}
+// The types a path of field indices can reach inside a value of type t.
+fn ct_walk(adts, t, path, pre) {
+  fold(path, [t], |tys, i| flat_map(tys, |u| match u {
+    TT(es) -> match nth(es, i) { Some(x) -> [x], None -> [] },
+    TC(n, _) -> if om_has(adts, n) { flat_map(ct_variants(adts, u, pre), |fs| match nth(fs, i) { Some(x) -> [x], None -> [] }) } else { [] },
+    _ -> [],
+  }))
+}
+fn same_ty(a, b) { tkey(a) == tkey(b) }
+fn t_array(t) { TC("Array", [t]) }
+fn t_list(t) { TC("List", [t]) }
+
+// Returns (functions, instructions).
+fn check_types(adts, fns) {
+  let by = fold(fns, MEmpty, |m, f| m_set(m, irf_name(f), f));
+  let count = fold(fns, 0, |n, f| {
+    let fname = irf_name(f);
+    let pre = "IR types in " ++ fname ++ ": ";
+    let vm = var_map(irf_vars(f));
+    let var_ty = |v| match m_get(vm, v) { Some(t) -> t, None -> cert_fail(pre ++ "unknown variable " ++ v) };
+    let atom_ty = |a| match a { QVar(v) -> var_ty(v), QInt(_) -> t_int(), QBool(_) -> t_bool(), QUnit -> t_unit(), QStr(_) -> t_string() };
+    let expect = |a, t, what| { let at = atom_ty(a); if !same_ty(at, t) { cert_fail(pre ++ what ++ ": expected " ++ tkey(t) ++ ", found " ++ tkey(at)) } else { () } };
+    let reaches = |x, path, ty, obj| {
+      expect(x, obj, "projected value");
+      if !any(ct_walk(adts, obj, path, pre), |u| same_ty(u, ty)) { cert_fail(pre ++ "no field at path " ++ join(map(path, int_to_string), ".") ++ " of " ++ tkey(obj) ++ " has type " ++ tkey(ty)) } else { () }
+    };
+    let builtin_ty = |name, args, ty, arg_tys| {
+      each(enumerate(args), |ia| match ia { (i, a) -> expect(a, list_get(arg_tys, i), "argument " ++ int_to_string(i + 1) ++ " of " ++ name) });
+      let a0 = nth(arg_tys, 0);
+      let a1 = nth(arg_tys, 1);
+      let elem = || match a0 { Some(TC("Array", [e])) -> e, _ -> cert_fail(pre ++ name ++ " of a non-array") };
+      let opt = |o| match o { Some(t) -> [t], None -> [] };
+      let want = if name == "print" || name == "println" { Some(([t_string()], t_unit())) }
+        else if name == "read_input" || name == "read_line" { Some(([], t_string())) }
+        else if name == "clock_ms" { Some(([], t_int())) }
+        else if name == "random_int" { Some(([t_int(), t_int()], t_int())) }
+        else if name == "int_to_string" { Some(([t_int()], t_string())) }
+        else if name == "string_length" { Some(([t_string()], t_int())) }
+        else if name == "substring" { Some(([t_string(), t_int(), t_int()], t_string())) }
+        else if name == "char_code_at" { Some(([t_string(), t_int()], t_int())) }
+        else if name == "char_from_code" { Some(([t_int()], t_string())) }
+        else if name == "concat" { Some(([t_string(), t_string()], t_string())) }
+        else if name == "concat_strings" { Some(([t_list(t_string())], t_string())) }
+        else if name == "panic" { Some(([t_string()], ty)) }
+        else if name == "array_make" { match a1 { Some(t) -> Some(([t_int(), t], t_array(t))), None -> Some(([t_int(), TP("?")], TP("?"))) } }
+        else if name == "array_empty" { Some(([], ty)) }
+        else if name == "array_length" { Some((opt(a0), t_int())) }
+        else if name == "array_get" { let e = elem(); Some((append(opt(a0), [t_int()]), e)) }
+        else if name == "array_set" { let e = elem(); Some((append(opt(a0), [t_int(), e]), match a0 { Some(t) -> t, None -> t_unit() })) }
+        else if name == "array_push" { let e = elem(); Some((append(opt(a0), [e]), match a0 { Some(t) -> t, None -> t_unit() })) }
+        else { None };
+      match want {
+        None -> cert_fail(pre ++ "unknown builtin " ++ name),
+        Some((params, ret)) -> {
+          if length(params) != length(arg_tys) || any(zip(params, arg_tys), |pa| match pa { (p, a) -> !ct_same_opt(p, a) }) {
+            cert_fail(pre ++ name ++ " applied to " ++ join(map(arg_tys, tkey), ", "))
+          } else { () };
+          if name == "array_empty" && !(match ty { TC("Array", _) -> true, _ -> false }) { cert_fail(pre ++ "array_empty of a non-array") } else { () };
+          if !ct_same_opt(ret, ty) { cert_fail(pre ++ name ++ " returns " ++ tkey(ret) ++ ", not " ++ tkey(ty)) } else { () };
+          ty
+        },
+      }
+    };
+    fn rhs_ty(r, n) {
+      let n = n + 1;
+      let t = match r {
+        RAtom(a) -> atom_ty(a),
+        RPrim(op, args, ty) -> if op == "add" || op == "sub" || op == "mul" || op == "div" || op == "rem" { each(args, |a| expect(a, t_int(), op)); t_int() }
+          else if op == "neg" { expect(list_get(args, 0), t_int(), "neg"); t_int() }
+          else if op == "not" { expect(list_get(args, 0), t_bool(), "not"); t_bool() }
+          else { match ty { Some(t) -> each(args, |a| expect(a, t, op)), None -> cert_fail(pre ++ op ++ " without an operand type") }; t_bool() },
+        RCmp(op, ty, args) -> { each(args, |a| expect(a, ty, "comparison")); if op == "three" { t_int() } else { t_bool() } },
+        RCall(g, args) -> match m_get(by, g) {
+          None -> cert_fail(pre ++ "call of unknown function " ++ g),
+          Some(gf) -> {
+            if irf_env(gf) { cert_fail(pre ++ "direct call of closure code " ++ g) } else { () };
+            if length(irf_params(gf)) != length(args) { cert_fail(pre ++ g ++ " takes " ++ int_to_string(length(irf_params(gf))) ++ " arguments") } else { () };
+            each(enumerate(args), |ia| match ia { (i, a) -> match list_get(irf_params(gf), i) { (_, pt) -> expect(a, pt, "argument " ++ int_to_string(i + 1) ++ " of " ++ g) } });
+            irf_ret(gf)
+          },
+        },
+        RCallc(fa, args) -> match atom_ty(fa) {
+          TF(ps, ret, _) -> {
+            if length(ps) != length(args) { cert_fail(pre ++ "closure call arity") } else { () };
+            each(enumerate(args), |ia| match ia { (i, a) -> expect(a, list_get(ps, i), "argument " ++ int_to_string(i + 1) ++ " of a closure") });
+            ret
+          },
+          _ -> cert_fail(pre ++ "callee is not a function"),
+        },
+        RCtor(ty, tag, args, _) -> {
+          let vs = ct_variants(adts, ty, pre);
+          if tag >= length(vs) { cert_fail(pre ++ "constructor " ++ int_to_string(tag) ++ " of " ++ tkey(ty)) } else { () };
+          let fs = list_get(vs, tag);
+          if length(fs) != length(args) { cert_fail(pre ++ "constructor " ++ int_to_string(tag) ++ " of " ++ tkey(ty) ++ " has " ++ int_to_string(length(fs)) ++ " fields") } else { () };
+          each(enumerate(args), |ia| match ia { (i, a) -> expect(a, list_get(fs, i), "field " ++ int_to_string(i) ++ " of constructor " ++ int_to_string(tag)) });
+          ty
+        },
+        RTuple(ty, args, _) -> match ty {
+          TT(es) -> {
+            if length(es) != length(args) { cert_fail(pre ++ "tuple shape") } else { () };
+            each(enumerate(args), |ia| match ia { (i, a) -> expect(a, list_get(es, i), "tuple element " ++ int_to_string(i)) });
+            ty
+          },
+          _ -> cert_fail(pre ++ "tuple shape"),
+        },
+        RClosure(g, ty, caps, _) -> ct_code(by, g, ty, Some(caps), pre, expect),
+        RStaticfn(g, ty) -> ct_code(by, g, ty, None, pre, expect),
+        RField(x, p, ty, o) -> { reaches(x, p, ty, o); ty },
+        RPeek(x, p, ty, o) -> { reaches(x, p, ty, o); ty },
+        RTestTag(x, p, o, ty, tag) -> { reaches(x, p, ty, o); if tag >= length(ct_variants(adts, ty, pre)) { cert_fail(pre ++ "tag test of a missing constructor") } else { () }; t_bool() },
+        RTestLit(x, p, o, ty, lit) -> { reaches(x, p, ty, o); expect(lit, ty, "literal pattern"); t_bool() },
+        REnvfield(i, ty) -> {
+          let caps = irf_captures(f);
+          if !irf_env(f) { cert_fail(pre ++ "envfield outside closure code") } else { () };
+          match nth(caps, i) { Some(c) -> if !same_ty(c, ty) { cert_fail(pre ++ "capture " ++ int_to_string(i)) } else { () }, None -> cert_fail(pre ++ "capture " ++ int_to_string(i)) };
+          ty
+        },
+        RBuiltinCall(name, args, ty, ats) -> builtin_ty(name, args, ty, ats),
+        RExpr(_) -> cert_fail(pre ++ "instruction expr"),
+      };
+      (t, n)
+    }
+    fn expr(e, result_ty, n) {
+      match e {
+        ILet(v, RExpr(x), b) -> {
+          let n = expr(x, var_ty(v), n);
+          expr(b, result_ty, n)
+        },
+        ILet(v, r, b) -> {
+          let (t, n) = rhs_ty(r, n);
+          if !same_ty(t, var_ty(v)) { cert_fail(pre ++ v ++ " has type " ++ tkey(var_ty(v)) ++ " but is bound to a " ++ tkey(t)) } else { () };
+          expr(b, result_ty, n)
+        },
+        IRet(RExpr(x)) -> expr(x, result_ty, n),
+        IRet(r) -> {
+          let (t, n) = rhs_ty(r, n);
+          if !same_ty(t, result_ty) { cert_fail(pre ++ "returns a " ++ tkey(t) ++ " where a " ++ tkey(result_ty) ++ " is expected") } else { () };
+          n
+        },
+        IIf(c, t, el) -> { expect(c, t_bool(), "condition"); expr(el, result_ty, expr(t, result_ty, n)) },
+        IUnreachable -> n,
+        IDup(v, b) -> { var_ty(v); expr(b, result_ty, n) },
+        IDrop(v, b) -> { var_ty(v); expr(b, result_ty, n) },
+        IDropReuse(v, _, b) -> { var_ty(v); expr(b, result_ty, n) },
+        IFreeToken(v, _, b) -> { var_ty(v); expr(b, result_ty, n) },
+        IUnpack(v, xs, _, fields, b) -> {
+          each(xs, |xi| match xi { (x, i) -> if !(match nth(fields, i) { Some(ft) -> same_ty(var_ty(x), ft), None -> false }) { cert_fail(pre ++ "unpack: " ++ x ++ " is not field " ++ int_to_string(i) ++ " of " ++ v) } else { () } });
+          expr(b, result_ty, n)
+        },
+      }
+    }
+    each(irf_params(f), |p| match p { (v, t) -> if !same_ty(t, var_ty(v)) { cert_fail(pre ++ "parameter " ++ v) } else { () } });
+    expr(irf_body(f), irf_ret(f), n)
+  });
+  (length(fns), count)
+}
+fn ct_same_opt(a, b) { match a { TP("?") -> false, _ -> same_ty(a, b) } }
+// Closure code g for a value of type ty (with its captures, for a closure).
+fn ct_code(by, g, ty, caps, pre, expect) {
+  match m_get(by, g) {
+    None -> cert_fail(pre ++ "closure of unknown function " ++ g),
+    Some(gf) -> match ty {
+      TF(ps, ret, _) -> {
+        let gps = irf_params(gf);
+        if !irf_env(gf) || !(match gps { [(_, t0), .._] -> same_ty(t0, ty), [] -> false }) { cert_fail(pre ++ g ++ " is not code for " ++ tkey(ty)) } else { () };
+        let rest = match gps { [_, ..r] -> r, [] -> [] };
+        if length(gps) - 1 != length(ps) || any(enumerate(rest), |ip| match ip { (i, (_, pt)) -> match nth(ps, i) { Some(q) -> !same_ty(pt, q), None -> true } }) || !same_ty(irf_ret(gf), ret) {
+          cert_fail(pre ++ g ++ " does not have type " ++ tkey(ty))
+        } else { () };
+        let gc = irf_captures(gf);
+        match caps {
+          Some(cs) -> {
+            if length(gc) != length(cs) { cert_fail(pre ++ g ++ " captures " ++ int_to_string(length(gc)) ++ " values") } else { () };
+            each(enumerate(cs), |ia| match ia { (i, a) -> expect(a, list_get(gc, i), "capture " ++ int_to_string(i) ++ " of " ++ g) })
+          },
+          None -> if !is_empty(gc) { cert_fail(pre ++ g ++ " needs captures") } else { () },
+        };
+        ty
+      },
+      _ -> cert_fail(pre ++ "closure is not a function"),
+    },
+  }
+}
+
+// -------------------------------------------------------------- ownership
+// Which operands an instruction takes ownership of; the rest it only reads.
+fn co_operands(modes, r) {
+  match r {
+    RAtom(a) -> (atom_vars([a]), []),
+    RCall(g, args) -> split_uses(args, |i| mode_of(modes, g, i) == "owned"),
+    RCtor(_, _, args, _) -> (atom_vars(args), []),
+    RTuple(_, args, _) -> (atom_vars(args), []),
+    RCallc(fa, args) -> (atom_vars([fa, ..args]), []),
+    RClosure(_, _, caps, _) -> (atom_vars(caps), []),
+    RPrim(_, args, _) -> ([], atom_vars(args)),
+    RCmp(_, _, args) -> ([], atom_vars(args)),
+    RField(x, _, _, _) -> ([], atom_vars([x])),
+    RPeek(x, _, _, _) -> ([], atom_vars([x])),
+    RTestTag(x, _, _, _, _) -> ([], atom_vars([x])),
+    RTestLit(x, _, _, _, _) -> ([], atom_vars([x])),
+    REnvfield(_, _) -> ([], ["env"]),
+    RStaticfn(_, _) -> ([], []),
+    RBuiltinCall(n, args, _, _) -> split_uses(args, |i| (n == "array_make" && i == 1) || (n == "array_set" && (i == 0 || i == 2)) || (n == "array_push" && (i == 0 || i == 1))),
+    RExpr(_) -> cert_fail("ownership: unknown instruction expr"),
+  }
+}
+// The state on a path: owned reference counts (in the order first held),
+// borrowed projections, reuse tokens (in order).
+type OSt { OSt(List<(String, Int)>, List<String>, List<String>) }
+fn os_count(s, v) { match s { OSt(owned, _, _) -> match find(owned, |e| match e { (k, _) -> k == v }) { Some((_, n)) -> n, None -> 0 } } }
+fn os_set(s, v, n) {
+  match s { OSt(owned, b, t) -> if any(owned, |e| match e { (k, _) -> k == v }) { OSt(map(owned, |e| match e { (k, m) -> if k == v { (k, n) } else { (k, m) } }), b, t) } else { OSt(append(owned, [(v, n)]), b, t) } }
+}
+fn os_borrowed(s, v) { match s { OSt(_, b, _) -> contains_str(b, v) } }
+fn os_tokens(s) { match s { OSt(_, _, t) -> t } }
+fn os_key(s) {
+  match s { OSt(owned, _, toks) -> join(append(append(sort(flat_map(owned, |e| match e { (v, n) -> if n > 0 { [v ++ ":" ++ int_to_string(n)] } else { [] } })), ["|"]), sort(toks)), ",") }
+}
+// Statistics: functions, dups, drops, reuses, borrowed.
+type OStats { OStats(Int, Int, Int, Int, Int) }
+
+fn check_ownership(adts, fns) {
+  let modes = fold(fns, MEmpty, |m, f| m_set(m, irf_name(f), irf_modes(f)));
+  fold(fns, OStats(0, 0, 0, 0, 0), |stats, f| {
+    let stats = match stats { OStats(a, b, c, d, e) -> OStats(a + 1, b, c, d, e) };
+    let fname = irf_name(f);
+    let pre = "ownership in " ++ fname ++ ": ";
+    let vm = var_map(irf_vars(f));
+    let heap = |v| match m_get(vm, v) { Some(t) -> is_heap(adts, t), None -> internal("ownership: no variable " ++ v) };
+    let source = co_sources(heap, irf_body(f), MEmpty);
+    fn live(s, v) { os_count(s, v) > 0 || (os_borrowed(s, v) && match m_get(source, v) { Some(x) -> live(s, x), None -> true }) }
+    let take = |s, v| {
+      let n = os_count(s, v);
+      if n == 0 { cert_fail(pre ++ v ++ " is given away, but no reference to it is held" ++ (if os_borrowed(s, v) { " (it is only borrowed)" } else { "" })) } else { os_set(s, v, n - 1) }
+    };
+    let step = |s, r, stats| {
+      let (takes, reads) = co_operands(modes, r);
+      each(reads, |v| if heap(v) && !live(s, v) { cert_fail(pre ++ v ++ " is read after its last reference was released") } else { () });
+      let s = fold(takes, s, |s, v| if heap(v) { take(s, v) } else { s });
+      each(reads, |v| if heap(v) && contains_str(takes, v) && !live(s, v) { cert_fail(pre ++ v ++ " is given away while it is still being read") } else { () });
+      let tok = match r { RCtor(_, _, _, t) -> t, RTuple(_, _, t) -> t, _ -> None };
+      match tok {
+        Some(t) -> if !contains_str(os_tokens(s), t) { cert_fail(pre ++ "reuse token " ++ t ++ " is not available") } else {
+          match (s, stats) { (OSt(o, b, ts), OStats(a, d1, d2, ru, bo)) -> (OSt(o, b, filter(ts, |x| x != t)), OStats(a, d1, d2, ru + 1, bo)) }
+        },
+        None -> (s, stats),
+      }
+    };
+    // Returns the states at the ends of the paths that reach a `ret` (for a nested expression), newest first, and the statistics.
+    fn expr(e, s, top, ends, stats) {
+      match e {
+        ILet(v, r, b) -> {
+          let (s, stats, go_on) = match r {
+            RExpr(x) -> {
+              let (inner, stats) = expr(x, s, false, [], stats);
+              match reverse(inner) {
+                [] -> (s, stats, false),
+                [first, ..rest] -> {
+                  let k = os_key(first);
+                  if any(rest, |o| os_key(o) != k) { cert_fail(pre ++ "the branches of the expression bound to " ++ v ++ " end holding different references") } else { (first, stats, true) }
+                },
+              }
+            },
+            _ -> { let (s, stats) = step(s, r, stats); (s, stats, true) },
+          };
+          if !go_on { (ends, stats) } else {
+            let s = if heap(v) { match r { RPeek(_, _, _, _) -> match s { OSt(o, bs, t) -> OSt(o, append(bs, [v]), t) }, _ -> os_set(s, v, 1) } } else { s };
+            expr(b, s, top, ends, stats)
+          }
+        },
+        IRet(RExpr(x)) -> expr(x, s, top, ends, stats),
+        IRet(r) -> {
+          let (s, stats) = step(s, r, stats);
+          if top {
+            let left = match s { OSt(o, _, _) -> flat_map(o, |e| match e { (v, n) -> if n > 0 { [v] } else { [] } }) };
+            if !is_empty(left) { cert_fail(pre ++ "returns while still holding " ++ join(left, ", ") ++ " (a leak)") } else { () };
+            match os_tokens(s) { [t, .._] -> cert_fail(pre ++ "returns with an unused reuse token " ++ t ++ " (a leak)"), [] -> () };
+            (ends, stats)
+          } else { ([s, ..ends], stats) }
+        },
+        IIf(_, t, el) -> { let (ends, stats) = expr(t, s, top, ends, stats); expr(el, s, top, ends, stats) },
+        IUnreachable -> (ends, stats),
+        IDup(v, b) -> {
+          if !live(s, v) { cert_fail(pre ++ v ++ " is duplicated after its last reference was released") } else { () };
+          let stats = match stats { OStats(a, d1, d2, ru, bo) -> OStats(a, d1 + 1, d2, ru, bo) };
+          expr(b, os_set(s, v, os_count(s, v) + 1), top, ends, stats)
+        },
+        IDrop(v, b) -> {
+          let s = take(s, v);
+          let stats = match stats { OStats(a, d1, d2, ru, bo) -> OStats(a, d1, d2 + 1, ru, bo) };
+          expr(b, s, top, ends, stats)
+        },
+        IDropReuse(v, r, b) -> {
+          let s = match take(s, v) { OSt(o, bs, ts) -> OSt(o, bs, if contains_str(ts, r) { ts } else { append(ts, [r]) }) };
+          let stats = match stats { OStats(a, d1, d2, ru, bo) -> OStats(a, d1, d2 + 1, ru, bo) };
+          expr(b, s, top, ends, stats)
+        },
+        IFreeToken(v, _, b) -> {
+          if !contains_str(os_tokens(s), v) { cert_fail(pre ++ "frees reuse token " ++ v ++ ", which is not held") } else { () };
+          let s = match s { OSt(o, bs, ts) -> OSt(o, bs, filter(ts, |x| x != v)) };
+          expr(b, s, top, ends, stats)
+        },
+        IUnpack(v, xs, r, _, b) -> {
+          // v is given up; each extracted projection of it becomes an owned reference.
+          each(xs, |xi| match xi { (x, _) -> if !os_borrowed(s, x) || m_get(source, x) != Some(v) { cert_fail(pre ++ "unpack of " ++ v ++ " takes " ++ x ++ ", which is not a projection of it") } else { () } });
+          let idx = map(xs, |xi| match xi { (_, i) -> i });
+          if length(fold(idx, [], |acc, i| if any(acc, |j| j == i) { acc } else { [i, ..acc] })) != length(xs) { cert_fail(pre ++ "unpack of " ++ v ++ " takes a field twice") } else { () };
+          let s = take(s, v);
+          let s = fold(xs, s, |s, xi| match xi { (x, _) -> { let s = match s { OSt(o, bs, ts) -> OSt(o, filter(bs, |y| y != x), ts) }; os_set(s, x, os_count(s, x) + 1) } });
+          let s = match r { Some(tk) -> match s { OSt(o, bs, ts) -> OSt(o, bs, if contains_str(ts, tk) { ts } else { append(ts, [tk]) }) }, None -> s };
+          let stats = match stats { OStats(a, d1, d2, ru, bo) -> OStats(a, d1, d2 + 1, ru, bo) };
+          expr(b, s, top, ends, stats)
+        },
+      }
+    }
+    let fmodes = irf_modes(f);
+    let mode = |i| match nth(fmodes, i) { Some(m) -> m, None -> "owned" };
+    if irf_env(f) && any(enumerate(irf_params(f)), |ip| match ip { (i, _) -> mode(i) != "owned" }) { cert_fail(pre ++ "closure code cannot borrow its parameters") } else { () };
+    let ps = enumerate(irf_params(f));
+    let owned0 = flat_map(ps, |ip| match ip { (i, (v, _)) -> if heap(v) && mode(i) == "owned" { [(v, 1)] } else { [] } });
+    let bor0 = flat_map(ps, |ip| match ip { (i, (v, _)) -> if mode(i) == "borrowed" { [v] } else { [] } });
+    let stats = match stats { OStats(a, d1, d2, ru, bo) -> OStats(a, d1, d2, ru, bo + length(bor0)) };
+    let (_, stats) = expr(irf_body(f), OSt(owned0, bor0, []), true, [], stats);
+    stats
+  })
+}
+// Borrowed projections (heap variables bound by a peek) -> the variable each reads.
+fn co_sources(heap, e, m) {
+  match e {
+    ILet(v, r, b) -> {
+      let m = match r { RPeek(QVar(x), _, _, _) -> if heap(v) { m_set(m, v, x) } else { m }, _ -> m };
+      let m = match r { RExpr(x) -> co_sources(heap, x, m), _ -> m };
+      co_sources(heap, b, m)
+    },
+    IRet(RExpr(x)) -> co_sources(heap, x, m),
+    IIf(_, t, el) -> co_sources(heap, el, co_sources(heap, t, m)),
+    IDup(_, b) -> co_sources(heap, b, m),
+    IDrop(_, b) -> co_sources(heap, b, m),
+    IDropReuse(_, _, b) -> co_sources(heap, b, m),
+    IFreeToken(_, _, b) -> co_sources(heap, b, m),
+    IUnpack(_, _, _, _, b) -> co_sources(heap, b, m),
+    _ -> m,
+  }
+}

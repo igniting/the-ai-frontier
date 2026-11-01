@@ -1,10 +1,12 @@
 // Builds the source of lumen2c, the Lumen 2 compiler written in Lumen 2: the
-// files of this directory in name order, then the prelude as a string.
+// files of this directory in name order, then the prelude as a string and
+// the superoptimizer's rewrite rules as data.
 //
 //   node compiler/build.js [OUT]     (default: print to standard output)
 
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { PRELUDE } from '../src/prelude.js';
+import { RULES } from '../src/rules.js';
 
 const here = (p) => new URL(p, import.meta.url);
 
@@ -27,6 +29,10 @@ export function compilerSource() {
   const files = readdirSync(here('./')).filter((f) => /^\d\d-.*\.lm$/.test(f)).sort();
   const parts = files.map((f) => readFileSync(here(f), 'utf8'));
   parts.push(`// ================================================================== prelude\nfn prelude_source() { ${literal(PRELUDE)} }\n`);
+  // The superoptimizer's proved rewrite rules, as data.
+  const pairs = (xs) => `[${xs.map(([op, arg]) => `(${literal(op)}, ${literal(arg ?? '')})`).join(', ')}]`;
+  const rules = RULES.map((r) => `    Rule(${r.id}, ${pairs(r.lhs)}, ${pairs(r.rhs)}, [${r.when.map(literal).join(', ')}]),`).join('\n');
+  parts.push(`// ============================================================ rewrite rules\nfn peephole_rules() {\n  [\n${rules}\n  ]\n}\n`);
   return parts.join('\n');
 }
 

@@ -1,0 +1,44 @@
+// ================================================================ back end
+// The passes after checking, in the reference's order (compileProgram):
+// lowering; inlining and simplification; the IR type certificate; borrowing,
+// Perceus, reuse and drop specialization; the ownership certificate; code
+// generation and the peephole pass.
+
+// inline, borrow, reuse, specialize, superopt, paranoid, mutant
+type CgOpts { CgOpts(Bool, Bool, Bool, Bool, Bool, Bool, String) }
+// The module's bytes, the type certificate (functions, instructions), the
+// ownership certificate, rewrite counts, the IR and the wasm functions.
+type Compiled { Compiled(Array<Int>, (Int, Int), OStats, OMap<Int>, IRProg, List<WFn>) }
+
+fn back_end(checked, o) {
+  match (checked, o) { (Checked(d, _, _, _, _, _, _, _, _, _), CgOpts(inl, borrow, reuse, spec, superopt, paranoid, mutant)) -> {
+    let adts = d_adts(d);
+    match lower_program(checked, mutant) { IRProg(fns, main, ords) -> {
+      let fns = if inl { map(inline_small(fns, main), simplify) } else { fns };
+      let types = check_types(adts, fns);
+      let modes = if borrow { infer_borrowing(adts, fns) } else { MEmpty };
+      let fns = map(fns, |f| {
+        let f = perceus(adts, modes, mutant, f);
+        let f = if reuse { insert_reuse(adts, mutant, f) } else { f };
+        if spec { specialize_drops(adts, f) } else { f }
+      });
+      let ownership = check_ownership(adts, fns);
+      let ir = IRProg(fns, main, ords);
+      let (bytes, stats, wfns) = codegen(adts, ir, mutant, paranoid, !inl, superopt, peephole_rules());
+      Compiled(bytes, types, ownership, stats, ir, wfns)
+    } }
+  } }
+}
+
+fn hex_bytes(bs) {
+  let d = "0123456789abcdef";
+  let n = array_length(bs);
+  fn go(i) {
+    if i < n {
+      let end = min(n, i + 4096);
+      print(concat_strings(map(range(i, end), |j| { let b = array_get(bs, j); substring(d, b / 16, b / 16 + 1) ++ substring(d, b % 16, b % 16 + 1) })));
+      go(end)
+    } else { () }
+  }
+  go(0)
+}

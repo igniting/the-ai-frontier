@@ -84,15 +84,51 @@ fn main() {
       },
     }
   }
-  else if mode == "lower1" || mode == "opt1" {
+  else if mode == "lower1" || mode == "opt1" || mode == "rc1" || mode == "cert1" {
+    let mutant = match option(words, "mutant") { Some(m) -> m, None -> "" };
+    let flag = |f| contains_str(words, f);
+    let checked = check_once(src, Opts(grants, entry, true, MEmpty, MEmpty));
+    match checked {
+      Checked(d, _, _, _, None, _, _, _, _, _) -> println("NOMAIN"),
+      Checked(d, _, _, _, _, _, _, _, _, _) -> {
+        let ir = lower_program(checked, mutant);
+        let ir = if mode == "opt1" && !flag("noinline") { match ir { IRProg(fns, main, ords) -> IRProg(map(inline_small(fns, main), simplify), main, ords) } } else { ir };
+        let o = BOpts(!flag("noinline"), !flag("noborrow"), !flag("noreuse"), !flag("nospec"), mutant);
+        if mode == "cert1" {
+          match ir { IRProg(fns, main, ords) -> {
+            let fns = if !flag("noinline") { map(inline_small(fns, main), simplify) } else { fns };
+            let (tf, ti) = check_types(d_adts(d), fns);
+            match rc_program(d_adts(d), IRProg(fns, main, ords), BOpts(false, !flag("noborrow"), !flag("noreuse"), !flag("nospec"), mutant)) {
+              IRProg(fns2, _, _) -> match check_ownership(d_adts(d), fns2) {
+                OStats(a, b, c, e, g) -> {
+                  println("types " ++ int_to_string(tf) ++ " " ++ int_to_string(ti));
+                  println("ownership " ++ join(map([a, b, c, e, g], int_to_string), " "))
+                },
+              },
+            }
+          } }
+        } else {
+          let ir = if mode == "rc1" { rc_program(d_adts(d), ir, o) } else { ir };
+          println(d_ir(ir, mode == "rc1"))
+        }
+      },
+    }
+  }
+  else if mode == "wasm1" {
+    let flag = |f| contains_str(words, f);
     let mutant = match option(words, "mutant") { Some(m) -> m, None -> "" };
     let checked = check_once(src, Opts(grants, entry, true, MEmpty, MEmpty));
     match checked {
       Checked(_, _, _, _, None, _, _, _, _, _) -> println("NOMAIN"),
-      _ -> {
-        let ir = lower_program(checked, mutant);
-        let ir = if mode == "opt1" { match ir { IRProg(fns, main, ords) -> IRProg(map(inline_small(fns, main), simplify), main, ords) } } else { ir };
-        println(d_ir(ir))
+      _ -> match back_end(checked, CgOpts(!flag("noinline"), !flag("noborrow"), !flag("noreuse"), !flag("nospec"), !flag("nosuperopt"), flag("paranoid"), mutant)) {
+        Compiled(bytes, (tf, ti), OStats(a, b, c, e, g), stats, _, _) -> {
+          println("types " ++ int_to_string(tf) ++ " " ++ int_to_string(ti));
+          println("ownership " ++ join(map([a, b, c, e, g], int_to_string), " "));
+          println("rewrites " ++ join(map(om_keys(stats), |k| k ++ ":" ++ int_to_string(match om_get(stats, k) { Some(n) -> n, None -> 0 })), " "));
+          print("bytes ");
+          hex_bytes(bytes);
+          println("")
+        },
       },
     }
   }

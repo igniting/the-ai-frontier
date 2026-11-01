@@ -8,7 +8,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 
 import { createHash } from 'node:crypto';
 import { compilerSource } from './build.js';
 import { compileSource, utf8 } from '../src/api.js';
-import { runWasm } from '../src/codegen.js';
+import { runWasm, compileProgram } from '../src/codegen.js';
 import { makeHost } from '../src/host.js';
 import { parse } from '../src/parser.js';
 import { checkOnce, check } from '../src/check.js';
@@ -16,6 +16,10 @@ import { PRELUDE } from '../src/prelude.js';
 import { lowerProgram, tkey } from '../src/lower.js';
 import { inlineSmall } from '../src/inline.js';
 import { simplify } from '../src/simplify.js';
+import { perceus, makeHeapTest, inferBorrowing } from '../src/perceus.js';
+import { insertReuse } from '../src/reuse.js';
+import { specializeDrops } from '../src/specialize.js';
+import { checkTypes, checkOwnership, CertificateError } from '../src/certify.js';
 import { generate } from '../test/fuzz.js';
 
 const here = (p) => new URL(p, import.meta.url);
@@ -46,6 +50,8 @@ export function runCompiler(bytes, mode, src) {
   if (r.error) {
     const m = /^panic: LUMENERR(.*)$/s.exec(r.error);
     if (m) return { err: JSON.parse(m[1]) };
+    const c = /^panic: LUMENCERT(.*)$/s.exec(r.error);
+    if (c) return { cert: c[1], out: r.output };
     return { crash: r.error, out: r.output };
   }
   return { out: r.output };
@@ -227,6 +233,10 @@ export function dumpIR(ir) {
   return out.join('\n');
 }
 
+// Back-end options from the environment (NOINLINE, NOBORROW, NOREUSE, NOSPEC), and as mode-line flags.
+const backendOptions = () => ({ inline: !process.env.NOINLINE, borrow: !process.env.NOBORROW, reuse: !process.env.NOREUSE, specialize: !process.env.NOSPEC });
+const backendFlags = () => { const o = backendOptions(); return `${o.inline ? '' : ' noinline'}${o.borrow ? '' : ' noborrow'}${o.reuse ? '' : ' noreuse'}${o.specialize ? '' : ' nospec'}`; };
+
 // Lowering after one checking pass (lower.js), then (opt) inlining and simplification.
 export function jsLower1(src, grants = null, entry = 'main', mutant = null, stage = 'lower1') {
   const off = byteOffsets(src);
@@ -234,9 +244,47 @@ export function jsLower1(src, grants = null, entry = 'main', mutant = null, stag
     const p = checkOnce(src, { assumeSafe: true, grants, entry });
     if (!p.main) return 'NOMAIN';
     const ir = lowerProgram(p, { mutant });
-    if (stage !== 'lower1') { inlineSmall(ir); for (const f of ir.fns) simplify(f); }
+    const o = backendOptions();
+    if (stage !== 'lower1' && o.inline) { inlineSmall(ir); for (const f of ir.fns) simplify(f); }
+    const types = stage === 'cert1' ? checkTypes(ir, p.adts) : null;
+    if (stage === 'rc1' || stage === 'cert1') {
+      const isHeap = makeHeapTest(p.adts);
+      const byName = o.borrow ? inferBorrowing(ir.fns, isHeap) : new Map();
+      for (const f of ir.fns) {
+        perceus(f, isHeap, mutant, byName);
+        if (o.reuse) insertReuse(f, p.adts, mutant);
+        if (o.specialize) specializeDrops(f, p.adts, isHeap);
+      }
+      if (stage === 'cert1') {
+        const w = checkOwnership(ir, isHeap);
+        return `types ${types.functions} ${types.instructions}\nownership ${w.functions} ${w.dups} ${w.drops} ${w.reuses} ${w.borrowed}`;
+      }
+    }
     return dumpIR(ir);
   } catch (e) {
+    if (e instanceof CertificateError) return `CERT ${e.message}`;
+    if (!e.span) return `CRASH ${e.message}`;
+    return errText({ message: e.message, s: off[e.span.s], e: off[e.span.e], note: e.note });
+  }
+}
+
+// The module after one checking pass (codegen.js), with its certificates and rewrite counts.
+export function jsWasm1(src, grants = null, entry = 'main', mutant = null) {
+  const off = byteOffsets(src);
+  try {
+    const p = checkOnce(src, { assumeSafe: true, grants, entry });
+    if (!p.main) return 'NOMAIN';
+    const o = backendOptions();
+    const c = compileProgram(p, { mutant, inline: o.inline, borrow: o.borrow, reuse: o.reuse, specialize: o.specialize, superopt: !process.env.NOSUPEROPT, paranoid: !!process.env.PARANOID });
+    const { types: t, ownership: w } = c.certificates;
+    return [
+      `types ${t.functions} ${t.instructions}`,
+      `ownership ${w.functions} ${w.dups} ${w.drops} ${w.reuses} ${w.borrowed}`,
+      `rewrites ${[...c.rewrites].map(([k, n]) => `${k}:${n}`).join(' ')}`,
+      `bytes ${Buffer.from(c.bytes).toString('hex')}`,
+    ].join('\n');
+  } catch (e) {
+    if (e instanceof CertificateError) return `CERT ${e.message}`;
     if (!e.span) return `CRASH ${e.message}`;
     return errText({ message: e.message, s: off[e.span.s], e: off[e.span.e], note: e.note });
   }
@@ -297,6 +345,8 @@ export function brokenCorpus(n = 600) {
   return out;
 }
 
+const gotText = (r) => (r.err ? errText(r.err) : r.cert ? `CERT ${r.cert}` : r.crash ? `CRASH ${r.crash}` : r.out.replace(/\n$/, ''));
+
 function main() {
   const [stage, ...args] = process.argv.slice(2);
   const bytes = compilerModule();
@@ -310,19 +360,23 @@ function main() {
     if (stage === 'ast') {
       want = jsAst(src);
       const r = runCompiler(bytes, 'ast', src);
-      got = r.err ? errText(r.err) : r.crash ? `CRASH ${r.crash}` : r.out.replace(/\n$/, '');
+      got = gotText(r);
     } else if (stage === 'check1') {
       want = jsCheck1(src, grants, entry);
       const r = runCompiler(bytes, `check1${grants ? ` grants=${grants.join(',')}` : ''}${entry !== 'main' ? ` entry=${entry}` : ''}`, src);
-      got = r.err ? errText(r.err) : r.crash ? `CRASH ${r.crash}` : r.out.replace(/\n$/, '');
+      got = gotText(r);
     } else if (stage === 'check') {
       want = jsCheck(src, grants, entry);
       const r = runCompiler(bytes, `check${grants ? ` grants=${grants.join(',')}` : ''}${entry !== 'main' ? ` entry=${entry}` : ''}`, src);
-      got = r.err ? errText(r.err) : r.crash ? `CRASH ${r.crash}` : r.out.replace(/\n$/, '');
-    } else if (stage === 'lower1' || stage === 'opt1') {
+      got = gotText(r);
+    } else if (stage === 'wasm1') {
+      want = jsWasm1(src, grants, entry, process.env.MUTANT ?? null);
+      const r = runCompiler(bytes, `wasm1${grants ? ` grants=${grants.join(',')}` : ''}${entry !== 'main' ? ` entry=${entry}` : ''}${process.env.MUTANT ? ` mutant=${process.env.MUTANT}` : ''}${backendFlags()}${process.env.NOSUPEROPT ? ' nosuperopt' : ''}${process.env.PARANOID ? ' paranoid' : ''}`, src);
+      got = gotText(r);
+    } else if (['lower1', 'opt1', 'rc1', 'cert1'].includes(stage)) {
       want = jsLower1(src, grants, entry, process.env.MUTANT ?? null, stage);
-      const r = runCompiler(bytes, `${stage}${grants ? ` grants=${grants.join(',')}` : ''}${entry !== 'main' ? ` entry=${entry}` : ''}${process.env.MUTANT ? ` mutant=${process.env.MUTANT}` : ''}`, src);
-      got = r.err ? errText(r.err) : r.crash ? `CRASH ${r.crash}` : r.out.replace(/\n$/, '');
+      const r = runCompiler(bytes, `${stage}${grants ? ` grants=${grants.join(',')}` : ''}${entry !== 'main' ? ` entry=${entry}` : ''}${process.env.MUTANT ? ` mutant=${process.env.MUTANT}` : ''}${backendFlags()}`, src);
+      got = gotText(r);
     } else throw new Error(`unknown stage ${stage}`);
     const ms = performance.now() - t0;
     if (ms > 5000 && process.env.PARITY_TIMES) console.log(`(${name}: ${Math.round(ms)} ms)`);

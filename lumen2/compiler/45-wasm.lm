@@ -1,0 +1,333 @@
+// =========================================================== WebAssembly
+// Instructions, the binary encoder (wasm.js) and the peephole pass that
+// applies the superoptimizer's proved rewrite rules (peephole.js).
+
+// Locals, globals, functions and labels are referred to by name.
+type Ins {
+  Op(String),                                       // no immediates
+  OLocal(String, String),                           // local.get / set / tee
+  OGlobal(String, String),                          // global.get / set
+  OCall(String, String),                            // call / return_call
+  OCallInd(String, List<String>, List<String>),     // call_indirect / return_call_indirect, with its type
+  OI32(Int), OI64(Int),
+  OMem(String, Int),                                // a load or store, with its offset
+  OBlock(String, Option<String>, Option<String>),   // block / loop / if, its label and result type
+  OBr(String, String)                               // br / br_if, to a label
+}
+fn ins_op(i) {
+  match i {
+    Op(o) -> o, OLocal(o, _) -> o, OGlobal(o, _) -> o, OCall(o, _) -> o, OCallInd(o, _, _) -> o,
+    OI32(_) -> "i32.const", OI64(_) -> "i64.const", OMem(o, _) -> o, OBlock(o, _, _) -> o, OBr(o, _) -> o,
+  }
+}
+// Code under construction: instructions nested in lists, flattened at the end.
+type Code { C1(Ins), CL(List<Code>) }
+fn code_flat(c) {
+  fn go(c, acc) { match c { C1(i) -> [i, ..acc], CL(xs) -> fold(xs, acc, |a, x| go(x, a)) } }
+  reverse(go(c, []))
+}
+fn wop(o) { C1(Op(o)) }
+fn wget(n) { C1(OLocal("local.get", n)) }
+fn wset(n) { C1(OLocal("local.set", n)) }
+fn wtee(n) { C1(OLocal("local.tee", n)) }
+fn wgget(n) { C1(OGlobal("global.get", n)) }
+fn wgset(n) { C1(OGlobal("global.set", n)) }
+fn wi32(v) { C1(OI32(v)) }
+fn wi64(v) { C1(OI64(v)) }
+fn wcall(f) { C1(OCall("call", f)) }
+fn wmem(o, off) { C1(OMem(o, off)) }
+fn wif() { C1(OBlock("if", None, None)) }
+fn wif_r(t) { C1(OBlock("if", None, Some(t))) }
+fn wblock(l) { C1(OBlock("block", Some(l), None)) }
+fn wloop(l) { C1(OBlock("loop", Some(l), None)) }
+fn wbr(l) { C1(OBr("br", l)) }
+fn wbr_if(l) { C1(OBr("br_if", l)) }
+fn wend() { wop("end") }
+fn wnone() { CL([]) }
+
+// A function: name, parameters, results, locals and body.
+type WFn { WFn(String, List<(String, String)>, List<String>, List<(String, String)>, List<Ins>) }
+fn wfn_name(f) { match f { WFn(n, _, _, _, _) -> n } }
+
+fn wrap32(v) { let m = ((v % 4294967296) + 4294967296) % 4294967296; if m >= 2147483648 { m - 4294967296 } else { m } }
+
+// ------------------------------------------------------------------ bytes
+fn push_uleb(out, n) {
+  if n < 128 { array_push(out, n) } else { push_uleb(array_push(out, n % 128 + 128), n / 128) }
+}
+// Signed LEB128 of a 64-bit integer: low 7 bits first, until the rest is the sign.
+fn push_sleb(out, n) {
+  let low = ((n % 128) + 128) % 128;
+  let rest = (n - low) / 128;
+  let sign = low >= 64;
+  if (rest == 0 && !sign) || (rest == 0 - 1 && sign) { array_push(out, low) } else { push_sleb(array_push(out, low + 128), rest) }
+}
+fn push_bytes(out, bs) {
+  fn go(out, i) { if i >= array_length(bs) { out } else { go(array_push(out, array_get(bs, i)), i + 1) } }
+  go(out, 0)
+}
+fn push_list(out, xs) { fold(xs, out, array_push) }
+fn push_str(out, s) {
+  fn go(out, i) { if i >= string_length(s) { out } else { go(array_push(out, char_code_at(s, i)), i + 1) } }
+  go(push_uleb(out, string_length(s)), 0)
+}
+fn valtype_byte(t) { if t == "i64" { 126 } else { 127 } }
+fn push_section(out, id, body) { push_bytes(push_uleb(array_push(out, id), array_length(body)), body) }
+
+fn op_code(o) {
+  if o == "unreachable" { 0 } else if o == "nop" { 1 } else if o == "block" { 2 } else if o == "loop" { 3 } else if o == "if" { 4 } else if o == "else" { 5 } else if o == "end" { 11 }
+  else if o == "br" { 12 } else if o == "br_if" { 13 } else if o == "return" { 15 }
+  else if o == "call" { 16 } else if o == "call_indirect" { 17 } else if o == "return_call" { 18 } else if o == "return_call_indirect" { 19 }
+  else if o == "drop" { 26 } else if o == "select" { 27 }
+  else if o == "local.get" { 32 } else if o == "local.set" { 33 } else if o == "local.tee" { 34 } else if o == "global.get" { 35 } else if o == "global.set" { 36 }
+  else if o == "i32.load" { 40 } else if o == "i64.load" { 41 } else if o == "i32.load8_u" { 45 } else if o == "i32.store" { 54 } else if o == "i64.store" { 55 } else if o == "i32.store8" { 58 }
+  else if o == "memory.size" { 63 } else if o == "memory.grow" { 64 } else if o == "i32.const" { 65 } else if o == "i64.const" { 66 }
+  else if o == "i32.eqz" { 69 } else if o == "i32.eq" { 70 } else if o == "i32.ne" { 71 } else if o == "i32.lt_s" { 72 } else if o == "i32.lt_u" { 73 } else if o == "i32.gt_s" { 74 } else if o == "i32.gt_u" { 75 }
+  else if o == "i32.le_s" { 76 } else if o == "i32.le_u" { 77 } else if o == "i32.ge_s" { 78 } else if o == "i32.ge_u" { 79 }
+  else if o == "i64.eqz" { 80 } else if o == "i64.eq" { 81 } else if o == "i64.ne" { 82 } else if o == "i64.lt_s" { 83 } else if o == "i64.lt_u" { 84 } else if o == "i64.gt_s" { 85 } else if o == "i64.gt_u" { 86 }
+  else if o == "i64.le_s" { 87 } else if o == "i64.le_u" { 88 } else if o == "i64.ge_s" { 89 } else if o == "i64.ge_u" { 90 }
+  else if o == "i32.clz" { 103 } else if o == "i32.add" { 106 } else if o == "i32.sub" { 107 } else if o == "i32.mul" { 108 } else if o == "i32.div_s" { 109 } else if o == "i32.div_u" { 110 } else if o == "i32.rem_s" { 111 } else if o == "i32.rem_u" { 112 }
+  else if o == "i32.and" { 113 } else if o == "i32.or" { 114 } else if o == "i32.xor" { 115 } else if o == "i32.shl" { 116 } else if o == "i32.shr_s" { 117 } else if o == "i32.shr_u" { 118 } else if o == "i32.rotl" { 119 } else if o == "i32.rotr" { 120 }
+  else if o == "i64.add" { 124 } else if o == "i64.sub" { 125 } else if o == "i64.mul" { 126 } else if o == "i64.div_s" { 127 } else if o == "i64.div_u" { 128 } else if o == "i64.rem_s" { 129 } else if o == "i64.rem_u" { 130 }
+  else if o == "i64.and" { 131 } else if o == "i64.or" { 132 } else if o == "i64.xor" { 133 } else if o == "i64.shl" { 134 } else if o == "i64.shr_s" { 135 } else if o == "i64.shr_u" { 136 } else if o == "i64.rotl" { 137 } else if o == "i64.rotr" { 138 }
+  else if o == "i32.wrap_i64" { 167 } else if o == "i64.extend_i32_s" { 172 } else if o == "i64.extend_i32_u" { 173 }
+  else if o == "memory.copy" || o == "memory.fill" { 252 }
+  else { internal("wasm: unknown instruction " ++ o) }
+}
+fn mem_align(o) { if o == "i64.load" || o == "i64.store" { 3 } else if o == "i32.load8_u" || o == "i32.store8" { 0 } else { 2 } }
+
+// The module: types are registered in the order the reference registers
+// them (imports, then each function's own type and its indirect calls).
+type Imp { Imp(String, String, String, List<String>, List<String>) }   // module, name, function name, params, results
+fn imports() {
+  [Imp("env", "write", "host_write", ["i32", "i32"], []), Imp("env", "input_len", "host_input_len", [], ["i32"]), Imp("env", "input_read", "host_input_read", ["i32"], []),
+   Imp("env", "line_len", "host_line_len", [], ["i32"]), Imp("env", "line_read", "host_line_read", ["i32"], []),
+   Imp("env", "fail", "host_fail", ["i32"], []), Imp("env", "panic", "host_panic", ["i32", "i32"], []), Imp("env", "clock", "host_clock", [], ["i64"]),
+   Imp("env", "random", "host_random", ["i64", "i64"], ["i64"])]
+}
+fn sig_key(ps, rs) { join(ps, ",") ++ "->" ++ join(rs, ",") }
+// Types: (in order, newest first; key -> index).
+fn ty_reg(tys, ps, rs) {
+  match tys { (list, idx, n) -> match m_get(idx, sig_key(ps, rs)) { Some(_) -> tys, None -> ([(ps, rs), ..list], m_set(idx, sig_key(ps, rs), n), n + 1) } }
+}
+fn ty_idx(tys, ps, rs) { match tys { (_, idx, _) -> match m_get(idx, sig_key(ps, rs)) { Some(i) -> i, None -> internal("wasm: type") } } }
+
+// funcs, table (function names), the data segment, the start of the heap.
+fn encode_module(funcs, table, data, heap_start, max_pages) {
+  let imps = imports();
+  let tys0 = fold(imps, ([], MEmpty, 0), |t, im| match im { Imp(_, _, _, ps, rs) -> ty_reg(t, ps, rs) });
+  let tys = fold(funcs, tys0, |t, f| match f { WFn(_, ps, rs, _, body) -> {
+    let t = ty_reg(t, map(ps, |p| match p { (_, ty) -> ty }), rs);
+    fold(body, t, |t, i| match i { OCallInd(_, cps, crs) -> ty_reg(t, cps, crs), _ -> t })
+  } });
+  let n_imp = length(imps);
+  let fidx = fold(enumerate(funcs), fold(enumerate(imps), MEmpty, |m, p| match p { (i, Imp(_, _, n, _, _)) -> m_set(m, n, i) }), |m, p| match p { (i, f) -> m_set(m, wfn_name(f), i + n_imp) });
+  let fi = |n| match m_get(fidx, n) { Some(i) -> i, None -> internal("wasm: unknown function " ++ n) };
+  let gidx = |g| if g == "hp" { 0 } else if g == "live" { 1 } else if g == "allocs" { 2 } else { internal("wasm: unknown global " ++ g) };
+  let out = push_list(array_empty(), [0, 97, 115, 109, 1, 0, 0, 0]);
+  // 1: types
+  let types = match tys { (list, _, _) -> reverse(list) };
+  let body = fold(types, push_uleb(array_empty(), length(types)), |o, t| match t { (ps, rs) -> {
+    let o = array_push(o, 96);
+    let o = fold(ps, push_uleb(o, length(ps)), |o, p| array_push(o, valtype_byte(p)));
+    fold(rs, push_uleb(o, length(rs)), |o, r| array_push(o, valtype_byte(r)))
+  } });
+  let out = push_section(out, 1, body);
+  // 2: imports
+  let body = fold(imps, push_uleb(array_empty(), length(imps)), |o, im| match im { Imp(md, nm, _, ps, rs) -> push_uleb(array_push(push_str(push_str(o, md), nm), 0), ty_idx(tys, ps, rs)) });
+  let out = push_section(out, 2, body);
+  // 3: functions
+  let body = fold(funcs, push_uleb(array_empty(), length(funcs)), |o, f| match f { WFn(_, ps, rs, _, _) -> push_uleb(o, ty_idx(tys, map(ps, |p| match p { (_, t) -> t }), rs)) });
+  let out = push_section(out, 3, body);
+  // 4: table
+  let out = push_section(out, 4, push_uleb(push_list(push_uleb(array_empty(), 1), [112, 0]), length(table)));
+  // 5: memory
+  let out = push_section(out, 5, push_uleb(push_uleb(array_push(push_uleb(array_empty(), 1), 1), (heap_start + 65536 + 65535) / 65536), max_pages));
+  // 6: globals (hp, live, allocs)
+  let g = |o, init| array_push(push_sleb(push_list(o, [127, 1, 65]), init), 11);
+  let out = push_section(out, 6, g(g(g(push_uleb(array_empty(), 3), heap_start), 0), 0));
+  // 7: exports
+  let body = push_uleb(array_empty(), 4);
+  let body = push_uleb(array_push(push_str(body, "_start"), 0), fi("_start"));
+  let body = push_uleb(array_push(push_str(body, "memory"), 2), 0);
+  let body = push_uleb(array_push(push_str(body, "live"), 3), 1);
+  let body = push_uleb(array_push(push_str(body, "allocs"), 3), 2);
+  let out = push_section(out, 7, body);
+  // 9: elements
+  let body = push_list(push_uleb(array_empty(), 1), [0, 65, 0, 11]);
+  let body = fold(table, push_uleb(body, length(table)), |o, n| push_uleb(o, fi(n)));
+  let out = push_section(out, 9, body);
+  // 10: code
+  let body = fold(funcs, push_uleb(array_empty(), length(funcs)), |o, f| {
+    let code = enc_code(f, fi, gidx, |ps, rs| ty_idx(tys, ps, rs));
+    push_bytes(push_uleb(o, array_length(code)), code)
+  });
+  let out = push_section(out, 10, body);
+  // 11: data
+  let body = push_uleb(push_list(push_sleb(push_list(push_uleb(array_empty(), 1), [0, 65]), 1024), [11]), array_length(data));
+  let out = push_section(out, 11, push_bytes(body, data));
+  // 0: the "name" section: function names.
+  let names = fold(enumerate(append(map(imps, |im| match im { Imp(_, _, n, _, _) -> n }), map(funcs, wfn_name))), push_uleb(array_empty(), n_imp + length(funcs)), |o, kn| match kn { (k, n) -> push_str(push_uleb(o, k), n) });
+  let body = push_bytes(push_uleb(array_push(push_str(array_empty(), "name"), 1), array_length(names)), names);
+  push_section(out, 0, body)
+}
+
+fn enc_code(f, fi, gidx, ti) {
+  match f { WFn(name, params, _, locals, body) -> {
+    let lidx = fold(enumerate(append(params, locals)), MEmpty, |m, p| match p { (i, (n, _)) -> m_set(m, n, i) });
+    let local = |n| match m_get(lidx, n) { Some(i) -> i, None -> internal("wasm: unknown local " ++ n ++ " in " ++ name) };
+    let out = fold(locals, push_uleb(array_empty(), length(locals)), |o, l| match l { (_, t) -> array_push(push_uleb(o, 1), valtype_byte(t)) });
+    let (out, _) = fold(body, (out, []), |st, ins| match st { (o, labels) -> {
+      let o = array_push(o, op_code(ins_op(ins)));
+      match ins {
+        Op(x) -> if x == "end" { (o, match labels { [_, ..rest] -> rest, [] -> [] }) }
+          else if x == "memory.size" || x == "memory.grow" { (array_push(o, 0), labels) }
+          else if x == "memory.copy" { (push_list(push_uleb(o, 10), [0, 0]), labels) }
+          else if x == "memory.fill" { (array_push(push_uleb(o, 11), 0), labels) }
+          else { (o, labels) },
+        OLocal(_, n) -> (push_uleb(o, local(n)), labels),
+        OGlobal(_, n) -> (push_uleb(o, gidx(n)), labels),
+        OCall(_, g) -> (push_uleb(o, fi(g)), labels),
+        OCallInd(_, ps, rs) -> (array_push(push_uleb(o, ti(ps, rs)), 0), labels),
+        OI32(v) -> (push_sleb(o, wrap32(v)), labels),
+        OI64(v) -> (push_sleb(o, v), labels),
+        OMem(x, off) -> (push_uleb(push_uleb(o, mem_align(x)), off), labels),
+        OBlock(_, l, t) -> (array_push(o, match t { Some(v) -> valtype_byte(v), None -> 64 }), [l, ..labels]),
+        OBr(_, l) -> {
+          fn depth(ls, d) { match ls { [] -> internal("wasm: unknown label " ++ l ++ " in " ++ name), [x, ..rest] -> if x == Some(l) { d } else { depth(rest, d + 1) } } }
+          (push_uleb(o, depth(labels, 0)), labels)
+        },
+      }
+    } });
+    array_push(out, 11)
+  } }
+}
+
+// Writes bytes to the output, in chunks.
+fn print_bytes(bs) {
+  let n = array_length(bs);
+  fn go(i) {
+    if i < n {
+      let end = min(n, i + 4096);
+      print(concat_strings(map(range(i, end), |j| char_from_code(array_get(bs, j)))));
+      go(end)
+    } else { () }
+  }
+  go(0)
+}
+
+// --------------------------------------------------------------- peephole
+// A rule: id, left side, right side (instructions with placeholders x0, x1
+// for locals and K0, K1 for constants), side conditions on the constants.
+type Rule { Rule(Int, List<(String, String)>, List<(String, String)>, List<String>) }
+
+fn int_min() { 0 - 9223372036854775807 - 1 }
+fn int_max() { 9223372036854775807 }
+// Wrapping 64-bit addition and negation (constants in rules wrap like the hardware).
+fn add_wrap(a, b) {
+  if b > 0 && a > int_max() - b { (a + int_min()) + (b + int_min()) }
+  else if b < 0 && a < int_min() - b { (a - int_min()) + (b - int_min()) }
+  else { a + b }
+}
+fn neg_wrap(x) { if x == int_min() { x } else { 0 - x } }
+fn dec_int(s) {
+  let neg = starts_at(s, 0, "-");
+  let digits = if neg || starts_at(s, 0, "+") { substring(s, 1, string_length(s)) } else { s };
+  let v = fold(range(0, string_length(digits)), 0, |acc, i| acc * 10 + (char_code_at(digits, i) - 48));
+  if neg { 0 - v } else { v }
+}
+// A right-side constant: terms [+-](K<n> | <digits>), summed, wrapped to the width.
+fn const_expr(expr, ks, width) {
+  let n = string_length(expr);
+  fn term(i, acc) {
+    if i >= n { acc } else {
+      let c = char_code_at(expr, i);
+      let (neg, j) = if c == 45 { (true, i + 1) } else if c == 43 { (false, i + 1) } else { (false, i) };
+      fn word_end(k) { if k < n && char_code_at(expr, k) != 45 && char_code_at(expr, k) != 43 { word_end(k + 1) } else { k } }
+      let e = word_end(j);
+      let w = substring(expr, j, e);
+      let x = if starts_at(w, 0, "K") { match m_get(ks, w) { Some(v) -> v, None -> internal("peephole: " ++ w) } } else { dec_int(w) };
+      term(e, add_wrap(acc, if neg { neg_wrap(x) } else { x }))
+    }
+  }
+  let v = term(0, 0);
+  if width == 32 { wrap32(v) } else { v }
+}
+fn rule_holds(cond, ks) {
+  match split_spaces(cond) {
+    [x, o, y] -> {
+      let a = match m_get(ks, x) { Some(v) -> v, None -> internal("peephole: " ++ x) };
+      let b = if starts_at(y, 0, "K") { match m_get(ks, y) { Some(v) -> v, None -> internal("peephole: " ++ y) } } else { dec_int(y) };
+      if o == "<=" { a <= b } else if o == "<" { a < b } else if o == ">=" { a >= b } else if o == "!=" { a != b } else { a > b }
+    },
+    _ -> internal("peephole: condition " ++ cond),
+  }
+}
+// Matches a rule at the front of body: the bindings of locals and constants.
+fn rule_match(r, body, ignore_when) {
+  match r { Rule(_, lhs, _, when) -> {
+    fn go(ls, bs, xs, ks) {
+      match (ls, bs) {
+        ([], _) -> Some((xs, ks)),
+        (_, []) -> None,
+        ([(o, arg), ..lrest], [b, ..brest]) -> if o != ins_op(b) { None } else {
+          match b {
+            OLocal(_, n) -> if o == "local.get" { match m_get(xs, arg) { Some(m) -> if m == n { go(lrest, brest, xs, ks) } else { None }, None -> go(lrest, brest, m_set(xs, arg, n), ks) } } else { go(lrest, brest, xs, ks) },
+            OI32(v0) -> const_bind(arg, wrap32(v0), |ks| go(lrest, brest, xs, ks), ks),
+            OI64(v0) -> const_bind(arg, v0, |ks| go(lrest, brest, xs, ks), ks),
+            _ -> go(lrest, brest, xs, ks),
+          }
+        },
+      }
+    }
+    match go(lhs, body, MEmpty, MEmpty) {
+      Some((xs, ks)) -> if ignore_when || all(when, |c| rule_holds(c, ks)) { Some((xs, ks)) } else { None },
+      None -> None,
+    }
+  } }
+}
+fn const_bind(arg, v, k, ks) {
+  if starts_at(arg, 0, "K") { match m_get(ks, arg) { Some(w) -> if w == v { k(ks) } else { None }, None -> k(m_set(ks, arg, v)) } }
+  else if dec_int(arg) == v { k(ks) } else { None }
+}
+fn rule_instantiate(r, xs, ks) {
+  match r { Rule(_, _, rhs, _) -> map(rhs, |oa| match oa {
+    (o, arg) -> if o == "local.get" { OLocal(o, match m_get(xs, arg) { Some(n) -> n, None -> internal("peephole: " ++ arg) }) }
+      else if o == "i64.const" { OI64(const_expr(arg, ks, 64)) }
+      else if o == "i32.const" { OI32(const_expr(arg, ks, 32)) }
+      else { Op(o) },
+  }) }
+}
+// Rewrites until no rule applies; counts uses per rule id (in order of first use).
+fn peephole(body, rules, stats, mutant) {
+  let by_op = fold(rules, MEmpty, |m, r| match r { Rule(_, [(o, _), .._], _, _) -> m_set(m, o, append(match m_get(m, o) { Some(l) -> l, None -> [] }, [r])), _ -> m });
+  let ignore = mutant == "superopt-ignore-when";
+  fn rule_len(r) { match r { Rule(_, lhs, _, _) -> length(lhs) } }
+  fn pass(cur, acc, stats, changed) {
+    match cur {
+      [] -> (reverse(acc), stats, changed),
+      [i, .._] -> {
+        let cands = match m_get(by_op, ins_op(i)) { Some(l) -> l, None -> [] };
+        fn try_rules(rs) {
+          match rs {
+            [] -> None,
+            [r, ..more] -> match rule_match(r, cur, ignore) { Some((xs, ks)) -> Some((r, xs, ks)), None -> try_rules(more) },
+          }
+        }
+        match try_rules(cands) {
+          Some((r, xs, ks)) -> {
+            let id = match r { Rule(id, _, _, _) -> id };
+            let stats = om_set(stats, int_to_string(id), match om_get(stats, int_to_string(id)) { Some(c) -> c + 1, None -> 1 });
+            pass(drop(cur, rule_len(r)), fold(rule_instantiate(r, xs, ks), acc, |a, x| [x, ..a]), stats, true)
+          },
+          None -> pass(drop(cur, 1), [i, ..acc], stats, changed),
+        }
+      },
+    }
+  }
+  fn fix(body, stats) {
+    let (out, stats, changed) = pass(body, [], stats, false);
+    if changed && !is_empty(rules) { fix(out, stats) } else { (out, stats) }
+  }
+  fix(body, stats)
+}

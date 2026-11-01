@@ -127,7 +127,8 @@ fn di_ir(e, acc) {
   }
 }
 fn di_vars(vs) { join(map(vs, |p| match p { (v, t) -> v ++ ":" ++ tkey(t) }), " ") }
-fn d_ir(p) {
+// with_modes: after reference counting, every function has parameter modes.
+fn d_ir(p, with_modes) {
   match p { IRProg(fns, main, ords) -> {
     let acc = fold(fns, [], |acc, f| match f { IRFn(name, env, params, ret, body, vars, bor, caps, modes) -> {
       let acc = ["fn " ++ name ++ " env=" ++ (if env { "true" } else { "false" }) ++ " ret=" ++ tkey(ret), ..acc];
@@ -135,7 +136,7 @@ fn d_ir(p) {
       let acc = ["vars " ++ di_vars(vars), ..acc];
       let acc = ["borrowed " ++ join(bor, " "), ..acc];
       let acc = ["captures " ++ di_tys(caps), ..acc];
-      let acc = if is_empty(modes) { acc } else { ["modes " ++ join(modes, " "), ..acc] };
+      let acc = if with_modes { ["modes " ++ join(modes, " "), ..acc] } else { acc };
       di_ir(body, acc)
     } });
     let acc = ["main " ++ main, ..acc];

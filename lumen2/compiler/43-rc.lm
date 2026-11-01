@@ -1,0 +1,506 @@
+// ====================================================== reference counting
+// Perceus (perceus.js): borrowed parameters, dup and drop insertion; then
+// reuse of dropped cells (reuse.js) and drop specialization (specialize.js).
+
+fn is_heap(adts, t) {
+  match t {
+    TT(_) -> true,
+    TF(_, _, _) -> true,
+    TC(n, _) -> if n == "Int" || n == "Bool" || n == "Unit" { false } else if n == "String" || n == "Array" { true }
+      else { match om_get(adts, n) { Some(a) -> any(adt_ctors(a), |c| !is_empty(ctor_fields(c))), None -> internal("is_heap " ++ n) } },
+    _ -> internal("is_heap"),
+  }
+}
+
+// Which argument positions of a builtin take ownership.
+fn builtin_consumes(name, i) {
+  if name == "array_make" { i == 1 } else if name == "array_set" { i == 0 || i == 2 } else if name == "array_push" { i == 0 || i == 1 } else { false }
+}
+fn atom_vars(xs) { flat_map(xs, |a| match a { QVar(v) -> [v], _ -> [] }) }
+fn mode_of(modes, name, i) { match m_get(modes, name) { Some(ms) -> match nth(ms, i) { Some(m) -> m, None -> "owned" }, None -> "owned" } }
+fn split_uses(args, owned_at) {
+  let (c, b) = fold(enumerate(args), ([], []), |acc, ia| match (acc, ia) {
+    ((c, b), (i, QVar(v))) -> if owned_at(i) { ([v, ..c], b) } else { (c, [v, ..b]) },
+    (acc, _) -> acc,
+  });
+  (reverse(c), reverse(b))
+}
+// Variables a right-hand side uses: (consumed, borrowed), in order.
+fn rc_uses(modes, r) {
+  match r {
+    RAtom(a) -> (atom_vars([a]), []),
+    RPrim(_, args, _) -> ([], atom_vars(args)),
+    RCmp(_, _, args) -> ([], atom_vars(args)),
+    RCall(f, args) -> split_uses(args, |i| mode_of(modes, f, i) == "owned"),
+    RCallc(f, args) -> (atom_vars([f, ..args]), []),
+    RCtor(_, _, args, _) -> (atom_vars(args), []),
+    RTuple(_, args, _) -> (atom_vars(args), []),
+    RClosure(_, _, caps, _) -> (atom_vars(caps), []),
+    RStaticfn(_, _) -> ([], []),
+    RField(x, _, _, _) -> ([], atom_vars([x])),
+    RPeek(x, _, _, _) -> ([], atom_vars([x])),
+    RTestTag(x, _, _, _, _) -> ([], atom_vars([x])),
+    RTestLit(x, _, _, _, _) -> ([], atom_vars([x])),
+    REnvfield(_, _) -> ([], ["env"]),
+    RBuiltinCall(n, args, _, _) -> split_uses(args, |i| builtin_consumes(n, i)),
+    RExpr(_) -> internal("rc_uses: expr"),
+  }
+}
+fn var_map(vars) { fold(vars, MEmpty, |m, vt| match vt { (v, t) -> m_set(m, v, t) }) }
+fn vm_ty(vm, v) { match m_get(vm, v) { Some(t) -> t, None -> internal("no variable " ++ v) } }
+fn list_set(xs, i, x) { map(enumerate(xs), |jy| match jy { (j, y) -> if j == i { x } else { y } }) }
+
+// ------------------------------------------------------- borrowed parameters
+// A heap parameter of a named function that is only read stays borrowed; the
+// modes are a fixed point over all functions (inferBorrowing). One walk of a
+// function threads (modes, changed, borrowed, root); cx is (adts, the
+// function's name, its variable types, its parameters' indices).
+fn ib_demote(modes, g, i) {
+  match m_get(modes, g) {
+    Some(ms) -> if mode_of(modes, g, i) == "borrowed" { (m_set(modes, g, list_set(ms, i, "owned")), true) } else { (modes, false) },
+    None -> (modes, false),
+  }
+}
+fn ib_consume(cx, st, v) {
+  match (cx, st) { ((_, fname, _, index), (modes, ch, bor, root)) -> {
+    let (modes, ch) = match m_get(index, v) { Some(i) -> { let (m2, c) = ib_demote(modes, fname, i); (m2, ch || c) }, None -> (modes, ch) };
+    match m_get(root, v) { Some(x) -> ib_consume(cx, (modes, ch, bor, root), x), None -> (modes, ch, bor, root) }
+  } }
+}
+fn ib_rhs(cx, st, r, tail) {
+  match cx { (adts, _, vm, _) -> match r {
+    RAtom(a) -> fold(atom_vars([a]), st, |st, v| ib_consume(cx, st, v)),
+    RCall(g, args) -> fold(enumerate(args), st, |st, ia| match ia {
+      (i, QVar(v)) -> match st { (modes, ch, bor, root) ->
+        if mode_of(modes, g, i) == "owned" { ib_consume(cx, st, v) }
+        else if tail && !m_has(bor, v) && is_heap(adts, vm_ty(vm, v)) { let (m2, c) = ib_demote(modes, g, i); (m2, ch || c, bor, root) }
+        else { st } },
+      _ -> st,
+    }),
+    RCallc(fa, args) -> fold(atom_vars([fa, ..args]), st, |st, v| ib_consume(cx, st, v)),
+    RCtor(_, _, args, _) -> fold(atom_vars(args), st, |st, v| ib_consume(cx, st, v)),
+    RTuple(_, args, _) -> fold(atom_vars(args), st, |st, v| ib_consume(cx, st, v)),
+    RClosure(_, _, caps, _) -> fold(atom_vars(caps), st, |st, v| ib_consume(cx, st, v)),
+    RBuiltinCall(n, args, _, _) -> fold(enumerate(args), st, |st, ia| match ia { (i, QVar(v)) -> if builtin_consumes(n, i) { ib_consume(cx, st, v) } else { st }, _ -> st }),
+    RExpr(e) -> ib_walk(cx, st, e, false),
+    _ -> st,
+  } }
+}
+fn ib_walk(cx, st, e, tail) {
+  match e {
+    ILet(v, r, b) -> {
+      let st = match (st, r) { ((modes, ch, bor, root), RPeek(_, _, _, _)) -> (modes, ch, m_set(bor, v, true), root), _ -> st };
+      let st = match (st, r) {
+        ((modes, ch, bor, root), RField(QVar(x), _, _, _)) -> (modes, ch, bor, m_set(root, v, x)),
+        ((modes, ch, bor, root), RPeek(QVar(x), _, _, _)) -> (modes, ch, bor, m_set(root, v, x)),
+        _ -> st,
+      };
+      ib_walk(cx, ib_rhs(cx, st, r, false), b, tail)
+    },
+    IRet(r) -> ib_rhs(cx, st, r, tail),
+    IIf(_, t, el) -> ib_walk(cx, ib_walk(cx, st, t, tail), el, tail),
+    _ -> st,
+  }
+}
+fn infer_borrowing(adts, fns) {
+  let m0 = fold(fns, MEmpty, |m, f| m_set(m, irf_name(f), map(irf_params(f), |p| match p { (_, t) -> if !irf_env(f) && is_heap(adts, t) { "borrowed" } else { "owned" } })));
+  let walk_fn = |f, modes| {
+    let fname = irf_name(f);
+    let index = fold(enumerate(irf_params(f)), MEmpty, |m, ip| match ip { (i, (v, _)) -> m_set(m, v, i) });
+    let ms = match m_get(modes, fname) { Some(x) -> x, None -> [] };
+    let bor0 = fold(zip(irf_params(f), ms), MEmpty, |m, pm| match pm { ((v, _), md) -> if md == "borrowed" { m_set(m, v, true) } else { m } });
+    let cx = (adts, fname, var_map(irf_vars(f)), index);
+    match ib_walk(cx, (modes, false, bor0, MEmpty), irf_body(f), true) { (modes, ch, _, _) -> (modes, ch) }
+  };
+  fn fix(modes) {
+    let (modes, changed) = fold(fns, (modes, false), |acc, f| match acc { (modes, ch) -> { let (m2, c) = walk_fn(f, modes); (m2, ch || c) } });
+    if changed { fix(modes) } else { modes }
+  }
+  fix(m0)
+}
+
+// ------------------------------------------------------------------ Perceus
+// The body annotated with free variables: each let carries fv(its body).
+type FV { FV(Map<Bool>, Int) }
+fn fv_empty() { FV(MEmpty, 0) }
+fn fv_has(s, v) { match s { FV(m, _) -> m_has(m, v) } }
+fn fv_add(s, v) { match s { FV(m, n) -> if m_has(m, v) { s } else { FV(m_set(m, v, true), n + 1) } } }
+fn fv_del(s, v) { match s { FV(m, n) -> if m_has(m, v) { FV(m_delete(m, v), n - 1) } else { s } } }
+fn fv_union(a, b) {
+  match (a, b) { (FV(_, na), FV(mb, nb)) -> if na >= nb { fold(m_entries(mb), a, |s, e| match e { (k, _) -> fv_add(s, k) }) } else { fv_union(b, a) } }
+}
+type PX { PLet(String, Rhs, Option<PX>, PX, FV), PRet(Rhs, Option<PX>), PIf(At, PX, PX), PUnr }
+fn rc_annot(modes, e) {
+  match e {
+    ILet(v, RExpr(x), b) -> {
+      let (px, fx) = rc_annot(modes, x);
+      let (pb, fb) = rc_annot(modes, b);
+      (PLet(v, RExpr(x), Some(px), pb, fb), fv_union(fv_del(fb, v), fx))
+    },
+    ILet(v, r, b) -> {
+      let (pb, fb) = rc_annot(modes, b);
+      let (c, bo) = rc_uses(modes, r);
+      (PLet(v, r, None, pb, fb), fold(append(c, bo), fv_del(fb, v), fv_add))
+    },
+    IRet(RExpr(x)) -> { let (px, fx) = rc_annot(modes, x); (PRet(RExpr(x), Some(px)), fx) },
+    IRet(r) -> { let (c, bo) = rc_uses(modes, r); (PRet(r, None), fold(append(c, bo), fv_empty(), fv_add)) },
+    IIf(c, t, el) -> {
+      let (pt, ft) = rc_annot(modes, t);
+      let (pe, fe) = rc_annot(modes, el);
+      (PIf(c, pt, pe), fold(atom_vars([c]), fv_union(ft, fe), fv_add))
+    },
+    IUnreachable -> (PUnr, fv_empty()),
+    _ -> internal("perceus: unexpected node"),
+  }
+}
+
+fn wrap_dups(vs, body) { fold(reverse(vs), body, |b, v| IDup(v, b)) }
+fn wrap_drops(vs, body) { fold(reverse(vs), body, |b, v| IDrop(v, b)) }
+fn str_remove(xs, v) { filter(xs, |x| x != v) }
+fn counts_of(xs) {
+  reverse(fold(xs, [], |acc, v| if any(acc, |e| match e { (k, _) -> k == v }) { map(acc, |e| match e { (k, n) -> if k == v { (k, n + 1) } else { (k, n) } }) } else { [(v, 1), ..acc] }))
+}
+
+// What perceus reads: the adts, the modes, the mutant, the function's variable
+// types, peek sources (variable -> what it was read from) and, for each
+// variable, the peeks whose chain of sources reaches it.
+type RC { RC(OMap<AdtInfo>, Map<List<String>>, String, Map<Ty>, Map<String>, Map<List<String>>) }
+fn rc_heap_var(rc, v) { match rc { RC(adts, _, _, vm, _, _) -> is_heap(adts, vm_ty(vm, v)) } }
+fn rc_mutant(rc) { match rc { RC(_, _, m, _, _, _) -> m } }
+fn rc_live(rc, vs) {
+  match rc { RC(_, _, _, _, src, _) -> {
+    fn chain(x, acc) { match m_get(src, x) { Some(y) -> chain(y, m_set(acc, y, true)), None -> acc } }
+    fold(vs, MEmpty, |m, v| chain(v, m_set(m, v, true)))
+  } }
+}
+// Is x live after `let v = ...` whose body has free variables s?
+fn rc_live_after(rc, s, v, x) {
+  match rc { RC(_, _, mutant, _, _, deps) -> {
+    let ds = match m_get(deps, x) { Some(d) -> d, None -> [] };
+    if mutant == "peek-source-early" { (x != v && fv_has(s, x)) || any(ds, |y| y != v && fv_has(s, y)) }
+    else { x != v && (fv_has(s, x) || any(ds, |y| fv_has(s, y))) }
+  } }
+}
+
+// Plans the reference-count operations around one rhs: (drops before, dups,
+// drops after, owned afterwards). live_after tells what is live after it.
+fn rc_plan(rc, r, owned, live_after) {
+  let mutant = rc_mutant(rc);
+  let (consume, borrow) = match rc { RC(_, modes, _, _, _, _) -> rc_uses(modes, r) };
+  let (remaining, dups) = fold(counts_of(consume), (owned, []), |acc, vn| match (acc, vn) {
+    ((rem, dups), (v, n)) -> if !rc_heap_var(rc, v) { (rem, dups) } else {
+      let can = contains_str(rem, v) && (mutant == "perceus-transfer-live" || !live_after(v)) && !contains_str(borrow, v);
+      let nd = if can { n - 1 } else { n };
+      let dups = append(dups, map(range(0, nd), |_| v));
+      (if can { str_remove(rem, v) } else { rem }, dups)
+    },
+  });
+  // What the instruction reads must stay alive through it, and so must what those projections read.
+  let mentioned = rc_live(rc, if mutant == "perceus-drop-borrowed" { consume } else { append(consume, borrow) });
+  let pre = filter(remaining, |v| !m_has(mentioned, v) && !live_after(v));
+  let remaining = filter(remaining, |v| !contains_str(pre, v));
+  let post = filter(remaining, |v| !live_after(v));
+  let remaining = filter(remaining, |v| !contains_str(post, v));
+  (pre, dups, if mutant == "perceus-no-post-drop" { [] } else { post }, remaining)
+}
+
+// The state: the res$ counter and the variables added (newest first).
+fn rc_go(rc, bor, e, owned, ret_ty, st) {
+  match e {
+    PUnr -> (IUnreachable, st),
+    PIf(c, t, el) -> {
+      let (t2, st) = rc_go(rc, bor, t, owned, ret_ty, st);
+      let (e2, st) = rc_go(rc, bor, el, owned, ret_ty, st);
+      (IIf(c, t2, e2), st)
+    },
+    PRet(_, Some(px)) -> rc_go(rc, bor, px, owned, ret_ty, st),
+    PRet(r, None) -> {
+      let (pre, dups, post, _) = rc_plan(rc, r, owned, |_| false);
+      if is_empty(post) { (wrap_drops(pre, wrap_dups(dups, IRet(r))), st) }
+      else {
+        // Something is only borrowed by the result: compute it, drop, then return it.
+        match st { (fresh, added) -> {
+          let v = "res$" ++ int_to_string(fresh);
+          (wrap_drops(pre, wrap_dups(dups, ILet(v, r, wrap_drops(post, IRet(RAtom(QVar(v))))))), (fresh + 1, [(v, ret_ty), ..added]))
+        } }
+      }
+    },
+    PLet(v, r, inner, body, fb) -> {
+      let la = |x| rc_live_after(rc, fb, v, x);
+      match inner {
+        Some(px) -> {
+          let inner_owned = filter(owned, |x| !la(x));
+          let vty = match rc { RC(_, _, _, vm, _, _) -> vm_ty(vm, v) };
+          let (sub, st) = rc_go(rc, bor, px, inner_owned, vty, st);
+          let after = filter(owned, la);
+          let after = if rc_heap_var(rc, v) { append(after, [v]) } else { after };
+          let (b2, st) = rc_go(rc, bor, body, after, ret_ty, st);
+          (ILet(v, RExpr(sub), b2), st)
+        },
+        None -> {
+          let (pre, dups, post, rem) = rc_plan(rc, r, owned, la);
+          let is_bor = m_has(bor, v);
+          let next = if rc_heap_var(rc, v) && !is_bor { append(rem, [v]) } else { rem };
+          let (b2, st) = rc_go(rc, bor, body, next, ret_ty, st);
+          (wrap_drops(pre, wrap_dups(dups, ILet(v, r, wrap_drops(post, b2)))), st)
+        },
+      }
+    },
+  }
+}
+
+// Consumers of each variable, and fields that are only read become peeks.
+fn rc_count(modes, e, m) {
+  let add = |m, v| m_set(m, v, match m_get(m, v) { Some(n) -> n + 1, None -> 1 });
+  match e {
+    ILet(_, RExpr(x), b) -> rc_count(modes, b, rc_count(modes, x, m)),
+    ILet(_, r, b) -> { let (c, _) = rc_uses(modes, r); rc_count(modes, b, fold(c, m, add)) },
+    IRet(RExpr(x)) -> rc_count(modes, x, m),
+    IRet(r) -> { let (c, _) = rc_uses(modes, r); fold(c, m, add) },
+    IIf(_, t, el) -> rc_count(modes, el, rc_count(modes, t, m)),
+    _ -> m,
+  }
+}
+fn rc_to_peek(heap_var, consumers, e, bor) {
+  match e {
+    ILet(v, r, b) -> {
+      let (r2, bor) = match r {
+        RField(x, p, t, o) -> if heap_var(v) && !m_has(consumers, v) { (RPeek(x, p, t, o), if contains_str(bor, v) { bor } else { [v, ..bor] }) } else { (r, bor) },
+        _ -> (r, bor),
+      };
+      let (r3, bor) = match r2 { RExpr(x) -> { let (x2, bor) = rc_to_peek(heap_var, consumers, x, bor); (RExpr(x2), bor) }, _ -> (r2, bor) };
+      let (b2, bor) = rc_to_peek(heap_var, consumers, b, bor);
+      (ILet(v, r3, b2), bor)
+    },
+    IRet(RExpr(x)) -> { let (x2, bor) = rc_to_peek(heap_var, consumers, x, bor); (IRet(RExpr(x2)), bor) },
+    IIf(c, t, el) -> { let (t2, bor) = rc_to_peek(heap_var, consumers, t, bor); let (e2, bor) = rc_to_peek(heap_var, consumers, el, bor); (IIf(c, t2, e2), bor) },
+    _ -> (e, bor),
+  }
+}
+fn peek_sources(e, m) {
+  match e {
+    ILet(v, r, b) -> {
+      let m = match r { RPeek(QVar(x), _, _, _) -> m_set(m, v, x), _ -> m };
+      let m = match r { RExpr(x) -> peek_sources(x, m), _ -> m };
+      peek_sources(b, m)
+    },
+    IRet(RExpr(x)) -> peek_sources(x, m),
+    IIf(_, t, el) -> peek_sources(el, peek_sources(t, m)),
+    _ -> m,
+  }
+}
+
+fn perceus(adts, modes, mutant, f) {
+  let vm = var_map(irf_vars(f));
+  let heap_var = |v| is_heap(adts, vm_ty(vm, v));
+  let fmodes = match m_get(modes, irf_name(f)) { Some(ms) -> ms, None -> map(irf_params(f), |_| "owned") };
+  let consumers = rc_count(modes, irf_body(f), MEmpty);
+  let (body, bor_rev) = if mutant != "no-borrow" { rc_to_peek(heap_var, consumers, irf_body(f), reverse(irf_borrowed(f))) } else { (irf_body(f), reverse(irf_borrowed(f))) };
+  let borrowed = reverse(bor_rev);
+  let src = peek_sources(body, MEmpty);
+  let deps = fold(m_entries(src), MEmpty, |d, e| match e { (y, _) -> {
+    fn up(d, x) { match m_get(src, x) { Some(s) -> up(m_set(d, s, append(match m_get(d, s) { Some(l) -> l, None -> [] }, [y])), s), None -> d } }
+    up(d, y)
+  } });
+  let rc = RC(adts, modes, mutant, vm, src, deps);
+  let bor = fold(borrowed, MEmpty, |m, v| m_set(m, v, true));
+  let owned = flat_map(zip(irf_params(f), fmodes), |pm| match pm { ((v, _), md) -> if md == "owned" && heap_var(v) { [v] } else { [] } });
+  let (px, _) = rc_annot(modes, body);
+  let (b2, st) = rc_go(rc, bor, px, owned, irf_ret(f), (0, []));
+  match st { (_, added) -> irf_with_modes(irf_with_borrowed(irf_with_vars(irf_with_body(f, b2), append(irf_vars(f), reverse(added))), borrowed), fmodes) }
+}
+
+// -------------------------------------------------------------------- reuse
+// A dropped cell whose size is known is handed to the next allocation of the
+// same size on each path (reuse.js).
+fn size_class(fields) {
+  let size = 8 + 8 * fields;
+  fn up(k, p) { if p >= size { k } else { up(k + 1, p * 2) } }
+  if size <= 16 { 4 } else { up(0, 1) }
+}
+fn pow2(k) { if k == 0 { 1 } else { 2 * pow2(k - 1) } }
+fn ru_alloc_class(r) {
+  match r {
+    RCtor(_, _, args, None) -> if is_empty(args) { None } else { Some(size_class(length(args))) },
+    RTuple(_, args, None) -> if is_empty(args) { None } else { Some(size_class(length(args))) },
+    _ -> None,
+  }
+}
+fn ru_with_reuse(r, tok) { match r { RCtor(t, tag, args, _) -> RCtor(t, tag, args, Some(tok)), RTuple(t, args, _) -> RTuple(t, args, Some(tok)), _ -> r } }
+fn ru_is_cls(r, cls) { match ru_alloc_class(r) { Some(c) -> c == cls, None -> false } }
+fn ru_place(mutant, e, tok, cls) {
+  match e {
+    ILet(v, r, b) -> if ru_is_cls(r, cls) { (ILet(v, ru_with_reuse(r, tok), b), true) } else {
+      let inner = match r { RExpr(x) -> { let (x2, used) = ru_place(mutant, x, tok, cls); if used { Some(x2) } else { None } }, _ -> None };
+      match inner {
+        Some(x2) -> (ILet(v, RExpr(x2), b), true),
+        None -> { let (b2, used) = ru_place(mutant, b, tok, cls); (ILet(v, r, b2), used) },
+      }
+    },
+    IDup(v, b) -> { let (b2, u) = ru_place(mutant, b, tok, cls); (IDup(v, b2), u) },
+    IDrop(v, b) -> { let (b2, u) = ru_place(mutant, b, tok, cls); (IDrop(v, b2), u) },
+    IDropReuse(v, r, b) -> { let (b2, u) = ru_place(mutant, b, tok, cls); (IDropReuse(v, r, b2), u) },
+    IFreeToken(v, n, b) -> { let (b2, u) = ru_place(mutant, b, tok, cls); (IFreeToken(v, n, b2), u) },
+    IIf(c, t, el) -> {
+      let (t2, ut) = ru_place(mutant, t, tok, cls);
+      let (e2, ue) = ru_place(mutant, el, tok, cls);
+      if !ut && !ue { (e, false) } else {
+        let unused = |b| if mutant == "reuse-no-free" { b } else { IFreeToken(tok, pow2(cls), b) };
+        (IIf(c, if ut { t2 } else { unused(t) }, if ue { e2 } else { unused(el) }), true)
+      }
+    },
+    IRet(r) -> if ru_is_cls(r, cls) { (IRet(ru_with_reuse(r, tok)), true) } else { (e, false) },
+    _ -> (e, false),
+  }
+}
+// The size class of the cell v points to, or none when it is not known.
+fn ru_drop_class(adts, vm, v, facts) {
+  match vm_ty(vm, v) {
+    TT(es) -> Some(size_class(length(es))),
+    TC(n, _) -> match om_get(adts, n) {
+      None -> None,
+      Some(d) -> {
+        let possible = match m_get(facts, v) { Some(p) -> p, None -> map(adt_ctors(d), ctor_idx) };
+        let classes = fold(possible, [], |acc, i| {
+          let nf = length(ctor_fields(list_get(adt_ctors(d), i)));
+          if nf > 0 { let c = size_class(nf); if any(acc, |x| x == c) { acc } else { append(acc, [c]) } } else { acc }
+        });
+        match classes { [c] -> Some(c), _ -> None }
+      },
+    },
+    _ -> None,
+  }
+}
+// The state: the token counter, the condition variables' tests, the variables added (newest first).
+fn ru_walk(adts, mutant, vm, e, facts, st) {
+  match e {
+    ILet(v, r, b) -> {
+      let st = match (r, st) { (RTestTag(QVar(x), [], _, _, tag), (fresh, tests, added)) -> (fresh, m_set(tests, v, (x, tag)), added), _ -> st };
+      let (r2, st) = match r { RExpr(x) -> { let (x2, st) = ru_walk(adts, mutant, vm, x, facts, st); (RExpr(x2), st) }, _ -> (r, st) };
+      let (b2, st) = ru_walk(adts, mutant, vm, b, facts, st);
+      (ILet(v, r2, b2), st)
+    },
+    IIf(c, t, el) -> {
+      let test = match (c, st) { (QVar(cv), (_, tests, _)) -> m_get(tests, cv), _ -> None };
+      match test {
+        None -> { let (t2, st) = ru_walk(adts, mutant, vm, t, facts, st); let (e2, st) = ru_walk(adts, mutant, vm, el, facts, st); (IIf(c, t2, e2), st) },
+        Some((x, tag)) -> {
+          let d = match vm_ty(vm, x) { TC(n, _) -> match om_get(adts, n) { Some(d) -> d, None -> internal("reuse: adt") }, _ -> internal("reuse: test type") };
+          let before = match m_get(facts, x) { Some(p) -> p, None -> map(adt_ctors(d), ctor_idx) };
+          let yes = m_set(facts, x, [tag]);
+          let no = m_set(facts, x, filter(before, |i| i != tag));
+          let (t2, st) = ru_walk(adts, mutant, vm, t, yes, st);
+          let (e2, st) = ru_walk(adts, mutant, vm, el, no, st);
+          (IIf(c, t2, e2), st)
+        },
+      }
+    },
+    IDrop(v, b) -> match ru_drop_class(adts, vm, v, facts) {
+      Some(cls) -> match st { (fresh, tests, added) -> {
+        let tok = "ru$" ++ int_to_string(fresh);
+        let st = (fresh + 1, tests, added);
+        let (p, used) = ru_place(mutant, b, tok, cls);
+        if used {
+          let st = match st { (fr, ts, ad) -> (fr, ts, [(tok, vm_ty(vm, v)), ..ad]) };
+          let (b2, st) = ru_walk(adts, mutant, vm, p, facts, st);
+          (IDropReuse(v, tok, b2), st)
+        } else { let (b2, st) = ru_walk(adts, mutant, vm, b, facts, st); (IDrop(v, b2), st) }
+      } },
+      None -> { let (b2, st) = ru_walk(adts, mutant, vm, b, facts, st); (IDrop(v, b2), st) },
+    },
+    IDup(v, b) -> { let (b2, st) = ru_walk(adts, mutant, vm, b, facts, st); (IDup(v, b2), st) },
+    IDropReuse(v, r, b) -> { let (b2, st) = ru_walk(adts, mutant, vm, b, facts, st); (IDropReuse(v, r, b2), st) },
+    IFreeToken(v, n, b) -> { let (b2, st) = ru_walk(adts, mutant, vm, b, facts, st); (IFreeToken(v, n, b2), st) },
+    _ -> (e, st),
+  }
+}
+fn insert_reuse(adts, mutant, f) {
+  let vm = var_map(irf_vars(f));
+  let (b, st) = ru_walk(adts, mutant, vm, irf_body(f), MEmpty, (0, MEmpty, []));
+  match st { (_, _, added) -> irf_with_vars(irf_with_body(f, b), append(irf_vars(f), reverse(added))) }
+}
+
+// ------------------------------------------------------- drop specialization
+// Field loads from v right before its drop become peeks and an unpack, which
+// moves the fields out when v is unique (specialize.js).
+fn sp_layout(adts, t) {
+  match t {
+    TT(es) -> Some(es),
+    TC(n, args) -> match om_get(adts, n) {
+      None -> None,
+      Some(d) -> match filter(adt_ctors(d), |c| !is_empty(ctor_fields(c))) {
+        [c] -> { let sub = zip(adt_params(d), args); Some(map(ctor_fields(c), |fty| subst_params(fty, sub))) },
+        _ -> None,
+      },
+    },
+    _ -> None,
+  }
+}
+fn sp_rewrite(adts, vm, e) {
+  match e {
+    ILet(_, RField(QVar(v), [_], _, _), _) -> {
+      // The chain of loads (variable, field index, field type) and what follows it.
+      fn chain(cur, acc) {
+        match cur {
+          ILet(x, RField(QVar(w), [i], t, _), b) -> if w == v { chain(b, [(x, i, t), ..acc]) } else { (reverse(acc), cur) },
+          _ -> (reverse(acc), cur),
+        }
+      }
+      let (loads, cur) = chain(e, []);
+      let tail = match cur { IDrop(w, b) -> if w == v { Some((None, b)) } else { None }, IDropReuse(w, r, b) -> if w == v { Some((Some(r), b)) } else { None }, _ -> None };
+      match (tail, sp_layout(adts, vm_ty(vm, v))) {
+        (Some((tok, rest)), Some(fields)) -> {
+          let moved = filter(loads, |l| match l { (_, _, t) -> is_heap(adts, t) });
+          let idxs = map(moved, |l| match l { (_, i, _) -> i });
+          let distinct = fold(idxs, [], |acc, i| if any(acc, |j| j == i) { acc } else { [i, ..acc] });
+          if length(distinct) != length(moved) { e } else {
+            let node = IUnpack(v, map(moved, |l| match l { (x, i, _) -> (x, i) }), tok, fields, rest);
+            fn rebuild(cur, n) {
+              if n == 0 { node } else {
+                match cur {
+                  ILet(x, RField(a, p, t, o), b) -> ILet(x, if is_heap(adts, t) { RPeek(a, p, t, o) } else { RField(a, p, t, o) }, rebuild(b, n - 1)),
+                  _ -> internal("specialize"),
+                }
+              }
+            }
+            rebuild(e, length(loads))
+          }
+        },
+        _ -> e,
+      }
+    },
+    _ -> e,
+  }
+}
+fn sp_walk(adts, vm, e) {
+  match e {
+    IIf(c, t, el) -> IIf(c, sp_walk(adts, vm, t), sp_walk(adts, vm, el)),
+    ILet(_, _, _) -> match sp_rewrite(adts, vm, e) {
+      ILet(v, RExpr(x), b) -> ILet(v, RExpr(sp_walk(adts, vm, x)), sp_walk(adts, vm, b)),
+      ILet(v, r, b) -> ILet(v, r, sp_walk(adts, vm, b)),
+      other -> other,
+    },
+    IDup(v, b) -> IDup(v, sp_walk(adts, vm, b)),
+    IDrop(v, b) -> IDrop(v, sp_walk(adts, vm, b)),
+    IDropReuse(v, r, b) -> IDropReuse(v, r, sp_walk(adts, vm, b)),
+    IFreeToken(v, n, b) -> IFreeToken(v, n, sp_walk(adts, vm, b)),
+    IUnpack(v, xs, r, fs, b) -> IUnpack(v, xs, r, fs, sp_walk(adts, vm, b)),
+    _ -> e,
+  }
+}
+fn specialize_drops(adts, f) { irf_with_body(f, sp_walk(adts, var_map(irf_vars(f)), irf_body(f))) }
+
+// The back end's IR passes after lowering, as compileProgram runs them.
+type BOpts { BOpts(Bool, Bool, Bool, Bool, String) }   // inline, borrow, reuse, specialize, mutant
+fn rc_program(adts, ir, o) {
+  match (ir, o) { (IRProg(fns, main, ords), BOpts(inl, borrow, reuse, spec, mutant)) -> {
+    let fns = if inl { map(inline_small(fns, main), simplify) } else { fns };
+    let modes = if borrow { infer_borrowing(adts, fns) } else { MEmpty };
+    let fns = map(fns, |f| {
+      let f = perceus(adts, modes, mutant, f);
+      let f = if reuse { insert_reuse(adts, mutant, f) } else { f };
+      if spec { specialize_drops(adts, f) } else { f }
+    });
+    IRProg(fns, main, ords)
+  } }
+}
