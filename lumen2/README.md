@@ -889,7 +889,7 @@ recursive.
 Refinement predicates are linear integer arithmetic over variables and
 lengths; the checker also knows division and remainder by constants. Hard
 arithmetic obligations take a few seconds: the binary search showcase takes
-about 4 s to check. The checker does not infer loop invariants: a recursive function
+about 2.5 s to check. The checker does not infer loop invariants: a recursive function
 needs a refined parameter to carry one. It knows nothing about list lengths.
 It knows about array contents only through element refinements, which state
 one fact about every element; facts about particular positions, or arrays

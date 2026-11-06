@@ -223,6 +223,23 @@ test('refinements: a value that overflowed constrains nothing', () => {
   assert.equal(s.h, 'fn(Int) -> Int', 'in range, a quotient is still known');
 });
 
+test('refinements: an if\'s condition proves the access it guards, without a search', () => {
+  // Found by the fuzzer: the condition !(array_length(a) <= i) and the goal
+  // i < array_length(a) were two circuits, and with values near 2^63 the
+  // solver needed thousands of conflicts to find them equal (in one program,
+  // more memory than the compiler has). Comparisons now have one form.
+  const src = `fn f(a: Array<Int>, x: Int, y: Int) -> Int {
+    let i = x + (if y > 5 { 9223372036854775798 + 10 } else { 1 }) - y;
+    if i < 0 || array_length(a) <= i { 0 } else { array_get(a, i) }
+  }
+  fn main() { println(int_to_string(f(array_make(3, 1), 1, 2))) }`;
+  const c = checkSource(src);
+  assert.equal(c.signatures.find((s) => s.name === 'f').type, 'fn(Array<Int>, Int, Int) -> Int');
+  const o = c.verification.obligations.find((x) => x.scope === 'user' && x.what === 'the index is in bounds');
+  assert.equal(o.status, 'proved');
+  assert.ok(o.lemmas < 10, `${o.lemmas} conflicts`);
+});
+
 test('read_line streams standard input a line at a time', () => {
   const src = `fn count(n: Int, bytes: Int) -> (Int, Int) ! input {
     let l = read_line();

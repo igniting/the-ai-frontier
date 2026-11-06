@@ -37,10 +37,27 @@ fn scale_term(a, k) {
   if b_is_zero(k) { konst(BS(0)) } else { match a { Term(cs, c) -> Term(map(cs, |e| match e { (id, x) -> (id, b_mul(x, k)) }), b_mul(c, k)) } }
 }
 
+// Comparisons in one form, so that a fact stated two ways is one formula,
+// and the bit-blaster (which shares identical gates) gives it one literal:
+// t < 0, with t's atoms in order and the first one's coefficient positive.
+// Over the integers, t <= 0 is t - 1 < 0, and t < 0 is !(-t - 1 < 0). (An
+// if's condition, say !(len <= i), and the goal i < len otherwise become two
+// circuits, which the solver must find equal: with 64-bit values, thousands
+// of conflicts, or in one generated program more memory than the compiler has.)
+fn insert_by_id(xs, e) {
+  match (xs, e) { ([], _) -> [e], ([(i, k), ..rest], (j, _)) -> if j < i { [e, ..xs] } else { [(i, k), ..insert_by_id(rest, e)] } }
+}
+fn canon_term(t) { match t { Term(cs, c) -> Term(fold(cs, [], insert_by_id), c) } }
+fn leads_negative(t) { match term_coeffs(t) { [(_, k), .._] -> b_lt(k, BS(0)), [] -> false } }
+fn lt0(t0) {
+  let t = canon_term(t0);
+  if leads_negative(t) { FNot(FLt(sub_terms(scale_term(t, BS(0 - 1)), konst(BS(1))))) } else { FLt(t) }
+}
+fn eq0(t0) { let t = canon_term(t0); if leads_negative(t) { FEq(scale_term(t, BS(0 - 1))) } else { FEq(t) } }
 fn compare(op, a, b) {
-  if op == "<" { FLt(sub_terms(a, b)) } else if op == "<=" { FLe(sub_terms(a, b)) }
-  else if op == ">" { FLt(sub_terms(b, a)) } else if op == ">=" { FLe(sub_terms(b, a)) }
-  else if op == "==" { FEq(sub_terms(a, b)) } else { FNot(FEq(sub_terms(a, b))) }
+  if op == "<" { lt0(sub_terms(a, b)) } else if op == "<=" { lt0(sub_terms(sub_terms(a, b), konst(BS(1)))) }
+  else if op == ">" { lt0(sub_terms(b, a)) } else if op == ">=" { lt0(sub_terms(sub_terms(b, a), konst(BS(1)))) }
+  else if op == "==" { eq0(sub_terms(a, b)) } else { FNot(eq0(sub_terms(a, b))) }
 }
 fn f_and(a, b) { match (a, b) { (FTrue, _) -> b, (_, FTrue) -> a, _ -> FAnd(a, b) } }
 fn f_or(a, b) { FOr(a, b) }
@@ -275,6 +292,7 @@ fn prove_fresh(atoms, used, relevant, goal, mutant, max_conflicts, keep) {
       FAnd(x, y) -> conj(y, conj(x, acc)),
       FLe(t) -> [t, ..acc],
       FLt(t) -> [add_terms(t, konst(BS(1))), ..acc],
+      FNot(FLt(t)) -> [scale_term(t, BS(0 - 1)), ..acc],
       FEq(t) -> [scale_term(t, BS(0 - 1)), t, ..acc],
       _ -> acc,
     }

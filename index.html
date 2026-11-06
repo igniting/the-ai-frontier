@@ -2637,6 +2637,12 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
     <li><b>A rule that closed too much.</b> To settle the effects of <code>par_map</code>'s function, the checker
     closes its effect row. That row was also the call's own, so closing it closed the effects of the function
     making the call, and the first test program's <code>println</code> in <code>main</code> was rejected.</li>
+    <li><b>A proof that ran out of memory.</b> A generated program, on its first run in CI, made the compiler
+    run out of memory while proving an array access in bounds, a bug older than everything in chapter 22. The if
+    around the access said <code>!(array_length(a) &lt;= i)</code>, the goal said <code>i &lt; array_length(a)</code>,
+    and the checker built a separate circuit for each. With a value near 2<sup>63</sup> in the term, the solver
+    needed more and more conflicts to find the two equal. Comparisons now have one canonical form, so both are
+    one literal: that proof takes no conflicts, and checking the binary search showcase takes half as long.</li>
     <li><b>A parallel program four times slower than the sequential one.</b> In the first parallel N-queens, one
     lambda passed a new list to <code>safe</code> in tail position. To keep that call a tail call, borrow inference
     made <code>safe</code> own its list (chapter 17), and every other call of <code>safe</code> then counted
