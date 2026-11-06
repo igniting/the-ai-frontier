@@ -470,9 +470,29 @@ in its speed.
 | `array_get(a, i)` | `fn(Array<a>, Int) -> a ! fail` | element `i`, or `index out of bounds` |
 | `array_set(a, i, x)` | `fn(Array<a>, Int, a) -> Array<a> ! fail` | `a` with element `i` replaced by `x`, or `index out of bounds` |
 | `array_push(a, x)` | `fn(Array<a>, a) -> Array<a>` | `a` with `x` added at the end; `out of memory` past 2^24 - 1 elements |
+| `par_map(a, f)` | `fn(Array<a>, fn(a) -> b ! e) -> Array<b> ! e` | `f` of each element of `a`, in an array of the same length; `e` may only be `fail` (below) |
 
 The `fail` in these types applies only at call sites the checker cannot
 prove safe (§6).
+
+`par_map` gives the array that applying `f` to each element in turn would
+give, but the implementation may compute the elements at the same time, on
+several threads, in any order (§11). So `f` may fail, but it may not read
+input, write output, read the clock or use randomness: a call whose function
+can do any of these is an error, at the function. Its effects are settled at
+the call. If they are not yet known there, because `f` is a parameter of the
+enclosing function, they are taken to be none, and that function's type then
+only accepts functions without effects:
+
+```
+fn pm(xs, h) { par_map(xs, h) }      // pm : fn(Array<a>, fn(a) -> b) -> Array<b>
+```
+
+When calls of `f` fail, `par_map` stops with the error of the first element,
+in the order of the array, whose call fails: the error that applying `f` in
+order would stop with. (If a call for a later element does not terminate,
+`par_map` may not either.) The checker knows that the result has the length
+of `a`.
 
 ### 10.4 The prelude
 
@@ -512,6 +532,15 @@ the compiler checks them, and so does the test suite.
   shared. That carries across calls: a parameter is known not to be shared
   when every call passes such an array, and a function's result when every
   return gives one.
+- **par_map on threads.** In Node, a program that calls `par_map` runs on
+  as many threads as the machine has cores (or `LUMEN2_THREADS`). Each thread
+  is an instance of the module, and all share one memory. Each thread takes
+  chunks of the heap and has free lists of its own. While a parallel call
+  runs, reference counts above 1 change by atomic operations; a count of 1 is
+  still exclusive, so freeing, reuse and in-place updates need none. A
+  `par_map` inside the function of another runs as a loop on its thread. In
+  a browser, `par_map` is a loop. The leak check counts every thread's
+  objects.
 - **Constant stack** for tail calls (including a call that is the right
   operand of `&&` or `||` in tail position), for freeing long lists and for
   comparing long lists.

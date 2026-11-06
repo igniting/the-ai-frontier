@@ -1,0 +1,26 @@
+// N-queens on threads: the same search as nqueens.lm, split into a task for
+// each way to place the first two queens, which par_map runs.
+fn safe(qs: List<Int>, col: Int, d: Int) -> Bool {
+  match qs { Nil -> true, Cons(c, rest) -> c != col && c != col + d && c != col - d && safe(rest, col, d + 1) }
+}
+fn solve(n: Int, qs: List<Int>, row: Int) -> Int { if row == n { 1 } else { columns(n, qs, row, 0, 0) } }
+fn columns(n: Int, qs: List<Int>, row: Int, col: Int, acc: Int) -> Int {
+  if col == n { acc }
+  else if safe(qs, col, 1) { columns(n, qs, row, col + 1, acc + solve(n, Cons(col, qs), row + 1)) }
+  else { columns(n, qs, row, col + 1, acc) }
+}
+
+fn digits(s: String, i: {i: Int | 0 <= i}, acc: Int) -> Int {
+  if i >= string_length(s) { acc } else {
+    let c = char_code_at(s, i);
+    if c >= 48 && c <= 57 { digits(s, i + 1, acc * 10 + c - 48) } else { acc }
+  }
+}
+
+fn main() {
+  let n = digits(read_input(), 0, 0);
+  // The second queen must not be in the first one's column or next to it diagonally.
+  let starts = flat_map(range(0, n), |a| map(filter(range(0, n), |b| b != a && b != a + 1 && b != a - 1), |b| [b, a]));
+  let total = if n < 2 { solve(n, Nil, 0) } else { sum(array_to_list(par_map(array_from_list(starts), |qs| solve(n, qs, 2)))) };
+  println(int_to_string(total) ++ " solutions for " ++ int_to_string(n) ++ " queens")
+}

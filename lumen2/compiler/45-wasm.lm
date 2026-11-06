@@ -92,18 +92,23 @@ fn op_code(o) {
   else if o == "i64.and" { 131 } else if o == "i64.or" { 132 } else if o == "i64.xor" { 133 } else if o == "i64.shl" { 134 } else if o == "i64.shr_s" { 135 } else if o == "i64.shr_u" { 136 } else if o == "i64.rotl" { 137 } else if o == "i64.rotr" { 138 }
   else if o == "i32.wrap_i64" { 167 } else if o == "i64.extend_i32_s" { 172 } else if o == "i64.extend_i32_u" { 173 }
   else if o == "memory.copy" || o == "memory.fill" { 252 }
+  else if is_atomic(o) { 254 }
   else { internal("wasm: unknown instruction " ++ o) }
 }
+// Atomic instructions (the threads proposal): prefix 0xFE, then their own code.
+fn is_atomic(o) { o == "i32.atomic.rmw.add" || o == "i32.atomic.rmw.sub" }
+fn atomic_code(o) { if o == "i32.atomic.rmw.add" { 30 } else { 37 } }
 fn mem_align(o) { if o == "i64.load" || o == "i64.store" { 3 } else if o == "i32.load8_u" || o == "i32.store8" { 0 } else { 2 } }
 
 // The module: types are registered in the order the reference registers
 // them (imports, then each function's own type and its indirect calls).
 type Imp { Imp(String, String, String, List<String>, List<String>) }   // module, name, function name, params, results
-fn imports() {
-  [Imp("env", "write", "host_write", ["i32", "i32"], []), Imp("env", "input_len", "host_input_len", [], ["i32"]), Imp("env", "input_read", "host_input_read", ["i32"], []),
+fn imports(threads) {
+  append([Imp("env", "write", "host_write", ["i32", "i32"], []), Imp("env", "input_len", "host_input_len", [], ["i32"]), Imp("env", "input_read", "host_input_read", ["i32"], []),
    Imp("env", "line_len", "host_line_len", [], ["i32"]), Imp("env", "line_read", "host_line_read", ["i32"], []),
    Imp("env", "fail", "host_fail", ["i32"], []), Imp("env", "panic", "host_panic", ["i32", "i32"], []), Imp("env", "clock", "host_clock", [], ["i64"]),
-   Imp("env", "random", "host_random", ["i64", "i64"], ["i64"])]
+   Imp("env", "random", "host_random", ["i64", "i64"], ["i64"])],
+   if threads { [Imp("env", "par", "host_par", ["i32"], [])] } else { [] })
 }
 fn sig_key(ps, rs) { join(ps, ",") ++ "->" ++ join(rs, ",") }
 // Types: (in order, newest first; key -> index).
@@ -112,9 +117,11 @@ fn ty_reg(tys, ps, rs) {
 }
 fn ty_idx(tys, ps, rs) { match tys { (_, idx, _) -> match m_get(idx, sig_key(ps, rs)) { Some(i) -> i, None -> internal("wasm: type") } } }
 
-// funcs, table (function names), the data segment, the start of the heap.
-fn encode_module(funcs, table, data, heap_start, max_pages) {
-  let imps = imports();
+// funcs, table (function names), the data segment, the start of the heap,
+// threads mode (the memory is imported and shared, for par_map's threads).
+fn encode_module(funcs, table, data, heap_start, max_pages, threads) {
+  let imps = imports(threads);
+  let min_pages = (heap_start + 65536 + 65535) / 65536;
   let tys0 = fold(imps, ([], MEmpty, 0), |t, im| match im { Imp(_, _, _, ps, rs) -> ty_reg(t, ps, rs) });
   let tys = fold(funcs, tys0, |t, f| match f { WFn(_, ps, rs, _, body) -> {
     let t = ty_reg(t, map(ps, |p| match p { (_, ty) -> ty }), rs);
@@ -123,7 +130,9 @@ fn encode_module(funcs, table, data, heap_start, max_pages) {
   let n_imp = length(imps);
   let fidx = fold(enumerate(funcs), fold(enumerate(imps), MEmpty, |m, p| match p { (i, Imp(_, _, n, _, _)) -> m_set(m, n, i) }), |m, p| match p { (i, f) -> m_set(m, wfn_name(f), i + n_imp) });
   let fi = |n| match m_get(fidx, n) { Some(i) -> i, None -> internal("wasm: unknown function " ++ n) };
-  let gidx = |g| if g == "hp" { 0 } else if g == "live" { 1 } else if g == "allocs" { 2 } else { internal("wasm: unknown global " ++ g) };
+  let gidx = |g| if g == "hp" { 0 } else if g == "live" { 1 } else if g == "allocs" { 2 }
+    else if threads && g == "hp_end" { 3 } else if threads && g == "fl" { 4 } else if threads && g == "par" { 5 } else if threads && g == "heap0" { 6 } else if threads && g == "sc" { 7 }
+    else { internal("wasm: unknown global " ++ g) };
   let out = push_list(array_empty(), [0, 97, 115, 109, 1, 0, 0, 0]);
   // 1: types
   let types = match tys { (list, _, _) -> reverse(list) };
@@ -134,7 +143,9 @@ fn encode_module(funcs, table, data, heap_start, max_pages) {
   } });
   let out = push_section(out, 1, body);
   // 2: imports
-  let body = fold(imps, push_uleb(array_empty(), length(imps)), |o, im| match im { Imp(md, nm, _, ps, rs) -> push_uleb(array_push(push_str(push_str(o, md), nm), 0), ty_idx(tys, ps, rs)) });
+  let body = fold(imps, push_uleb(array_empty(), length(imps) + (if threads { 1 } else { 0 })), |o, im| match im { Imp(md, nm, _, ps, rs) -> push_uleb(array_push(push_str(push_str(o, md), nm), 0), ty_idx(tys, ps, rs)) });
+  // Threads mode: the memory, shared (limits flag 3: a maximum, shared).
+  let body = if threads { push_uleb(push_uleb(push_list(push_str(push_str(body, "env"), "memory"), [2, 3]), min_pages), max_pages) } else { body };
   let out = push_section(out, 2, body);
   // 3: functions
   let body = fold(funcs, push_uleb(array_empty(), length(funcs)), |o, f| match f { WFn(_, ps, rs, _, _) -> push_uleb(o, ty_idx(tys, map(ps, |p| match p { (_, t) -> t }), rs)) });
@@ -142,16 +153,20 @@ fn encode_module(funcs, table, data, heap_start, max_pages) {
   // 4: table
   let out = push_section(out, 4, push_uleb(push_list(push_uleb(array_empty(), 1), [112, 0]), length(table)));
   // 5: memory
-  let out = push_section(out, 5, push_uleb(push_uleb(array_push(push_uleb(array_empty(), 1), 1), (heap_start + 65536 + 65535) / 65536), max_pages));
-  // 6: globals (hp, live, allocs)
+  let out = if threads { out } else { push_section(out, 5, push_uleb(push_uleb(array_push(push_uleb(array_empty(), 1), 1), min_pages), max_pages)) };
+  // 6: globals (hp, live, allocs; in threads mode hp_end, fl (the free lists),
+  // par, heap0 and sc (scratch memory) too, and hp starts empty, so that the
+  // first allocation takes a chunk)
   let g = |o, init| array_push(push_sleb(push_list(o, [127, 1, 65]), init), 11);
-  let out = push_section(out, 6, g(g(g(push_uleb(array_empty(), 3), heap_start), 0), 0));
+  let out = if threads { push_section(out, 6, g(g(g(g(g(g(g(g(push_uleb(array_empty(), 8), 0), 0), 0), 0), 64), 0), heap_start), 256)) }
+    else { push_section(out, 6, g(g(g(push_uleb(array_empty(), 3), heap_start), 0), 0)) };
   // 7: exports
-  let body = push_uleb(array_empty(), 4);
+  let body = push_uleb(array_empty(), if threads { 6 } else { 4 });
   let body = push_uleb(array_push(push_str(body, "_start"), 0), fi("_start"));
   let body = push_uleb(array_push(push_str(body, "memory"), 2), 0);
   let body = push_uleb(array_push(push_str(body, "live"), 3), 1);
   let body = push_uleb(array_push(push_str(body, "allocs"), 3), 2);
+  let body = if threads { push_uleb(array_push(push_str(push_uleb(array_push(push_str(body, "par_item"), 0), fi("par_item")), "par_init"), 0), fi("par_init")) } else { body };
   let out = push_section(out, 7, body);
   // 9: elements
   let body = push_list(push_uleb(array_empty(), 1), [0, 65, 0, 11]);
@@ -166,6 +181,8 @@ fn encode_module(funcs, table, data, heap_start, max_pages) {
   // 11: data
   let body = push_uleb(push_list(push_sleb(push_list(push_uleb(array_empty(), 1), [0, 65]), 1024), [11]), array_length(data));
   let out = push_section(out, 11, push_bytes(body, data));
+  // Threads mode: the memory's size at the start, which the host needs to make it.
+  let out = if threads { push_section(out, 0, push_uleb(push_str(array_empty(), "lumen2.threads"), min_pages)) } else { out };
   // 0: the "name" section: function names.
   let names = fold(enumerate(append(map(imps, |im| match im { Imp(_, _, n, _, _) -> n }), map(funcs, wfn_name))), push_uleb(array_empty(), n_imp + length(funcs)), |o, kn| match kn { (k, n) -> push_str(push_uleb(o, k), n) });
   let body = push_bytes(push_uleb(array_push(push_str(array_empty(), "name"), 1), array_length(names)), names);
@@ -191,7 +208,7 @@ fn enc_code(f, fi, gidx, ti) {
         OCallInd(_, ps, rs) -> (array_push(push_uleb(o, ti(ps, rs)), 0), labels),
         OI32(v) -> (push_sleb(o, wrap32(v)), labels),
         OI64(v) -> (push_sleb(o, v), labels),
-        OMem(x, off) -> (push_uleb(push_uleb(o, mem_align(x)), off), labels),
+        OMem(x, off) -> if is_atomic(x) { (push_uleb(push_uleb(push_uleb(o, atomic_code(x)), 2), off), labels) } else { (push_uleb(push_uleb(o, mem_align(x)), off), labels) },
         OBlock(_, l, t) -> (array_push(o, match t { Some(v) -> valtype_byte(v), None -> 64 }), [l, ..labels]),
         OBr(_, l) -> {
           fn depth(ls, d) { match ls { [] -> internal("wasm: unknown label " ++ l ++ " in " ++ name), [x, ..rest] -> if x == Some(l) { d } else { depth(rest, d + 1) } } }

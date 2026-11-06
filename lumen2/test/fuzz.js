@@ -75,6 +75,9 @@ export function generate(seed) {
   let names = 0;
   const fresh = (p) => `${p}${names++}`;
   const fns = []; // { name, params: [types], ret }
+  // Inside a function given to par_map: no clock, no randomness, and no calls
+  // through function values or to generated functions, which might use them.
+  let pure = 0;
 
   // Text for a value: usually by hand, sometimes with the derived or built-in `show`.
   const show = (t, e) => {
@@ -105,7 +108,7 @@ export function generate(seed) {
 
   // An expression of type t. env: [{ name, t }].
   function gen(t, d, env) {
-    const vars = env.filter((v) => v.t === t);
+    const vars = env.filter((v) => v.t === t && !(pure && v.t === T.fn));
     if (d <= 0 || chance(0.15)) {
       if (vars.length && chance(0.6)) return pick(vars).name;
       return leaf(t, env);
@@ -114,7 +117,7 @@ export function generate(seed) {
     if (r < 0.08) return `{ ${letStmt(d, env, (env2) => gen(t, d - 1, env2))} }`;
     if (r < 0.14) return `(if ${gen(T.bool, d - 1, env)} { ${gen(t, d - 1, env)} } else { ${gen(t, d - 1, env)} })`;
     if (r < 0.24) return matchExpr(t, d, env);
-    if (r < 0.28) {
+    if (r < 0.28 && !pure) {
       const callable = fns.filter((f) => f.ret === t);
       if (callable.length) { const f = pick(callable); return `${f.name}(${f.params.map((p) => gen(p, d - 1, env)).join(', ')})`; }
     }
@@ -161,6 +164,14 @@ export function generate(seed) {
     const x = fresh('x');
     return `|${x}| ${gen(rt, d - 1, [...env, { name: x, t: pt }])}`;
   }
+  // par_map with a function that can only fail: the compiled code runs it on threads.
+  function parMap(at, pt, rt, d, env) {
+    if (chance(0.5)) return gen(rt === T.int ? T.arr : T.sarr, d - 1, env);
+    pure++;
+    const f = lambda1(pt, rt, d, env);
+    pure--;
+    return `par_map(${gen(at, d - 1, env)}, ${f})`;
+  }
 
   function specific(t, d, env) {
     const g = (u) => gen(u, d - 1, env);
@@ -179,7 +190,7 @@ export function generate(seed) {
         () => `(${g(T.fn)})(${g(T.int)})`, () => `min(${g(T.int)}, ${g(T.int)})`, () => `abs(${g(T.int)})`,
         () => { const a = fresh('acc'), x = fresh('x'); return `fold(${g(T.ints)}, ${g(T.int)}, |${a}, ${x}| ${gen(T.int, d - 1, [...env, { name: a, t: T.int }, { name: x, t: T.int }])})`; },
         () => `length(tree_list(${g(T.tree)}))`,
-        () => `random_int(${g(T.int)}, ${g(T.int)})`, () => `(clock_ms() - clock_ms())`,
+        ...(pure ? [] : [() => `random_int(${g(T.int)}, ${g(T.int)})`, () => `(clock_ms() - clock_ms())`]),
         () => `size(${g(pick([T.shape, T.tree, T.ints, T.int]))})`,
         () => refined(d, env), () => refined(d, env), () => edge(),
         () => { const u = cmpTy(); return `compare(${g(u)}, ${g(u)})`; },
@@ -225,10 +236,12 @@ export function generate(seed) {
       case T.arr: return pick([
         () => `array_make(${size()}, ${g(T.int)})`, () => `array_set(${g(T.arr)}, ${idx()}, ${g(T.int)})`,
         () => `array_push(${g(T.arr)}, ${g(T.int)})`, () => `array_from_list(${g(T.ints)})`,
+        () => parMap(T.arr, T.int, T.int, d, env), () => parMap(T.sarr, T.str, T.int, d, env),
       ])();
       case T.sarr: return pick([
         () => `array_make(${size()}, ${g(T.str)})`, () => `array_set(${g(T.sarr)}, ${idx()}, ${g(T.str)})`,
         () => `array_push(${g(T.sarr)}, ${g(T.str)})`, () => `array_from_list(${g(T.strs)})`,
+        () => parMap(T.arr, T.int, T.str, d, env),
       ])();
       case T.fn: return pick([
         () => lambda1(T.int, T.int, d, env),
@@ -393,7 +406,8 @@ export function differential(src, { mutant = null, maxSteps = 3000000 } = {}) {
   let ref;
   try { ref = interpret(c.program, { maxSteps }); } catch (e) { ref = { output: e.output ?? '', error: e.message }; }
   if (ref.error === 'out of fuel' || ref.error === 'stack overflow') return 'skip';
-  const modes = [{ paranoid: false }, { paranoid: true }, { reuse: false }];
+  // A program that calls par_map runs it on threads in these modes; it also runs it as a loop.
+  const modes = [{ paranoid: false }, { paranoid: true }, { reuse: false }, ...(src.includes('par_map(') ? [{ threads: false }] : [])];
   for (const mode of modes) {
     let r;
     try { r = runWasm(compileSource(src, { ...mode, mutant }).bytes); } catch (e) { return `${JSON.stringify(mode)}: compiler crashed: ${e.stack}`; }

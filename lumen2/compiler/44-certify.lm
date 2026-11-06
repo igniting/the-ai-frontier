@@ -66,6 +66,13 @@ fn check_types(adts, fns) {
         else if name == "array_get" { let e = elem(); Some((append(opt(a0), [t_int()]), e)) }
         else if name == "array_set" { let e = elem(); Some((append(opt(a0), [t_int(), e]), match a0 { Some(t) -> t, None -> t_unit() })) }
         else if name == "array_push" { let e = elem(); Some((append(opt(a0), [e]), match a0 { Some(t) -> t, None -> t_unit() })) }
+        else if name == "par_map" {
+          let e = elem();
+          match a1 {
+            Some(TF([p], r, eff)) -> if ct_same_opt(p, e) { Some((append(opt(a0), [TF([p], r, eff)]), t_array(r))) } else { cert_fail(pre ++ "par_map's function does not take the array's elements") },
+            _ -> cert_fail(pre ++ "par_map of a non-function"),
+          }
+        }
         else { None };
       match want {
         None -> cert_fail(pre ++ "unknown builtin " ++ name),

@@ -11,6 +11,12 @@
 // Every run is a fresh process; the time is the best of N runs, measured
 // inside the process around the program's run (not compiling or loading it).
 // Both WebAssembly columns run code from V8's optimizing compiler.
+//
+// The second table is parallel: name-par.lm splits the same work into tasks
+// that par_map runs on every core, and name-par.c does the same with OpenMP.
+// Each runs on one thread and on all of them, and must print what the
+// sequential program prints. (A Lumen 2 time on threads includes starting
+// the worker threads.)
 // The outputs of all versions must be identical.
 
 import { spawnSync } from 'node:child_process';
@@ -28,6 +34,11 @@ const BENCH = [
   { name: 'binarytrees', n: 18, quick: 8, what: 'allocating and freeing trees' },
   { name: 'nqueens', n: 13, quick: 6, what: 'backtracking search' },
   { name: 'editdist', n: 30000, quick: 300, what: 'dynamic programming over arrays' },
+];
+const PAR = [
+  { name: 'fannkuch-par', seq: 'fannkuch', n: 11, quick: 7, what: 'blocks of permutations' },
+  { name: 'binarytrees-par', seq: 'binarytrees', n: 18, quick: 8, what: 'the depths' },
+  { name: 'nqueens-par', seq: 'nqueens', n: 13, quick: 6, what: 'the first two queens' },
 ];
 
 // Child modes: run one module and report the time on stderr.
@@ -60,6 +71,8 @@ const runsAt = args.indexOf('--runs');
 const runs = runsAt >= 0 ? Number(args[runsAt + 1]) : (quick ? 1 : 3);
 const only = args.filter((a, i) => !a.startsWith('--') && args[i - 1] !== '--runs');
 const chosen = BENCH.filter(b => only.length === 0 || only.includes(b.name));
+const chosenPar = PAR.filter(b => only.length === 0 || only.includes(b.name) || only.includes(b.seq));
+const cores = (await import('node:os')).availableParallelism();
 
 const { compileSource } = await import('../src/api.js');
 const tmp = mkdtempSync(join(tmpdir(), 'lumen2-bench-'));
@@ -75,24 +88,25 @@ function best(run) {
   }
   return { output: out, ms };
 }
-function child(flag, path, n) {
+function child(flag, path, n, env = {}) {
   // --no-liftoff: V8 compiles every function with its optimizing compiler up
   // front (before the clock starts). Otherwise a C program, which spends its
   // whole run in one call to main, would run baseline code throughout, since
   // V8 only swaps in optimized code for the next call of a function.
-  const r = spawnSync(process.execPath, ['--no-warnings', '--no-liftoff', '--stack-size=65500', self, flag, path, String(n)], { encoding: 'utf8', maxBuffer: 1 << 26 });
+  const r = spawnSync(process.execPath, ['--no-warnings', '--no-liftoff', '--stack-size=65500', self, flag, path, String(n)], { encoding: 'utf8', maxBuffer: 1 << 26, env: { ...process.env, ...env } });
   if (r.status !== 0) throw new Error(`${flag} ${path} failed: ${r.stderr}`);
   return { output: r.stdout, ms: Number(r.stderr.trim().split('\n').pop()) };
 }
-function native(path, n) {
+function native(path, n, env = {}) {
   const t = process.hrtime.bigint();
-  const r = spawnSync(path, [String(n)], { encoding: 'utf8', maxBuffer: 1 << 26 });
+  const r = spawnSync(path, [String(n)], { encoding: 'utf8', maxBuffer: 1 << 26, env: { ...process.env, ...env } });
   const ms = Number(process.hrtime.bigint() - t) / 1e6;
   if (r.status !== 0) throw new Error(`${path} failed: ${r.stderr}`);
   return { output: r.stdout, ms };
 }
 
 const rows = [];
+const parRows = [];
 let failed = false;
 try {
   for (const b of chosen) {
@@ -119,6 +133,33 @@ try {
     rows.push({ b, n, lumen, cn, cwasm });
     console.error(`${b.name} ${n}: ${lumen.output.trim().split('\n').pop()}`);
   }
+  for (const b of chosenPar) {
+    const n = quick ? b.quick : b.n;
+    const expected = (() => {
+      const c = compileSource(readFileSync(join(here, `${b.seq}.lm`), 'utf8'), { grants: ['input', 'output'] });
+      const w = join(tmp, `${b.seq}.expected.wasm`);
+      writeFileSync(w, c.bytes);
+      return child('--run-lumen', w, n).output;
+    })();
+    const c = compileSource(readFileSync(join(here, `${b.name}.lm`), 'utf8'), { grants: ['input', 'output'] });
+    if (!c.ok) throw new Error(`${b.name}.lm: ${c.errors[0].message}`);
+    const lw = join(tmp, `${b.name}.lumen.wasm`);
+    writeFileSync(lw, c.bytes);
+    const l1 = best(() => child('--run-lumen', lw, n, { LUMEN2_THREADS: '1' }));
+    const lt = best(() => child('--run-lumen', lw, n, { LUMEN2_THREADS: String(cores) }));
+    const exe = join(tmp, b.name);
+    const omp = ok('cc', ['-O2', '-fopenmp', '-o', exe, join(here, `${b.name}.c`)]);
+    const c1 = omp ? best(() => native(exe, n, { OMP_NUM_THREADS: '1' })) : null;
+    const ct = omp ? best(() => native(exe, n, { OMP_NUM_THREADS: String(cores) })) : null;
+    for (const [label, r] of [['Lumen 2, 1 thread', l1], [`Lumen 2, ${cores} threads`, lt], ['C, 1 thread', c1], [`C, ${cores} threads`, ct]]) {
+      if (r && r.output !== expected) {
+        failed = true;
+        console.error(`${b.name}: ${label} printed\n${r.output}\nbut ${b.seq}.lm printed\n${expected}`);
+      }
+    }
+    parRows.push({ b, n, l1, lt, c1, ct });
+    console.error(`${b.name} ${n}: ${lt.output.trim().split('\n').pop()}`);
+  }
 } finally {
   rmSync(tmp, { recursive: true, force: true });
 }
@@ -129,5 +170,13 @@ console.log(`| Program | n | C, native | C, WebAssembly | Lumen 2 | Lumen 2 / C 
 console.log(`| --- | --- | --- | --- | --- | --- | --- |`);
 for (const { b, n, lumen, cn, cwasm } of rows) {
   console.log(`| ${b.name} (${b.what}) | ${n} | ${fmt(cn?.ms)} | ${fmt(cwasm?.ms)} | ${fmt(lumen.ms)} | ${ratio(lumen, cn)} | ${ratio(lumen, cwasm)} |`);
+}
+if (parRows.length) {
+  console.log('');
+  console.log(`| Program (split by) | n | C, 1 thread | C, ${cores} threads | Lumen 2, 1 thread | Lumen 2, ${cores} threads | Lumen 2 speedup | Lumen 2 (${cores}) / C (1) | Lumen 2 (${cores}) / C (${cores}) |`);
+  console.log(`| --- | --- | --- | --- | --- | --- | --- | --- | --- |`);
+  for (const { b, n, l1, lt, c1, ct } of parRows) {
+    console.log(`| ${b.name} (${b.what}) | ${n} | ${fmt(c1?.ms)} | ${fmt(ct?.ms)} | ${fmt(l1.ms)} | ${fmt(lt.ms)} | ${(l1.ms / lt.ms).toFixed(2)}× | ${ratio(lt, c1)} | ${ratio(lt, ct)} |`);
+  }
 }
 if (failed) process.exit(1);

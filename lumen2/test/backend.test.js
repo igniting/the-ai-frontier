@@ -248,6 +248,84 @@ test('an array the compiler takes to be unshared never is', () => {
   assert.ok(r.allocs < 100, `bump updates in place (${r.allocs} allocations)`);
 });
 
+// Shared data under heavy reference counting from every thread at once: a
+// list and a tree captured by the function, results that share them, strings
+// made on every thread, and par_map inside par_map (which runs as a loop on
+// the thread it is on).
+const PAR_STRESS = `type Tree { Leaf, Node(Tree, Int, Tree) }
+  fn insert(t, x) { match t { Leaf -> Node(Leaf, x, Leaf), Node(l, y, r) -> if x < y { Node(insert(l, x), y, r) } else if x > y { Node(l, y, insert(r, x)) } else { t } } }
+  fn size(t) { match t { Leaf -> 0, Node(l, _, r) -> size(l) + 1 + size(r) } }
+  fn main() {
+    let shared = range(0, 200);
+    let t = fold(range(0, 500), Leaf, |t, i| insert(t, (i * 7919) % 500));
+    let words = array_from_list(map(range(0, 30), |i| "w" ++ int_to_string(i)));
+    let ys = par_map(array_from_list(range(0, 1500)), |i| sum([i, ..shared]) + size(insert(t, 500 + i % 37)) + string_length(array_get(words, i % 30) ++ int_to_string(i)));
+    println(int_to_string(sum(array_to_list(ys))));
+    let same = par_map(array_from_list(range(0, 1000)), |i| if i % 2 == 0 { shared } else { [i] });
+    println(int_to_string(sum(map(array_to_list(same), length))));
+    println(show(par_map(array_from_list(range(0, 300)), |i| int_to_string(i * 7919))));
+    println(show(par_map(array_from_list(range(0, 12)), |i| sum(array_to_list(par_map(array_from_list(range(0, i)), |j| j * i))))));
+    println(show(par_map(array_empty(), |i| i + 1)) ++ show(par_map(array_make(1, "x"), |s| s ++ "!")))
+  }`;
+
+test('par_map: the same results on any number of threads, everything freed', () => {
+  const expected = agree(PAR_STRESS).output;
+  const bytes = compileSource(PAR_STRESS).bytes;
+  for (const threads of [1, 2, 3, 4]) {
+    const r = runWasm(bytes, { threads });
+    assert.equal(r.output, expected, `${threads} threads`);
+    assert.equal(r.live, 0, `${threads} threads: every object is freed`);
+  }
+  // Compiled without threads, par_map is a loop.
+  assert.equal(runSource(PAR_STRESS, { threads: false }).output, expected);
+});
+
+test('par_map: planted threading bugs are caught', () => {
+  // Races show up on some runs, not all: each bug must show up within ten.
+  const expected = interpretSource(PAR_STRESS).output;
+  for (const mutant of ['par-rc-plain', 'par-scratch-shared']) {
+    const bytes = compileSource(PAR_STRESS, { mutant }).bytes;
+    let caught = false;
+    for (let k = 0; k < 10 && !caught; k++) {
+      const r = runWasm(bytes, { threads: 4 });
+      caught = r.output !== expected || r.error !== null || r.live !== 0;
+    }
+    assert.ok(caught, `${mutant} was not caught`);
+  }
+});
+
+test('par_map: the first failing element decides the error, as in a sequential map', () => {
+  const src = `fn main() {
+    let a = array_make(10, 1);
+    println("before");
+    let ys = par_map(array_from_list(range(0, 3000)), |i| if i == 2500 { panic("late") } else if i == 1300 { array_get(a, i) } else if i == 2000 { 10 / (i - 2000) } else { i });
+    println(int_to_string(array_length(ys)))
+  }`;
+  const r = agree(src);
+  assert.equal(r.error, 'index out of bounds');
+  for (const threads of [1, 4]) assert.equal(runWasm(compileSource(src).bytes, { threads }).error, 'index out of bounds');
+  const p = agree('fn main() { println(show(par_map(array_from_list(range(0, 500)), |i| if i == 321 { panic("element " ++ int_to_string(i)) } else { i }))) }');
+  assert.equal(p.error, 'panic: element 321');
+});
+
+test('par_map: the function may fail, but not use input, output, the clock or randomness', () => {
+  const ok = checkSource('fn main() { println(show(par_map(array_make(3, 1), |x| 10 / x))) }');
+  assert.equal(ok.ok, true);
+  for (const [body, effect] of [['{ println("hi"); x }', 'write output'], ['x + clock_ms()', 'read the clock'], ['random_int(0, x)', 'use randomness']]) {
+    const c = checkSource(`fn main() { println(show(par_map(array_make(3, 1), |x| ${body}))) }`, { grants: ['output', 'clock', 'random'] });
+    assert.equal(c.ok, false, body);
+    assert.match(c.errors[0].message, new RegExp(`the function given to \`par_map\` can ${effect}, but \`par_map\` runs it in parallel`));
+  }
+  // A function that passes its parameter to par_map only accepts functions without effects.
+  const w = checkSource('fn pm(xs, h) { par_map(xs, h) }\nfn main() { println(show(pm(array_make(3, 1), |x| x * 2))) }');
+  assert.equal(w.signatures.find((s) => s.name === 'pm').type, 'fn(Array<a>, fn(a) -> b) -> Array<b>');
+  const bad = checkSource('fn pm(xs, h) { par_map(xs, h) }\nfn main() { println(show(pm(array_make(3, 1), |x| { println("hi"); x }))) }');
+  assert.equal(bad.ok, false);
+  // The result has the input's length, which proves accesses to it.
+  const len = checkSource('fn f(xs: Array<Int>) -> Int { let ys = par_map(xs, |x| x + 1); if array_length(xs) > 2 { array_get(ys, 2) } else { 0 } }\nfn main() { println(int_to_string(f(array_make(4, 1)))) }');
+  assert.ok(!len.signatures.find((s) => s.name === 'f').type.includes('fail'));
+});
+
 test('the benchmark programs: right answers, and every access proved where claimed', () => {
   const expected = {
     fannkuch: ['7', '228\nPfannkuchen(7) = 16\n'],
@@ -255,6 +333,8 @@ test('the benchmark programs: right answers, and every access proved where claim
     nqueens: ['6', '4 solutions for 6 queens\n'],
     editdist: ['300', 'edit distance 161\n'],
   };
+  // The parallel versions print what the sequential ones print.
+  for (const name of ['fannkuch', 'binarytrees', 'nqueens']) expected[`${name}-par`] = expected[name];
   for (const [name, [input, out]] of Object.entries(expected)) {
     const src = readFileSync(new URL(`../bench/${name}.lm`, import.meta.url), 'utf8');
     const grants = ['input', 'output'];

@@ -84,6 +84,9 @@ function builtinTable() {
   t.array_length = fn([tcon('Array', [F])], INT);
   const G = a();
   t.array_push = fn([tcon('Array', [G]), G], tcon('Array', [G]));
+  // par_map: fn(Array<a>, fn(a) -> b ! e) -> Array<b> ! e, where e may only be fail.
+  const H = a(), K = a(), R = newRowVar(GENERIC);
+  t.par_map = tfun([tcon('Array', [H]), tfun([H], K, row([], R))], tcon('Array', [K]), row([], R));
   return t;
 }
 export const BUILTIN_NAMES = Object.keys(builtinTable());
@@ -461,7 +464,22 @@ export function checkOnce(source, { grants = null, entry = 'main', assumeSafe = 
         if (f.k === 'fun') {
           if (f.params.length !== argTys.length) throw new LumenError(`${what} takes ${f.params.length} argument${f.params.length === 1 ? '' : 's'}, found ${argTys.length}`, e.span);
           argTys.forEach((a, i) => unifyAt(f.params[i], a, e.args[i].span, `argument ${i + 1} of ${what}`));
-          let eff = f.eff, note;
+          // par_map runs its function in parallel: it may fail, but nothing else; its
+          // effects are settled here (an effect variable is closed), as in compiler/22-infer.lm.
+          if (e.fn.k === 'var' && e.fn.ref?.k === 'builtin' && e.fn.ref.name === 'par_map') {
+            const g = prune(f.params[1]);
+            if (g.k === 'fun') {
+              const r = pruneRow(g.eff);
+              const bad = r.labels.filter((l) => l !== 'fail');
+              if (bad.length) {
+                throw new LumenError(`the function given to \`par_map\` can ${bad.map((l) => EFFECT_WORDS[l]).join(' and ')}, but \`par_map\` runs it in parallel`, e.args[1].span,
+                  '`par_map` calls its function many times at once, in no particular order, so the function may fail but not use input, output, the clock or randomness');
+              }
+              unifyRows(row(r.labels, null), r);
+            }
+          }
+          // The call's own effects are its function's, open again (as every call's are).
+          let eff = e.fn.k === 'var' && e.fn.ref?.k === 'builtin' && e.fn.ref.name === 'par_map' ? row(pruneRow(f.eff).labels, newRowVar(ctx.level)) : f.eff, note;
           if (e.fn.k === 'var' && e.fn.ref?.k === 'builtin' && PARTIAL_BUILTINS.has(e.fn.ref.name)) {
             if (isSafe(ctx, e.span)) {
               const r = pruneRow(f.eff);

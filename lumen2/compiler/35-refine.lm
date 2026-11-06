@@ -573,6 +573,7 @@ fn sym_call(ve, vs, id, f, args, s, e, st) {
         match len_of(a0) { Some(t) -> (Some(SVLen(add_terms(t, konst(BS(1))), el)), vs, st), None -> { let (x, vs) = fresh_sv(ve, vs, ty, "array_push(..)", false); (x, vs, st) } }
       }
       else if name == "array_empty" { (Some(SVLen(konst(BS(0)), Some([]))), vs, st) }
+      else if name == "par_map" { match len_of(a0) { Some(t) -> (Some(SVLen(t, None)), vs, st), None -> { let (x, vs) = fresh_sv(ve, vs, ty, "par_map(..)", false); (x, vs, st) } } }
       else if name == "char_from_code" { (Some(SVLen(konst(BS(1)), None)), vs, st) }
       else if name == "int_to_string" { let (rid, vs) = vs_new_atom(vs, "string_length(int_to_string(..))", BS(1), BS(20), false); (Some(SVLen(atom_term(rid), None)), vs, st) }
       else if name == "random_int" {

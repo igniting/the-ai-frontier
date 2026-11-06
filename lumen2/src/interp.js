@@ -153,6 +153,10 @@ export function interpret(program, { input = '', maxSteps = Infinity, maxDepth =
     },
     array_length: ([a]) => BigInt(a.v.length),
     array_push: ([a, x]) => (a.v.length >= MAX_ARRAY ? fail('out of memory') : { t: 'arr', v: [...a.v, x] }),
+    // In order, one element after another: the compiled code may run the calls
+    // in parallel, and since the function cannot do input or output, only its
+    // result (or the first failing element's error) can be seen.
+    par_map: ([a, f]) => ({ t: 'arr', v: a.v.map((x) => call(f, [x])) }),
   };
 
   // Calls a function value with argument values, looping on tail calls.

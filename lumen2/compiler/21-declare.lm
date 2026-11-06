@@ -356,7 +356,8 @@ fn derive_shows(d, next_id, user_ast) {
 // ---------------------------------------------------------------- builtins
 fn builtin_names() {
   ["print", "println", "read_input", "read_line", "clock_ms", "random_int", "int_to_string", "concat_strings", "string_length",
-   "substring", "char_code_at", "char_from_code", "panic", "array_make", "array_empty", "array_get", "array_set", "array_length", "array_push"]
+   "substring", "char_code_at", "char_from_code", "panic", "array_make", "array_empty", "array_get", "array_set", "array_length", "array_push",
+   "par_map"]
 }
 // Names a JavaScript object has without being given them (`name in builtins`
 // is true for these in the reference, which affects function keys).
@@ -383,6 +384,11 @@ fn builtin_table(st) {
   let arr = |x| TC("Array", [x]);
   let t2 = append(t, [("array_make", f([i, b], arr(b), ["fail"])), ("array_empty", f([], arr(c), [])), ("array_get", f([arr(dd), i], dd, ["fail"])),
     ("array_set", f([arr(e), i, e], arr(e), ["fail"])), ("array_length", f([arr(ff)], i, [])), ("array_push", f([arr(g), g], arr(g), []))]);
-  (fold(t2, MEmpty, |m, kv| match kv { (k, v) -> m_set(m, k, v) }), st)
+  // par_map: fn(Array<a>, fn(a) -> b ! e) -> Array<b> ! e, where e may only be fail (22-infer.lm).
+  let (pa, st) = new_var(st, generic(), []);
+  let (pb, st) = new_var(st, generic(), []);
+  let (pe, st) = new_rvar(st, generic());
+  let t3 = append(t2, [("par_map", TF([arr(pa), TF([pa], pb, Row([], Some(pe)))], arr(pb), Row([], Some(pe))))]);
+  (fold(t3, MEmpty, |m, kv| match kv { (k, v) -> m_set(m, k, v) }), st)
 }
 fn partial_builtin(n) { n == "array_get" || n == "array_set" || n == "char_code_at" || n == "array_make" }

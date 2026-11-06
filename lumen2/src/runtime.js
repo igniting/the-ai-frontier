@@ -4,6 +4,7 @@
 // compiler's, in compiler/46-codegen.lm.
 
 import { makeHost } from './host.js';
+import { makePool, threadCount, minPages } from './par.js';
 
 export const FAILURES = ['', 'integer overflow', 'division by zero', 'index out of bounds', 'out of memory', 'string too long', 'use after free'];
 
@@ -16,7 +17,9 @@ export class LumenTrap extends Error {}
 // bytes: the module's bytes, or an already compiled WebAssembly.Module.
 // talk (for the compiler's host): talk(text) sees each write first, and may
 // return the next line that read_line reads (or null to treat it as output).
-export function runWasm(bytes, { input = '', host = makeHost(), talk = null } = {}) {
+// threads: for a module compiled in threads mode (a program that calls
+// par_map), how many threads to use (default: LUMEN2_THREADS, or one per core).
+export function runWasm(bytes, { input = '', host = makeHost(), talk = null, threads = null } = {}) {
   let out = '';
   const answers = [];
   let memory = null;
@@ -43,16 +46,42 @@ export function runWasm(bytes, { input = '', host = makeHost(), talk = null } = 
     clock: () => host.clock(),
     random: (lo, hi) => host.random(lo, hi),
   };
-  const instance = new WebAssembly.Instance(bytes instanceof WebAssembly.Module ? bytes : new WebAssembly.Module(bytes), { env });
+  const module = bytes instanceof WebAssembly.Module ? bytes : new WebAssembly.Module(bytes);
+  // Threads mode: the module imports a shared memory, and par_map asks the
+  // host (env.par) to compute a task's elements on every thread.
+  let pool = null, instance = null;
+  if (WebAssembly.Module.imports(module).some((i) => i.kind === 'memory')) {
+    if (typeof process === 'undefined' || typeof process.getBuiltinModule !== 'function') throw new Error('this program was compiled to run par_map on threads, which needs Node');
+    memory = new WebAssembly.Memory({ initial: minPages(module), maximum: 16384, shared: true });
+    env.memory = memory;
+    env.par = (n) => {
+      pool ??= makePool(module, memory, threads ?? threadCount());
+      const first = pool.run(n, (i) => instance.exports.par_item(i));
+      if (first === null) return;
+      if (first.error) throw first.error;
+      if (first.kind === 1) throw new LumenTrap(FAILURES[first.a] ?? `internal error ${first.a}`);
+      if (first.kind === 2) throw new LumenTrap(`panic: ${asString(bytesAt(first.a, first.b))}`);
+      if (first.kind === 3) throw new RangeError('Maximum call stack size exceeded');
+      throw new WebAssembly.RuntimeError('in a parallel task');
+    };
+  }
+  instance = new WebAssembly.Instance(module, { env });
   memory = instance.exports.memory;
+  const counts = () => {
+    const w = pool ? pool.counts() : { live: 0, allocs: 0 };
+    return { live: instance.exports.live.value + w.live, allocs: instance.exports.allocs.value + w.allocs };
+  };
   try {
     instance.exports._start();
   } catch (e) {
-    const allocs = instance.exports.allocs.value;
+    const { allocs } = counts();
     if (e instanceof LumenTrap) return { output: out, error: e.message, live: null, allocs };
     if (e instanceof RangeError && /call stack/i.test(e.message)) return { output: out, error: 'stack overflow', live: null, allocs };
     if (e instanceof WebAssembly.RuntimeError) return { output: out, error: `internal error: ${e.message}`, live: null, allocs };
     throw e;
+  } finally {
+    pool?.close();
   }
-  return { output: out, error: null, live: instance.exports.live.value, allocs: instance.exports.allocs.value };
+  return { output: out, error: null, ...counts() };
 }
+

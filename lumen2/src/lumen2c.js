@@ -142,12 +142,15 @@ export function makeCompiler(bytes = seedBytes()) {
     },
     // Checks and compiles a program. `given`: the verification of an earlier
     // check of the same program with the same options, used instead of proving again.
-    compile(source, { given = null, keepProofs = false, inline = true, borrow = true, reuse = true, specialize = true, superopt = true, paranoid = false, ir = false, funcs = false, ...opts } = {}) {
+    // threads: a program that calls par_map runs it on threads (shared memory and
+    // workers); without them par_map is a loop. The default is whether this
+    // host can run threads (see canThread).
+    compile(source, { given = null, keepProofs = false, inline = true, borrow = true, reuse = true, specialize = true, superopt = true, paranoid = false, ir = false, funcs = false, threads = canThread(), ...opts } = {}) {
       const lines = given ? [...given.safe.map((k) => `S ${k}`), ...given.unproved.map(([k, n]) => `U ${k} ${n}`)] : [];
       const words = [
         'compile', ...options(opts), given ? `given=${lines.length}` : '', keepProofs ? 'keep' : '',
         inline ? '' : 'noinline', borrow ? '' : 'noborrow', reuse ? '' : 'noreuse', specialize ? '' : 'nospec',
-        superopt ? '' : 'nosuperopt', paranoid ? 'paranoid' : '', ir ? 'ir' : '', funcs ? 'funcs' : '',
+        superopt ? '' : 'nosuperopt', paranoid ? 'paranoid' : '', ir ? 'ir' : '', funcs ? 'funcs' : '', threads ? '' : 'nothreads',
       ];
       const r = run(words, lines, source);
       if (r.error) return { ok: false, errors: [r.error] };
@@ -167,6 +170,12 @@ export function makeCompiler(bytes = seedBytes()) {
       return out;
     },
   };
+}
+
+// Whether compiled programs can run par_map on threads here: in Node, with
+// worker threads (src/runtime.js). In a browser, par_map is a loop.
+export function canThread() {
+  return typeof process !== 'undefined' && typeof process.getBuiltinModule === 'function' && typeof SharedArrayBuffer !== 'undefined';
 }
 
 // The compiler built from compiler/lumen2c.wasm, made when first used.

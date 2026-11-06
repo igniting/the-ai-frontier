@@ -23,6 +23,11 @@ fn k_scratch() { 256 }
 fn k_data() { 1024 }
 fn k_max_len() { 16777215 }
 fn k_max_pages() { 16384 }
+// Threads mode: the par_map task (array, function, result, kind) and the
+// shared top of the heap, from which each thread takes chunks of k_chunk().
+fn k_desc() { 192 }
+fn k_heap_top() { 208 }
+fn k_chunk() { 262144 }
 
 // The module under construction: functions (newest first), names of the
 // per-type functions made, static data, string and closure addresses, the
@@ -31,16 +36,19 @@ type CG { CG(List<WFn>, Map<Bool>, Array<Int>, Map<Int>, Map<Int>, List<String>,
 // What code generation reads: adts, user Ord impls by type key, the mutant,
 // paranoid, no inlining, and the functions that return a tuple's fields as
 // several values (by name: the fields' types).
-// adts, Ord impls, mutant, paranoid, noinline, unboxed functions, parameters unshared on entry
-type GX { GX(OMap<AdtInfo>, List<(String, String)>, String, Bool, Bool, Map<List<Ty>>, Map<Bool>) }
-fn gx_adts(gx) { match gx { GX(a, _, _, _, _, _, _) -> a } }
-fn gx_mutant(gx) { match gx { GX(_, _, m, _, _, _, _) -> m } }
-fn gx_paranoid(gx) { match gx { GX(_, _, _, p, _, _, _) -> p } }
-fn gx_noinline(gx) { match gx { GX(_, _, _, _, n, _, _) -> n } }
-fn gx_unboxed(gx, g) { match gx { GX(_, _, _, _, _, u, _) -> m_get(u, g) } }
-fn gx_uniq(gx) { match gx { GX(_, _, _, _, _, _, q) -> q } }
+// adts, Ord impls, mutant, paranoid, noinline, unboxed functions, parameters
+// unshared on entry, threads (the program uses par_map and runs on threads)
+type GX { GX(OMap<AdtInfo>, List<(String, String)>, String, Bool, Bool, Map<List<Ty>>, Map<Bool>, Bool) }
+fn gx_adts(gx) { match gx { GX(a, _, _, _, _, _, _, _) -> a } }
+fn gx_mutant(gx) { match gx { GX(_, _, m, _, _, _, _, _) -> m } }
+fn gx_paranoid(gx) { match gx { GX(_, _, _, p, _, _, _, _) -> p } }
+fn gx_noinline(gx) { match gx { GX(_, _, _, _, n, _, _, _) -> n } }
+fn gx_unboxed(gx, g) { match gx { GX(_, _, _, _, _, u, _, _) -> m_get(u, g) } }
+fn gx_uniq(gx) { match gx { GX(_, _, _, _, _, _, q, _) -> q } }
+fn gx_threads(gx) { match gx { GX(_, _, _, _, _, _, _, t) -> t } }
 fn gx_heap(gx, t) { is_heap(gx_adts(gx), t) }
 
+fn cg_funcs(cg) { match cg { CG(fs, _, _, _, _, _, _, _) -> fs } }
 fn cg_made(cg, n) { match cg { CG(_, made, _, _, _, _, _, _) -> m_has(made, n) } }
 fn cg_mark(cg, n) { match cg { CG(f, made, d, s, c, t, ti, tn) -> CG(f, m_set(made, n, true), d, s, c, t, ti, tn) } }
 fn cg_add(cg, f) { match cg { CG(fs, made, d, s, c, t, ti, tn) -> CG([f, ..fs], made, d, s, c, t, ti, tn) } }
@@ -112,10 +120,10 @@ fn bin_i64(cg, name, body) { mkfn(cg, name, [i64p("a"), i64p("b")], ["i64"], [i6
 fn runtime(gx, cg) {
   let cg = rt_rt_fail(gx, cg);
   let cg = rt_rt_class(gx, cg);
-  let cg = rt_rt_alloc(gx, cg);
-  let cg = rt_rt_free(gx, cg);
-  let cg = rt_rt_dup(gx, cg);
-  let cg = rt_rt_release(gx, cg);
+  let cg = if gx_threads(gx) { rt_alloc_t(gx, cg) } else { rt_rt_alloc(gx, cg) };
+  let cg = if gx_threads(gx) { rt_free_t(gx, cg) } else { rt_rt_free(gx, cg) };
+  let cg = if gx_threads(gx) { rt_dup_t(gx, cg) } else { rt_rt_dup(gx, cg) };
+  let cg = if gx_threads(gx) { rt_release_t(gx, cg) } else { rt_rt_release(gx, cg) };
   let cg = rt_rt_chk(gx, cg);
   let cg = rt_rt_tag(gx, cg);
   let cg = rt_int_add(gx, cg);
@@ -197,6 +205,165 @@ fn rt_rt_free(gx, cg) {
     ]) },
   ]))
 }
+// ------------------------------------------------- threads mode (par_map)
+// Every thread is an instance of the module, sharing one memory. Each takes
+// chunks of the heap from the shared top (k_heap_top) with an atomic add and
+// allocates from its chunk, with free lists of its own (at global fl). While
+// a parallel phase runs (global par), reference counts above 1 change by
+// atomic operations, since other threads may hold references too. A count of
+// 1 is still exclusive: the one reference is this thread's, and an object no
+// other thread holds a counted reference to is reachable only through it.
+// So freeing, reuse and in-place updates need no atomics.
+fn grow_to(e) {
+  CL([
+    wop("memory.size"), wi32(16), wop("i32.shl"), wset("top"),
+    wget(e), wget("top"), wop("i32.gt_u"), wif(),
+    wget(e), wget("top"), wop("i32.sub"), wi32(65535), wop("i32.add"), wi32(16), wop("i32.shr_u"), wop("memory.grow"), wi32(0 - 1), wop("i32.eq"), wif(), wfail(k_oom()), wend(),
+    wend(),
+  ])
+}
+fn wfree_head(c) { CL([whead(c), wgget("fl"), wop("i32.add")]) }
+fn rt_alloc_t(gx, cg) {
+  let paranoid = gx_paranoid(gx);
+  mkfn(cg, "rt_alloc", [i32p("size")], ["i32"], [i32p("c"), i32p("p"), i32p("top"), i32p("sz"), i32p("e")], CL([
+    wget("size"), wcall("rt_class"), wset("c"),
+    wblock("have"),
+    if paranoid { wnone() } else { CL([
+      wfree_head("c"), wmem("i32.load", 0), wtee("p"), wif(),
+      wfree_head("c"), wget("p"), wmem("i32.load", 8), wmem("i32.store", 0), wbr("have"), wend(),
+    ]) },
+    wgget("hp"), wset("p"),
+    wgget("hp"), wi32(1), wget("c"), wop("i32.shl"), wop("i32.add"), wgset("hp"),
+    wgget("hp"), wgget("hp_end"), wop("i32.gt_u"), wif(),
+    // A new chunk: at least k_chunk() bytes, or the object if it is larger.
+    wi32(1), wget("c"), wop("i32.shl"), wtee("sz"), wi32(k_chunk()), wop("i32.lt_u"), wif(), wi32(k_chunk()), wset("sz"), wend(),
+    wi32(k_heap_top()), wget("sz"), wmem("i32.atomic.rmw.add", 0), wtee("p"),
+    wi32(1), wget("c"), wop("i32.shl"), wop("i32.add"), wgset("hp"),
+    wget("p"), wget("sz"), wop("i32.add"), wtee("e"), wgset("hp_end"),
+    grow_to("e"),
+    wend(),
+    wend(),
+    wget("p"), wi32(1), wmem("i32.store", 0),
+    wgget("live"), wi32(1), wop("i32.add"), wgset("live"),
+    wgget("allocs"), wi32(1), wop("i32.add"), wgset("allocs"),
+    wget("p"),
+  ]))
+}
+fn rt_free_t(gx, cg) {
+  let paranoid = gx_paranoid(gx);
+  mkfn(cg, "rt_free", [i32p("p"), i32p("size")], [], [i32p("c")], CL([
+    wget("p"), wi32(0), wmem("i32.store", 0),
+    wgget("live"), wi32(1), wop("i32.sub"), wgset("live"),
+    if paranoid { wnone() } else { CL([
+      wget("size"), wcall("rt_class"), wset("c"),
+      wget("p"), wfree_head("c"), wmem("i32.load", 0), wmem("i32.store", 8),
+      wfree_head("c"), wget("p"), wmem("i32.store", 0),
+    ]) },
+  ]))
+}
+fn rt_dup_t(gx, cg) {
+  // Mutant par-rc-plain: counts change by plain operations even while threads run.
+  let par = if gx_mutant(gx) == "par-rc-plain" { wi32(0) } else { wgget("par") };
+  mkfn(cg, "rt_dup", [i32p("p")], ["i32"], [i32p("rc")], CL([
+    wget("p"), wi32(k_imm()), wop("i32.ge_u"), wif(),
+    wget("p"), wmem("i32.load", 0), wtee("rc"), wi32(0), wop("i32.gt_s"), wif(),
+    par, wif(), wget("p"), wi32(1), wmem("i32.atomic.rmw.add", 0), wop("drop"),
+    wop("else"), wget("p"), wget("rc"), wi32(1), wop("i32.add"), wmem("i32.store", 0), wend(),
+    wop("else"), wget("rc"), wop("i32.eqz"), wif(), wfail(k_uaf()), wend(), wend(),
+    wend(), wget("p"),
+  ]))
+}
+fn rt_release_t(gx, cg) {
+  let par = if gx_mutant(gx) == "par-rc-plain" { wi32(0) } else { wgget("par") };
+  mkfn(cg, "rt_release", [i32p("p")], ["i32"], [i32p("rc")], CL([
+    wget("p"), wi32(k_imm()), wop("i32.lt_u"), wif(), wi32(0), wop("return"), wend(),
+    wget("p"), wmem("i32.load", 0), wtee("rc"), wi32(1), wop("i32.gt_s"), wif(),
+    par, wif(), wget("p"), wi32(1), wmem("i32.atomic.rmw.sub", 0), wi32(1), wop("i32.eq"), wop("return"), wend(),
+    wget("p"), wget("rc"), wi32(1), wop("i32.sub"), wmem("i32.store", 0), wi32(0), wop("return"), wend(),
+    wget("rc"), wi32(1), wop("i32.eq"), wif(), wi32(1), wop("return"), wend(),
+    wget("rc"), wop("i32.eqz"), wif(), wfail(k_uaf()), wend(),
+    wi32(0),
+  ]))
+}
+// par_map's code for one element type and result type: par_one:K computes one
+// element, r[i] = f(xs[i]); par_map:K makes the result and computes every
+// element, in a loop or, in threads mode and outside a parallel phase, through
+// the host (host_par), which has the threads call par_item for each index.
+fn par_fns(gx, cg, ats) {
+  let fty = list_get(ats, 1);
+  let (et, rt) = match fty { TF([p], r, _) -> (p, r), _ -> internal("codegen: par_map's function") };
+  let k = tkey(et) ++ "->" ++ tkey(rt);
+  let one = "par_one:" ++ k;
+  let name = "par_map:" ++ k;
+  if cg_made(cg, name) { (name, cg) } else {
+    let cg = cg_mark(cg, name);
+    let (ps, rs) = sig_of(fty);
+    let kind = length(filter(cg_funcs(cg), |f| starts_at(wfn_name(f), 0, "par_one:")));
+    // The callee owns the closure it is called with and the element it is given.
+    let cg = mkfn(cg, one, [i32p("xs"), i32p("f"), i32p("r"), i32p("i")], [], [], CL([
+      wslot("r", "i"),
+      wget("f"), wcall("rt_dup"),
+      wslot("xs", "i"), wload(et, 16), if gx_heap(gx, et) { wcall("rt_dup") } else { wnone() },
+      wget("f"), wmem("i32.load", 4), C1(OCallInd("call_indirect", ps, rs)),
+      wstore(rt, 16),
+    ]));
+    let threaded = if gx_threads(gx) { CL([
+      wget("n"), wi32(1), wop("i32.gt_u"), wgget("par"), wop("i32.eqz"), wop("i32.and"), wif(),
+      wi32(k_desc()), wget("xs"), wmem("i32.store", 0),
+      wi32(k_desc()), wget("f"), wmem("i32.store", 4),
+      wi32(k_desc()), wget("r"), wmem("i32.store", 8),
+      wi32(k_desc()), wi32(kind), wmem("i32.store", 12),
+      wi32(1), wgset("par"),
+      wget("n"), wcall("host_par"),
+      wi32(0), wgset("par"),
+      wget("r"), wop("return"),
+      wend(),
+    ]) } else { wnone() };
+    let cg = mkfn(cg, name, [i32p("xs"), i32p("f")], ["i32"], [i32p("n"), i32p("r"), i32p("i")], CL([
+      wlen(gx, "xs"), wtee("n"), wget("n"), wcall("arr_new"), wset("r"),
+      threaded,
+      wblock("done"), wloop("next"), wget("i"), wget("n"), wop("i32.ge_u"), wbr_if("done"),
+      wget("xs"), wget("f"), wget("r"), wget("i"), wcall(one),
+      wget("i"), wi32(1), wop("i32.add"), wset("i"), wbr("next"), wend(), wend(),
+      wget("r"),
+    ]));
+    (name, cg)
+  }
+}
+// Threads mode's exports: par_item(i) computes element i of the current task;
+// par_init sets up a new thread: its free lists (128 bytes), its scratch
+// memory (64 bytes, for int_to_string), and the parallel flag.
+fn par_exports(cg) {
+  let ones = reverse(filter(cg_funcs(cg), |f| starts_at(wfn_name(f), 0, "par_one:")));
+  let task = |off| CL([wi32(k_desc()), wmem("i32.load", off)]);
+  let cg = mkfn(cg, "par_item", [i32p("i")], [], [i32p("k")], CL([
+    task(12), wset("k"),
+    CL(map(enumerate(ones), |kf| match kf { (k, f) -> CL([wget("k"), wi32(k), wop("i32.eq"), wif(), task(0), task(4), task(8), wget("i"), wcall(wfn_name(f)), wend()]) })),
+  ]));
+  mkfn(cg, "par_init", [], [], [i32p("p"), i32p("top"), i32p("e")], CL([
+    wi32(1), wgset("par"),
+    wi32(k_heap_top()), wi32(192), wmem("i32.atomic.rmw.add", 0), wtee("p"), wgset("fl"),
+    wget("p"), wi32(128), wop("i32.add"), wgset("sc"),
+    wget("p"), wi32(192), wop("i32.add"), wset("e"),
+    grow_to("e"),
+  ]))
+}
+// Whether the program calls a builtin.
+fn ir_calls_builtin(e, name) {
+  match e {
+    ILet(_, r, b) -> rhs_calls_builtin(r, name) || ir_calls_builtin(b, name),
+    IRet(r) -> rhs_calls_builtin(r, name),
+    IIf(_, t, el) -> ir_calls_builtin(t, name) || ir_calls_builtin(el, name),
+    IDup(_, b) -> ir_calls_builtin(b, name),
+    IDrop(_, b) -> ir_calls_builtin(b, name),
+    IDropReuse(_, _, b) -> ir_calls_builtin(b, name),
+    IFreeToken(_, _, b) -> ir_calls_builtin(b, name),
+    IUnpack(_, _, _, _, b) -> ir_calls_builtin(b, name),
+    IUnreachable -> false,
+  }
+}
+fn rhs_calls_builtin(r, name) { match r { RBuiltinCall(n, _, _, _, _) -> n == name, RExpr(x) -> ir_calls_builtin(x, name), _ -> false } }
+
   // dup: one more reference. Immediates and static objects are not counted.
 fn rt_rt_dup(gx, cg) {
   let paranoid = gx_paranoid(gx);
@@ -367,8 +534,11 @@ fn rt_int_to_string(gx, cg) {
   let paranoid = gx_paranoid(gx);
   let mutant = gx_mutant(gx);
   let chk = wchk(gx);
+  // The digits are written backwards into scratch memory (each thread's own, in threads mode).
+  // Mutant par-scratch-shared: every thread writes its digits in the same place.
+  let top = if gx_threads(gx) && gx_mutant(gx) != "par-scratch-shared" { CL([wgget("sc"), wi32(32), wop("i32.add")]) } else { wi32(k_scratch() + 32) };
   mkfn(cg, "int_to_string", [i64p("n")], ["i32"], [i32p("neg"), i32p("i"), i32p("p")], CL([
-    wi32(k_scratch() + 32), wset("i"),
+    top, wset("i"),
     wget("n"), wi64(0), wop("i64.lt_s"), wset("neg"),
     wget("neg"), wop("i32.eqz"), wif(), wi64(0), wget("n"), wop("i64.sub"), wset("n"), wend(),
     // n <= 0 from here on, so the most negative Int needs no special case.
@@ -378,8 +548,8 @@ fn rt_int_to_string(gx, cg) {
     wget("n"), wi64(10), wop("i64.div_s"), wtee("n"), wop("i64.eqz"), wop("i32.eqz"), wbr_if("digit"),
     wend(),
     wget("neg"), wif(), wget("i"), wi32(1), wop("i32.sub"), wtee("i"), wi32(45), wmem("i32.store8", 0), wend(),
-    wi32(k_scratch() + 32), wget("i"), wop("i32.sub"), wcall("str_new"), wset("p"),
-    wget("p"), wi32(8), wop("i32.add"), wget("i"), wi32(k_scratch() + 32), wget("i"), wop("i32.sub"), wop("memory.copy"),
+    top, wget("i"), wop("i32.sub"), wcall("str_new"), wset("p"),
+    wget("p"), wi32(8), wop("i32.add"), wget("i"), top, wget("i"), wop("i32.sub"), wop("memory.copy"),
     wget("p"),
   ]))
 }
@@ -569,7 +739,7 @@ fn cmp_fn(gx, cg, t) {
       });
       (CL(reverse(out)), cg)
     };
-    let user = if gx_mutant(gx) == "ord-ignore-impl" { None } else { match gx { GX(_, ords, _, _, _, _, _) -> match find(ords, |o| match o { (k, _) -> k == tkey(t) }) { Some((_, u)) -> Some(u), None -> None } } };
+    let user = if gx_mutant(gx) == "ord-ignore-impl" { None } else { match gx { GX(_, ords, _, _, _, _, _, _) -> match find(ords, |o| match o { (k, _) -> k == tkey(t) }) { Some((_, u)) -> Some(u), None -> None } } };
     let (body, locals, cg) = match user {
       Some(u) -> {
         // The program's own compare takes ownership of its arguments; these are borrowed.
@@ -1079,6 +1249,7 @@ fn gen_fn(gx, cg, f) {
         }
       }
       else if name == "array_push" { let (k, cg) = array_fns(gx, cg, elem_of(list_get(ats, 0))); (CL([ac, wcall(array_name("push", k))]), cg) }
+      else if name == "par_map" { let (pm, cg) = par_fns(gx, cg, ats); (CL([ac, wcall(pm)]), cg) }
       else if name == "array_length" {
         if gx_noinline(gx) { (CL([ac, wcall("arr_length")]), cg) } else { (CL([at_code(list_get(args, 0)), chk, wmem("i32.load", 4), wop("i64.extend_i32_u")]), cg) }
       }
@@ -1298,18 +1469,20 @@ fn gen_unpack(gx, st, e, vt, label, mutant, k) {
 
 // The whole back end: the IR (after reference counting) -> the module's bytes
 // and the superoptimizer's rewrite counts (rule id -> uses, in order of first use).
-fn codegen(adts, prog, mutant, paranoid, noinline, superopt, rules) {
+fn codegen(adts, prog, mutant, paranoid, noinline, superopt, rules, threads_ok) {
   match prog { IRProg(fns, main, ords) -> {
     // A named function returning a tuple returns its fields as several wasm
     // values, so returning a tuple allocates nothing (closure code and main
     // keep one result: they are called through the table and by _start).
     let unboxed = fold(fns, MEmpty, |m, f| match irf_ret(f) { TT(es) -> if !irf_env(f) && irf_name(f) != main { m_set(m, irf_name(f), es) } else { m }, _ -> m });
-    let gx = GX(adts, ords, mutant, paranoid, noinline, unboxed, unique_params(fns, main));
+    let threads = threads_ok && any(fns, |f| ir_calls_builtin(irf_body(f), "par_map"));
+    let gx = GX(adts, ords, mutant, paranoid, noinline, unboxed, unique_params(fns, main), threads);
     let cg = runtime(gx, CG([], MEmpty, array_empty(), MEmpty, MEmpty, [], MEmpty, 0));
     let cg = fold(fns, cg, |cg, f| gen_fn(gx, cg, f));
     let main_ret = match find(fns, |f| irf_name(f) == main) { Some(f) -> irf_ret(f), None -> internal("codegen: no main") };
     let (fin, cg) = if gx_heap(gx, main_ret) { let (d, cg) = drop_fn(gx, cg, main_ret); (wcall(d), cg) } else { (wop("drop"), cg) };
-    let cg = mkfn(cg, "_start", [], [], [], CL([wcall(main), fin]));
+    let cg = mkfn(cg, "_start", [], [], [], CL([if threads { CL([wi32(k_heap_top()), wgget("heap0"), wmem("i32.store", 0)]) } else { wnone() }, wcall(main), fin]));
+    let cg = if threads { par_exports(cg) } else { cg };
     // Static data, then the heap.
     let cg = cg_pad(cg);
     match cg { CG(funcs, _, data, _, _, table, _, _) -> {
@@ -1322,7 +1495,7 @@ fn codegen(adts, prog, mutant, paranoid, noinline, superopt, rules) {
         });
         (reverse(out), stats)
       } else { (funcs, om_empty()) };
-      (encode_module(funcs, reverse(table), data, heap_start, k_max_pages()), stats, funcs)
+      (encode_module(funcs, reverse(table), data, heap_start, k_max_pages(), threads), stats, funcs)
     } }
   } }
 }

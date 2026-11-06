@@ -1,0 +1,106 @@
+// fannkuch-redux on threads: the permutations are split into blocks by
+// index, and par_map runs the blocks, each from its first permutation,
+// unranked from its index. The same split as fannkuch-par.c, and the same
+// answers as fannkuch.lm. Every array access is proved in bounds, and no
+// function but main can fail.
+
+fn init(n: {n: Int | 1 <= n && n <= 16}, a: {a: Array<{x: Int | 0 <= x && x < n}> | array_length(a) == n}, i: {i: Int | 0 <= i})
+    -> {b: Array<{x: Int | 0 <= x && x < n}> | array_length(b) == n} {
+  if i >= n { a } else { init(n, array_set(a, i, i), i + 1) }
+}
+fn copy_into(n: {n: Int | 1 <= n && n <= 16}, dst: {d: Array<{x: Int | 0 <= x && x < n}> | array_length(d) == n},
+    src: {s: Array<{x: Int | 0 <= x && x < n}> | array_length(s) == n}, i: {i: Int | 0 <= i})
+    -> {d: Array<{x: Int | 0 <= x && x < n}> | array_length(d) == n} {
+  if i >= n { dst } else { copy_into(n, array_set(dst, i, array_get(src, i)), src, i + 1) }
+}
+// Reverses p[i..j].
+fn reverse_prefix(n: {n: Int | 1 <= n && n <= 16}, p: {p: Array<{x: Int | 0 <= x && x < n}> | array_length(p) == n},
+    i: {i: Int | 0 <= i}, j: {j: Int | j < n}) -> {q: Array<{x: Int | 0 <= x && x < n}> | array_length(q) == n} {
+  if i >= j { p } else {
+    let a = array_get(p, i);
+    let b = array_get(p, j);
+    reverse_prefix(n, array_set(array_set(p, i, b), j, a), i + 1, j - 1)
+  }
+}
+// perm1[0..r] rotated left by one.
+fn rotate(n: {n: Int | 1 <= n && n <= 16}, perm1: {p: Array<{x: Int | 0 <= x && x < n}> | array_length(p) == n},
+    r: {r: Int | 0 <= r && r < n}, i: {i: Int | 0 <= i && i <= r}, perm0: {x: Int | 0 <= x && x < n})
+    -> {q: Array<{x: Int | 0 <= x && x < n}> | array_length(q) == n} {
+  if i == r { array_set(perm1, r, perm0) } else { rotate(n, array_set(perm1, i, array_get(perm1, i + 1)), r, i + 1, perm0) }
+}
+
+fn fact(k: Int) -> {r: Int | r >= 1} { if k <= 1 { 1 } else { let m = k * fact(k - 1); if m >= 1 { m } else { 1 } } }
+
+// dst[j] = src[(j + d) mod (i + 1)] for j up to i: src's first i + 1 elements rotated left by d.
+fn rotate_by(n: {n: Int | 1 <= n && n <= 16}, dst: {p: Array<{x: Int | 0 <= x && x < n}> | array_length(p) == n}, src: {p: Array<{x: Int | 0 <= x && x < n}> | array_length(p) == n},
+    i: {i: Int | 0 <= i && i < n}, d: {d: Int | 0 <= d && d <= i}, j: {j: Int | 0 <= j}) -> {q: Array<{x: Int | 0 <= x && x < n}> | array_length(q) == n} {
+  if j > i { dst }
+  else if j + d <= i { rotate_by(n, array_set(dst, j, array_get(src, j + d)), src, i, d, j + 1) }
+  else { rotate_by(n, array_set(dst, j, array_get(src, j + d - i - 1)), src, i, d, j + 1) }
+}
+// The permutation with index idx (counting from i down): rotate the first
+// i + 1 elements left by the i-th digit of idx in the factorial number system.
+fn unrank(n: {n: Int | 1 <= n && n <= 16}, p: {p: Array<{x: Int | 0 <= x && x < n}> | array_length(p) == n}, tmp: {p: Array<{x: Int | 0 <= x && x < n}> | array_length(p) == n}, idx: Int,
+    i: {i: Int | 0 <= i && i < n}) -> {q: Array<{x: Int | 0 <= x && x < n}> | array_length(q) == n} {
+  if i == 0 { p } else {
+    let f = fact(i);
+    let d = idx / f;
+    if d < 0 || d > i { p } else {
+      let tmp = copy_into(n, tmp, p, 0);
+      unrank(n, rotate_by(n, p, tmp, i, d, 0), tmp, idx % f, i - 1)
+    }
+  }
+}
+// The same digits, as the counters the next-permutation step keeps.
+fn digits_of(n: {n: Int | 1 <= n && n <= 16}, c: {c: Array<Int> | array_length(c) == n}, idx: Int, i: {i: Int | 0 <= i && i < n})
+    -> {c: Array<Int> | array_length(c) == n} {
+  if i == 0 { c } else { let f = fact(i); digits_of(n, array_set(c, i, idx / f), idx % f, i - 1) }
+}
+
+// Counts the flips of perm (a copy of perm1), then moves on to the next permutation.
+fn flip(n: {n: Int | 1 <= n && n <= 16}, perm: {p: Array<{x: Int | 0 <= x && x < n}> | array_length(p) == n}, perm1: {p: Array<{x: Int | 0 <= x && x < n}> | array_length(p) == n}, count: {c: Array<Int> | array_length(c) == n},
+    k: Int, hi: Int, checksum: Int, maxflips: Int, flips: Int) -> (Int, Int) {
+  let f = array_get(perm, 0);
+  if f == 0 {
+    let maxflips = if flips > maxflips { flips } else { maxflips };
+    let checksum = if k % 2 == 0 { checksum + flips } else { checksum - flips };
+    if k + 1 >= hi || n < 2 { (checksum, maxflips) } else { next(n, perm, perm1, count, 1, k + 1, hi, checksum, maxflips) }
+  } else { flip(n, reverse_prefix(n, perm, 0, f), perm1, count, k, hi, checksum, maxflips, flips + 1) }
+}
+// The next permutation: rotate perm1's first i + 1 elements left by one; the
+// counter of i goes up, and when it passes i, back to 0, and on to i + 1.
+fn next(n: {n: Int | 1 <= n && n <= 16}, perm: {p: Array<{x: Int | 0 <= x && x < n}> | array_length(p) == n}, perm1: {p: Array<{x: Int | 0 <= x && x < n}> | array_length(p) == n}, count: {c: Array<Int> | array_length(c) == n},
+    i: {i: Int | 1 <= i && i < n}, k: Int, hi: Int, checksum: Int, maxflips: Int) -> (Int, Int) {
+  let perm1 = rotate(n, perm1, i, 0, array_get(perm1, 0));
+  let c = array_get(count, i) + 1;
+  if c <= i { start(n, perm, perm1, array_set(count, i, c), k, hi, checksum, maxflips) }
+  else if i + 1 < n { next(n, perm, perm1, array_set(count, i, 0), i + 1, k, hi, checksum, maxflips) }
+  else { (checksum, maxflips) }
+}
+fn start(n: {n: Int | 1 <= n && n <= 16}, perm: {p: Array<{x: Int | 0 <= x && x < n}> | array_length(p) == n}, perm1: {p: Array<{x: Int | 0 <= x && x < n}> | array_length(p) == n}, count: {c: Array<Int> | array_length(c) == n},
+    k: Int, hi: Int, checksum: Int, maxflips: Int) -> (Int, Int) {
+  flip(n, copy_into(n, perm, perm1, 0), perm1, count, k, hi, checksum, maxflips, 0)
+}
+// The permutations with indices lo to hi - 1: (checksum, most flips).
+fn block(n: {n: Int | 1 <= n && n <= 16}, lo: Int, hi: Int) -> (Int, Int) {
+  let p = unrank(n, init(n, array_make(n, 0), 0), array_make(n, 0), lo, n - 1);
+  start(n, array_make(n, 0), p, digits_of(n, array_make(n, 0), lo, n - 1), lo, hi, 0, 0)
+}
+
+fn digits(s: String, i: {i: Int | 0 <= i}, acc: Int) -> Int {
+  if i >= string_length(s) { acc } else {
+    let c = char_code_at(s, i);
+    if c >= 48 && c <= 57 { digits(s, i + 1, acc * 10 + c - 48) } else { acc }
+  }
+}
+
+fn main() {
+  let n = digits(read_input(), 0, 0);
+  if n < 1 || n > 16 { println("n must be between 1 and 16") } else {
+    let blocks = if n >= 4 { n * (n - 1) * (n - 2) } else { 1 };
+    let size = fact(n) / blocks;
+    let results = par_map(array_from_list(range(0, blocks)), |b| block(n, b * size, (b + 1) * size));
+    let (cs, mf) = fold(array_to_list(results), (0, 0), |acc, r| match (acc, r) { ((c1, m1), (c2, m2)) -> (c1 + c2, if m2 > m1 { m2 } else { m1 }) });
+    println(int_to_string(cs) ++ "\nPfannkuchen(" ++ int_to_string(n) ++ ") = " ++ int_to_string(mf))
+  }
+}

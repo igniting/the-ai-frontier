@@ -133,6 +133,26 @@ fn effect_violation(cs, labels, ctx, s, e, cause, why) {
   }
 }
 
+// par_map calls its function many times at once, in no particular order, so
+// the function may fail but not use input, output, the clock or randomness.
+// Its effects are settled at the call: what it could still be given later (an
+// effect variable, as for a function parameter) is closed, so a function
+// that passes its parameter to par_map can only be given one with no effects.
+fn par_effects(cs, fty, arg) {
+  match cs_prune(cs, fty) {
+    TF(_, _, eff) -> {
+      let r = prune_row(cs_st(cs), eff);
+      let bad = filter(row_labels(r), |l| l != "fail");
+      if !is_empty(bad) {
+        fail_at("the function given to `par_map` can " ++ join(map(bad, effect_word), " and ") ++ ", but `par_map` runs it in parallel", ex_s(arg), ex_e(arg),
+          Some("`par_map` calls its function many times at once, in no particular order, so the function may fail but not use input, output, the clock or randomness"))
+      } else { () };
+      match unify_rows(cs_st(cs), Row(row_labels(r), None), r) { (st, _) -> cs_with_st(cs, st) }
+    },
+    _ -> cs,
+  }
+}
+
 // The current function may perform the effects in `labels`.
 fn perform(cs, labels, ctx, s, e, cause, note) {
   let (v, cs) = new_rv(cs, ctx_level(ctx));
@@ -287,6 +307,10 @@ fn infer_inner(env, cs, x, ctx) {
             let arg = list_get(args, i);
             unify_at(env, cs, list_get(ps, i), a, ex_s(arg), ex_e(arg), Some("argument " ++ int_to_string(i + 1) ++ " of " ++ what))
           } });
+          let is_par = match f { EVar(fid, _, _, _) -> match cs_ref(cs, fid) { RBuiltin(b) -> b == "par_map", _ -> false }, _ -> false };
+          let cs = if is_par { par_effects(cs, list_get(ps, 1), list_get(args, 1)) } else { cs };
+          // The call's own effects are its function's, open again (as every call's are).
+          let (eff, cs) = if is_par { let (v, cs) = new_rv(cs, level); (Row(row_labels(prune_row(cs_st(cs), eff)), Some(v)), cs) } else { (eff, cs) };
           let partial = match f { EVar(fid, _, _, _) -> match cs_ref(cs, fid) { RBuiltin(b) -> partial_builtin(b), _ -> false }, _ -> false };
           let (eff2, note, cs) = if partial {
             if is_safe(env, ctx, s, e) {
