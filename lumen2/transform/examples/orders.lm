@@ -1,0 +1,25 @@
+// Orders CSV: order,customer,country,quantity,unit_price,time
+// Keeps the orders from the euro area with a total of at least 100.00 and
+// prints the order, a pseudonym for the customer, the country and the total.
+// Prices are exact decimals (in cents), not floating point.
+
+fn euro_area(c: String) -> Bool {
+  c == "AT" || c == "BE" || c == "DE" || c == "ES" || c == "FI" || c == "FR" || c == "IE" || c == "IT" || c == "NL" || c == "PT"
+}
+
+fn transform(n: Int, line: String) -> Option<String> {
+  if n == 1 { Some("order,customer,country,total") }
+  else {
+    let row = fields(line);
+    let country = field(row, 2);
+    match (parse_int(field(row, 3)), parse_decimal(field(row, 4), 2)) {
+      (Some(quantity), Some(price)) -> {
+        let total = quantity * price;
+        if total >= 10000 && euro_area(country) {
+          Some(csv([field(row, 0), "c" ++ int_to_string(hash(field(row, 1)) % 1000000), country, show_decimal(total, 2)]))
+        } else { None }
+      },
+      _ -> panic("not an order: " ++ line),
+    }
+  }
+}

@@ -157,7 +157,12 @@ fn rt_rt_fail(gx, cg) {
   let chk = wchk(gx);
   mkfn(cg, "rt_fail", [i32p("code")], [], [], CL([wget("code"), wcall("host_fail"), wop("unreachable")]))
 }
-  // Size class of an allocation: log2 of the block size, at least 16 bytes.
+// Size class of an allocation: log2 of the block size, at least 16 bytes (the
+// code of rt_class, which the allocator inlines).
+fn wclass(size) {
+  CL([wget(size), wi32(16), wop("i32.le_u"), wif_r("i32"), wi32(4),
+    wop("else"), wi32(32), wget(size), wi32(1), wop("i32.sub"), wop("i32.clz"), wop("i32.sub"), wend()])
+}
 fn rt_rt_class(gx, cg) {
   let paranoid = gx_paranoid(gx);
   let mutant = gx_mutant(gx);
@@ -172,7 +177,7 @@ fn rt_rt_alloc(gx, cg) {
   let mutant = gx_mutant(gx);
   let chk = wchk(gx);
   mkfn(cg, "rt_alloc", [i32p("size")], ["i32"], [i32p("c"), i32p("p"), i32p("top")], CL([
-    wget("size"), wcall("rt_class"), wset("c"),
+    wclass("size"), wset("c"),
     wblock("have"),
     if paranoid { wnone() } else { CL([
       whead("c"), wmem("i32.load", k_free_lists()), wtee("p"), wif(),
@@ -199,7 +204,7 @@ fn rt_rt_free(gx, cg) {
     wget("p"), wi32(0), wmem("i32.store", 0),
     wgget("live"), wi32(1), wop("i32.sub"), wgset("live"),
     if paranoid { wnone() } else { CL([
-      wget("size"), wcall("rt_class"), wset("c"),
+      wclass("size"), wset("c"),
       wget("p"), whead("c"), wmem("i32.load", k_free_lists()), wmem("i32.store", 8),
       whead("c"), wget("p"), wmem("i32.store", k_free_lists()),
     ]) },
@@ -226,7 +231,7 @@ fn wfree_head(c) { CL([whead(c), wgget("fl"), wop("i32.add")]) }
 fn rt_alloc_t(gx, cg) {
   let paranoid = gx_paranoid(gx);
   mkfn(cg, "rt_alloc", [i32p("size")], ["i32"], [i32p("c"), i32p("p"), i32p("top"), i32p("sz"), i32p("e")], CL([
-    wget("size"), wcall("rt_class"), wset("c"),
+    wclass("size"), wset("c"),
     wblock("have"),
     if paranoid { wnone() } else { CL([
       wfree_head("c"), wmem("i32.load", 0), wtee("p"), wif(),
@@ -255,7 +260,7 @@ fn rt_free_t(gx, cg) {
     wget("p"), wi32(0), wmem("i32.store", 0),
     wgget("live"), wi32(1), wop("i32.sub"), wgset("live"),
     if paranoid { wnone() } else { CL([
-      wget("size"), wcall("rt_class"), wset("c"),
+      wclass("size"), wset("c"),
       wget("p"), wfree_head("c"), wmem("i32.load", 0), wmem("i32.store", 8),
       wfree_head("c"), wget("p"), wmem("i32.store", 0),
     ]) },
@@ -1194,7 +1199,7 @@ fn gen_fn(gx, cg, f) {
       else if name == "random_int" { (CL([ac, wcall("host_random")]), cg) }
       else if name == "int_to_string" { (CL([ac, wcall("int_to_string")]), cg) }
       else if name == "concat_strings" { (CL([ac, wcall("str_concat_list")]), cg) }
-      else if name == "string_length" { (CL([ac, wcall("str_length")]), cg) }
+      else if name == "string_length" { if gx_noinline(gx) { (CL([ac, wcall("str_length")]), cg) } else { (CL([ac, chk, wmem("i32.load", 4), wop("i64.extend_i32_u")]), cg) } }
       else if name == "substring" { (CL([ac, wcall("str_sub")]), cg) }
       else if name == "char_code_at" {
         if proved && !gx_noinline(gx) { let (sc, cg) = atom(cg, list_get(args, 0)); let i = list_get(args, 1); (CL([sc, at_code(i), wop("i32.wrap_i64"), wop("i32.add"), wmem("i32.load8_u", 8), wop("i64.extend_i32_u")]), cg) }
@@ -1467,6 +1472,50 @@ fn gen_unpack(gx, st, e, vt, label, mutant, k) {
   }, _ -> internal("codegen: unpack") }
 }
 
+// ------------------------------------------------------------- inlining
+// V8 does not inline calls from one WebAssembly function to another, and a
+// call costs more than the few instructions of reference counting. So the
+// reference counting functions are inlined at every call (allocating and
+// freeing too would make code 60% larger, for 10% at most): the arguments go to
+// locals of the caller named after the function, and the body runs in a
+// block that its returns branch out of.
+fn wasm_inlined() { ["rt_dup", "rt_release"] }
+fn wasm_inline(funcs: List<WFn>) -> List<WFn> {
+  let defs = fold(funcs, MEmpty, |m, f| match f { WFn(n, _, _, _, _) -> if contains(wasm_inlined(), n) { m_set(m, n, f) } else { m } });
+  map(funcs, |f| match f { WFn(n, ps, rs, ls, body) ->
+    if m_has(defs, n) { f } else {
+      let (out, used) = fold(body, ([], []), |acc, ins| match acc { (out, used) -> match ins {
+        OCall(op, g) -> match m_get(defs, g) {
+          Some(d) -> if op == "call" { (rev_append(wasm_inline_code(g, d), out), if contains(used, g) { used } else { [g, ..used] }) } else { ([ins, ..out], used) },
+          None -> ([ins, ..out], used),
+        },
+        _ -> ([ins, ..out], used),
+      } });
+      if is_empty(used) { f } else { WFn(n, ps, rs, append(ls, flat_map(reverse(used), |g| wasm_inline_locals(g, m_get(defs, g)))), reverse(out)) }
+    }
+  })
+}
+fn wasm_inline_locals(g, d) {
+  match d {
+    Some(WFn(_, ps, _, ls, _)) -> map(append(ps, ls), |p| match p { (x, t) -> ("inl:" ++ g ++ ":" ++ x, t) }),
+    None -> [],
+  }
+}
+fn wasm_inline_code(g, d) {
+  match d { WFn(_, ps, rs, _, body) -> {
+    let pre = "inl:" ++ g ++ ":";
+    let label = "inl:" ++ g;
+    let sets = map(reverse(ps), |p| match p { (x, _) -> OLocal("local.set", pre ++ x) });
+    let ty = match rs { [t] -> Some(t), _ -> None };
+    let renamed = map(body, |i| match i {
+      OLocal(op, x) -> OLocal(op, pre ++ x),
+      Op(o) -> if o == "return" { OBr("br", label) } else { i },
+      _ -> i,
+    });
+    append(sets, [OBlock("block", Some(label), ty), ..append(renamed, [Op("end")])])
+  } }
+}
+
 // The whole back end: the IR (after reference counting) -> the module's bytes
 // and the superoptimizer's rewrite counts (rule id -> uses, in order of first use).
 fn codegen(adts, prog, mutant, paranoid, noinline, superopt, rules, threads_ok) {
@@ -1487,7 +1536,7 @@ fn codegen(adts, prog, mutant, paranoid, noinline, superopt, rules, threads_ok) 
     let cg = cg_pad(cg);
     match cg { CG(funcs, _, data, _, _, table, _, _) -> {
       let heap_start = ((k_data() + array_length(data) + 15) / 16) * 16;
-      let funcs = reverse(funcs);
+      let funcs = if noinline || paranoid { reverse(funcs) } else { wasm_inline(reverse(funcs)) };
       // The superoptimizer's proved rewrite rules, applied to straight-line code.
       let (funcs, stats) = if superopt {
         let (out, stats) = fold(funcs, ([], om_empty()), |acc, f| match (acc, f) {

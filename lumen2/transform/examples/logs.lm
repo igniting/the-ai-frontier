@@ -1,0 +1,32 @@
+// Web server access logs (common log format): prints the requests that
+// failed on the server (status 500 to 599) as CSV: time, status, method and
+// path (without its query). Lines that are not log lines are skipped.
+//
+//   198.51.100.4 - - [06/Nov/2026:10:00:01 +0000] "POST /api/orders HTTP/1.1" 503 87
+
+// The text between open and close, from position `from`, and the position after close.
+fn between(s: String, open: String, close: String, from: Int) -> Option<(String, Int)> {
+  let i = index_from(s, open, from);
+  if i < 0 { None }
+  else {
+    let j = index_from(s, close, i + string_length(open));
+    if j < 0 { None } else { Some((substring(s, i + string_length(open), j), j + string_length(close))) }
+  }
+}
+
+fn transform(n: Int, line: String) -> Option<String> {
+  match (between(line, "[", "]", 0), between(line, "\"", "\"", 0)) {
+    (Some((time, _)), Some((request, after))) -> {
+      let status = field(split(trim(substring(line, after, string_length(line))), " "), 0);
+      match parse_int(status) {
+        Some(code) -> if code >= 500 && code <= 599 {
+          let parts = split(request, " ");
+          let path = field(split(field(parts, 1), "?"), 0);
+          Some(csv([substring(time, index_of(time, ":") + 1, index_of(time, " ")), status, field(parts, 0), path]))
+        } else { None },
+        None -> None,
+      }
+    },
+    _ -> None,
+  }
+}

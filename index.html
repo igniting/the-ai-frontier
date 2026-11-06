@@ -292,9 +292,10 @@ table.t.trace td code { white-space: nowrap; }
     <li><a href="#lumen2-selfhost"><span class="n">20</span>The compiler compiles itself, again</a></li>
     <li><a href="#lumen2-port"><span class="n">21</span>Retiring the JavaScript compiler</a></li>
     <li><a href="#lumen2-speed"><span class="n">22</span>How fast is it, next to C?</a></li>
+    <li><a href="#lumen2-transform"><span class="n">23</span>Other people's code, on every core</a></li>
     <li class="toc-part">Part six · Mistakes and limits</li>
-    <li><a href="#caught"><span class="n">23</span>What the checks caught, including my mistakes</a></li>
-    <li><a href="#limits"><span class="n">24</span>What this shows, and what it doesn't</a></li>
+    <li><a href="#caught"><span class="n">24</span>What the checks caught, including my mistakes</a></li>
+    <li><a href="#limits"><span class="n">25</span>What this shows, and what it doesn't</a></li>
   </ol>
 </header>
 
@@ -319,7 +320,7 @@ table.t.trace td code { white-space: nowrap; }
   uses all of it to prove a theorem, and explains SAT solving and proof checking on the way. <b>Part five</b> starts
   again: a second language, designed with what the first one taught me, that proves its own array accesses safe,
   needs no garbage collector, proves the same theorem, ends up with its whole compiler written in itself, runs
-  within 1.3 to 2.9 times of C, and runs on every core. <b>Part six</b> lists what went wrong and what this does
+  within 1.1 to 2.9 times of C, runs on every core, and runs other people's code there safely. <b>Part six</b> lists what went wrong and what this does
   and doesn't show.</p>
 </section>
 
@@ -2555,6 +2556,96 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
   every push, next to the sequential one.</p>
 </section>
 
+<section class="chapter" id="lumen2-transform">
+  <p class="chapter-label">23 · Part five</p>
+  <h2>Other people's code, on every core</h2>
+  <p>After the parallel proof came a fair question: “But this should be provable in C as well, right?” It should.
+  Nothing about S(4) needs Lumen 2, and a C solver split into the same cubes would prove it faster. What Lumen 2
+  adds is that its types say what a function can do, checked before anything runs. So the next question was the
+  right one: “Anything else which is easier/faster in this language and is more practical as well”. A guarantee
+  about what a function can do matters most when someone else wrote the function.</p>
+  <p>Many systems run code their users write, on their own data: a filter in a log pipeline, a computed column, a
+  step in an ETL job. The usual ways trade safety against speed. Python's <code>exec</code> gives the user's code
+  everything Python can do. Node's <code>vm</code> module runs it in a separate context, which Node's documentation
+  says is “not a security mechanism”. C is fast and checks nothing. And none of them can run the user's code on
+  every core without knowing what it does: if it prints, keeps a counter or draws random numbers, the output
+  depends on how the threads were scheduled.</p>
+
+  <h3><code>lumen2 transform</code></h3>
+  <p>The user writes one function, <code>transform(n, line)</code>. It gets a line's number and text and returns
+  the output line, or <code>None</code> to drop it. A library written in Lumen 2 splits CSV fields, parses
+  integers and exact decimals, and handles text, with every byte access proved in bounds. A harness reads 4,096
+  lines at a time and maps them with <code>par_map</code>, 64 lines to a task. The check is the one
+  <code>par_map</code> already makes: the function may fail, and may do nothing else.</p>
+  <figure>
+    <pre class="listing">fn transform(n: Int, line: String) -&gt; Option&lt;String&gt; {
+  if n == 1 || random_int(1, 100) == 1 { Some(line) } else { None }
+}
+
+error: `transform` can use randomness, but a transform may only compute (and fail)
+  transform  fn(Int, String) -&gt; Option&lt;String&gt; ! random  (line 1)</pre>
+  </figure>
+  <p>That rejection is the point. Sampling with <code>random_int</code> would choose different lines on every run;
+  sampling by <code>hash(line) % 100</code> chooses the same ones every time. Because a transform is pure, two
+  more things come almost for free. The output is the same, byte for byte, on any number of threads, and the tests
+  check that on one and four threads, in several batch and task sizes. And a failure can name its line. When a
+  task fails, the tool transforms that task's 64 lines again, one to a task, and reports <code>line 12346: integer
+  overflow</code>. Running code again to find an error is only safe when running it does nothing else.</p>
+  <p>Nothing else is reachable, either. The program is WebAssembly, and the only functions it imports read input,
+  write output, read the clock, draw random numbers, report a failure and start threads. Even a bug in the checker
+  could not give a transform the file system.</p>
+
+  <h3>Against the usual ways</h3>
+  <p>The benchmark is an ordinary job. From 2 million orders (105 MB of CSV), it keeps the euro-area orders of at
+  least 100.00, replaces each customer with a pseudonym, and prints the total to the cent. I wrote the same
+  function in C, JavaScript and Python, each with the same library, and every version must print the same
+  950,124 lines, byte for byte.</p>
+  <div class="table-wrap">
+    <table class="t">
+      <thead><tr><th>language</th><th>the user's code is</th><th style="text-align:right">threads</th><th style="text-align:right">time</th></tr></thead>
+      <tbody>
+        <tr><td>Lumen 2</td><td>checked, compiled before</td><td class="num">4</td><td class="num">1.43 s</td></tr>
+        <tr><td>Lumen 2</td><td>checked and compiled in the run</td><td class="num">4</td><td class="num">2.78 s</td></tr>
+        <tr><td>Lumen 2</td><td>checked and compiled in the run</td><td class="num">1</td><td class="num">3.88 s</td></tr>
+        <tr><td>C, OpenMP</td><td>not checked</td><td class="num">4</td><td class="num">0.32 s</td></tr>
+        <tr><td>C</td><td>not checked</td><td class="num">1</td><td class="num">0.37 s</td></tr>
+        <tr><td>JavaScript</td><td>in a <code>node:vm</code> context</td><td class="num">1</td><td class="num">6.60 s</td></tr>
+        <tr><td>JavaScript</td><td>not isolated, as with <code>eval</code></td><td class="num">1</td><td class="num">3.07 s</td></tr>
+        <tr><td>Python</td><td>run with <code>exec</code></td><td class="num">1</td><td class="num">9.69 s</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="caption">Wall-clock time for the whole command, best of three, on the same 4-core machine.
+  <code>lumen2/transform/bench/run.js</code> generates the data, runs every version and compares the outputs.</p>
+  <p>Once compiled, Lumen 2 is 6.8 times as fast as Python's <code>exec</code> and 4.6 times as fast as
+  JavaScript in a <code>vm</code> context. Counting the 1.4 seconds it takes to check and compile, the factors are
+  3.5 and 2.4. A compiled transform is cached, so that cost is paid once. C on four threads is 4.5 times as fast
+  as Lumen 2 on four: Lumen 2
+  copies every field it splits off, where C points into the line, and Lumen 2 checks its arithmetic for overflow.</p>
+  <p>The <code>vm</code> row surprised me twice. The same JavaScript took 2.2 times as long in a context as
+  outside one. And the context isolated nothing: in the benchmark's own harness, the user's code reached the
+  host's <code>process</code>, and with it the file system, through one expression,
+  <code>globalThis.constructor.constructor('return process')()</code>.</p>
+
+  <h3>Making it fast</h3>
+  <p>The first version spent more time around the transform than in it, and three changes fixed most of that.
+  <code>par_map</code>'s threads took one index at a time from a shared counter, and with thousands of small
+  elements the counter cost more than the work, so they now take blocks of up to 64. The harness now gives each
+  task 64 lines instead of one. The third change helped every program. The profile was full of calls to
+  the small functions that add and remove a reference. V8 does not inline a call from one WebAssembly function to
+  another, except under an experimental flag, and with that flag the run took 2.5 seconds instead of 3.6. So the
+  code generator now inlines those two functions itself. Binary trees went from 2.25 to 1.74 seconds and edit
+  distance from 3.55 to 2.97, both measured the same day, and the compiler now compiles itself in 20 seconds
+  instead of 27. Inlining allocation as well made the compiler 3.9 MB instead of 2.4, for at most 10% more speed,
+  so I took it out again. Together, the three changes brought the transform's run from 3.4 to 2.5 seconds on one
+  thread, and from 1.9 to 1.4 seconds on four.</p>
+  <p>What is left is mostly structure. The main thread reads the lines and writes the output while the other
+  threads wait, so four threads give 1.8 times the speed of one, not 4. With no floating point, a transform can
+  handle money exactly, as decimals in hundredths, but cannot parse a measurement. A quoted CSV field cannot hold
+  a line break, because lines are split first. And nothing limits a transform's time: one that loops forever
+  runs forever, though its memory stops at the WebAssembly memory's 1 GB.</p>
+</section>
+
 <div class="part">
   <p class="part-n">Part six · <a href="#top">contents</a></p>
   <p class="part-title">Mistakes and limits</p>
@@ -2563,7 +2654,7 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
 </div>
 
 <section class="chapter" id="caught">
-  <p class="chapter-label">23 · Part six</p>
+  <p class="chapter-label">24 · Part six</p>
   <h2>What the checks caught, including my mistakes</h2>
   <ul class="plain">
     <li><b>A real bug in the reference interpreter.</b> A random program grew a string eightfold per step.
@@ -2664,6 +2755,12 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
     lambda passed a new list to <code>safe</code> in tail position. To keep that call a tail call, borrow inference
     made <code>safe</code> own its list (chapter 17), and every other call of <code>safe</code> then counted
     references along the list. Comparing timings with the sequential program found it.</li>
+    <li><b>A failure the tool could not place.</b> <code>lumen2 transform</code> finds the line that failed from
+    the index <code>par_map</code> reports. A <code>par_map</code> over one element runs without the threads and
+    reports no index, so with one line to a task the first version said <code>lines 1235 to 1235</code>. A test
+    with tasks of one line found it.</li>
+    <li><b>A test expectation I got wrong.</b> I expected <code>split(" aAbabZ, b ", "ab")</code> to give three
+    parts. <code>"ab"</code> occurs once in that string, so it gives two, as the library did.</li>
     <li><b>A benchmark in C that disagreed with itself.</b> The edit-distance program printed one answer natively
     and another compiled to WebAssembly. <code>long</code> is 32 bits there, and the random number generator
     overflowed. The benchmark runner compares every version's output, so the mistake never reached a timing.</li>
@@ -2690,6 +2787,7 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
     <li><span class="when">against C</span>“Don't think in terms of compiler - think in terms of what language can achieve and how fast it can solve complex problems.” Four programs in Lumen 2 and in C, and nine compiler changes that brought Lumen 2 from 1.5–10 times slower than C to 1.3–2.9 times. <a href="https://github.com/igniting/the-ai-frontier/tree/main/lumen2/bench">lumen2/bench/</a></li>
     <li><span class="when">every core</span>“let's test the parallelism part as well?” <code>par_map</code>, threads that share one memory and count references atomically while they run, and three parallel benchmarks against C with OpenMP.</li>
     <li><span class="when">the theorem in parallel</span>“Yes go ahead with proof.” S(4) = 44 by cube and conquer: 256 cubes refuted with <code>par_map</code>, one checked refutation, 22 seconds instead of 8 minutes.</li>
+    <li><span class="when">other people's code</span>“Anything else which is easier/faster in this language and is more practical as well”. <code>lumen2 transform</code>, which runs a user's function over a file on every core after checking that it can only compute, against the same function in C, JavaScript and Python; and reference counting inlined. <a href="https://github.com/igniting/the-ai-frontier/tree/main/lumen2/transform">lumen2/transform/</a></li>
   </ol>
   <p class="aside">The conversation outgrew my working memory and had to be summarized partway through, more than
   once, and the machine I ran on restarted once during a five-minute check. What made it safe to pick up the
@@ -2698,7 +2796,7 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
 </section>
 
 <section class="chapter" id="limits">
-  <p class="chapter-label">24 · Part six</p>
+  <p class="chapter-label">25 · Part six</p>
   <h2>What this shows, and what it doesn't</h2>
   <p>It shows one long session of sustained engineering in which each layer was checked by the one below it. The
   work is a compiler, an independent re-implementation of it, a prover with a proof checker, an optimizer gated by
@@ -2717,7 +2815,8 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
   point or modules either. Its refinements are limited to linear arithmetic over integers and array lengths, plus one fact
   about every element of an array, and it
   reuses memory only where the size of a cell is known when compiling. Its S(4) proof rests on the same symmetry
-  argument as Lumen's. Its comparison with C covers four small programs, three of them also on four cores. And
+  argument as Lumen's. Its comparison with C covers four small programs, three of them also on four cores, and
+  one data transformation, which is also compared with JavaScript and Python. And
   every timing here comes from one JavaScript engine on one machine.</p>
   <h3>Reproduce it</h3>
   <p>Everything needs only Node 22 and a clone of the repository. There is nothing to install.</p>
@@ -2731,7 +2830,7 @@ node superopt/verify.js                     <span class="c"># re-prove the 40 ru
 node bench/gate.js                          <span class="c"># the whole gate, about 7 minutes</span>
 node proofs/prove-schur.js 4 44             <span class="c"># prove S(4) = 44, about 6 minutes</span>
 
-cd lumen2 &amp;&amp; npm test &amp;&amp; cd ..              <span class="c"># Lumen 2: 59 tests</span>
+cd lumen2 &amp;&amp; npm test &amp;&amp; cd ..              <span class="c"># Lumen 2: 68 tests</span>
 node lumen2/test/fuzz.js 1000               <span class="c"># Lumen 2: differential fuzzing, four ways</span>
 node lumen2/test/fuzz.js --mutants          <span class="c"># all 24 planted bugs must be caught</span>
 node lumen2/superopt/verify.js              <span class="c"># re-prove the 19 rewrite rules</span>
@@ -2740,7 +2839,8 @@ node lumen2/selfhost/bootstrap.js           <span class="c"># the first self-hos
 node lumen2/proofs/prove-schur.js 4 44 --out s4   <span class="c"># S(4) = 44 in Lumen 2, about 5 minutes; s4/ gets the proof</span>
 node lumen2/proofs/compare-lumen.js 4 44    <span class="c"># the same proof as Lumen's, byte for byte</span>
 node lumen2/proofs/check-drup.js s4/schur-4-45.cnf s4/schur-4-45.drup   <span class="c"># check it again, with the checker proved not to crash</span>
-node lumen2/bench/run.js                    <span class="c"># Lumen 2 against C, on one core and on all (C timings need a C compiler)</span></pre>
+node lumen2/bench/run.js                    <span class="c"># Lumen 2 against C, on one core and on all (C timings need a C compiler)</span>
+node lumen2/transform/bench/run.js          <span class="c"># a user's function on 2 million rows: Lumen 2, C, JavaScript, Python</span></pre>
   </figure>
   <div class="callout">
     <p><b>Explore it yourself.</b> The <a href="playground.html">playground</a> has the full editor with types,

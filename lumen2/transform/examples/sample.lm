@@ -1,0 +1,7 @@
+// About one order in a hundred, and the header. Which orders are chosen
+// depends only on each order's text, so every run chooses the same ones,
+// however many threads it has.
+
+fn transform(n: Int, line: String) -> Option<String> {
+  if n == 1 || hash(line) % 100 == 0 { Some(line) } else { None }
+}

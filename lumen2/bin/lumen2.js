@@ -10,16 +10,23 @@
 // lumen2 certify FILE [--out DIR]   check every certificate; write them to DIR
 // lumen2 build FILE [-o OUT.wasm]   write the WebAssembly module
 // lumen2 ir FILE [FN]               print the IR with its reference-count operations
+// lumen2 transform FILE [--input F]  apply FILE's `transform` to every line of F (or of
+//            [--threads N]          standard input), on N threads (default: one per core)
+//            [--check]              only check the transform
+//            [--no-cache]           compile it again (compiled transforms are kept in
+//                                   ~/.cache/lumen2/transforms, under the hash of their source)
 //
 // Exit codes are set with process.exitCode rather than process.exit(), which
 // can drop output still queued for a pipe.
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, writeSync, openSync } from 'node:fs';
 import { checkSource, interpretSource, compileSource, testSource, certifySource, formatDiagnostic, decodeBytes, utf8, makeHost, runWasm } from '../src/api.js';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { lineCol } from '../src/diagnostics.js';
 import { CAPABILITIES } from '../src/types.js';
+import { compileTransform, runTransform, defaultCache } from '../src/transform.js';
+import { retrying } from '../src/runtime.js';
 
 const [cmd, file, ...rest] = process.argv.slice(2);
 const opt = (name) => { const i = rest.indexOf(name); return i >= 0 ? rest[i + 1] : null; };
@@ -27,10 +34,11 @@ const flag = (name) => rest.includes(name);
 
 function main() {
   if (!cmd || !file) {
-    console.error('usage: lumen2 check FILE | run FILE [--allow CAPS] [--input FILE] [--seed N] [--interp] [--paranoid] | test FILE [--runs N] [--seed N] | certify FILE [--out DIR] | build FILE [-o OUT] | ir FILE [FN]');
+    console.error('usage: lumen2 check FILE | run FILE [--allow CAPS] [--input FILE] [--seed N] [--interp] [--paranoid] | test FILE [--runs N] [--seed N] | certify FILE [--out DIR] | build FILE [-o OUT] | ir FILE [FN] | transform FILE [--input FILE] [--threads N] [--check] [--no-cache]');
     return 2;
   }
   const source = readFileSync(file, 'utf8');
+  if (cmd === 'transform') return transform(source);
   // A program that runs is granted output; anything else must be asked for.
   let grants = null;
   if (cmd === 'run') {
@@ -125,6 +133,25 @@ function main() {
       console.error(`unknown command: ${cmd}`);
       return 2;
   }
+}
+
+// lumen2 transform: the transform is checked (its type, and that it can only
+// fail), then run over the input as it is read, its output written as it is made.
+function transform(source) {
+  const t = compileTransform(source, { cache: flag('--no-cache') ? null : defaultCache() });
+  if (!t.ok) { for (const e of t.errors) console.error(e); return 1; }
+  if (flag('--check')) { console.log(`transform : ${t.signature}`); return 0; }
+  const threads = opt('--threads');
+  if (threads !== null && !(Number(threads) >= 1)) { console.error('--threads: give a number from 1'); return 2; }
+  const inputPath = opt('--input');
+  let fd = 0;
+  if (inputPath) {
+    try { fd = openSync(inputPath, 'r'); } catch (e) { console.error(`cannot read ${inputPath}: ${e.code ?? e.message}`); return 2; }
+  }
+  const write = (b) => { for (let i = 0; i < b.length;) i += retrying(() => writeSync(1, b, i, b.length - i)); };
+  const r = runTransform(t, { input: { fd }, write, threads: threads === null ? null : Math.floor(Number(threads)) });
+  if (!r.ok) { console.error(`runtime error: ${r.error}`); return 1; }
+  return 0;
 }
 
 process.exitCode = main();

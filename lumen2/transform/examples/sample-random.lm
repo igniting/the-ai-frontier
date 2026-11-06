@@ -1,0 +1,9 @@
+// The usual way to sample, which lumen2 transform rejects: random_int makes
+// the output differ from run to run (and, on threads, depend on which thread
+// took which line). transform/examples/sample.lm samples by hash instead.
+//
+//   error: `transform` can use randomness, but a transform may only compute (and fail)
+
+fn transform(n: Int, line: String) -> Option<String> {
+  if n == 1 || random_int(1, 100) == 1 { Some(line) } else { None }
+}

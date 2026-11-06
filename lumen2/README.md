@@ -40,17 +40,24 @@ no garbage collector.** Lumen 2 is a fresh design, not an extension of
   JavaScript compiler was deleted.
 - **64-bit integers that never wrap silently.** Overflow is a runtime error,
   not a wrong answer.
-- **Within 1.3 to 2.9 times of C.** On four benchmark programs, the same
-  algorithm takes 1.3 to 2.9 times as long in Lumen 2 as in C compiled
+- **Within 1.1 to 2.9 times of C.** On four benchmark programs, the same
+  algorithm takes 1.1 to 2.9 times as long in Lumen 2 as in C compiled
   natively, with no mutation in the source and, where the program's types
   say so, every array access proved in bounds
   ([how fast it is](#how-fast-it-is)).
 - **Every core, safely.** `par_map` runs a function on every core. The
   types guarantee that the function does no input or output and uses
   neither the clock nor randomness, so the parallel result is the
-  sequential one. On four cores, three benchmarks run 2.8 to 4 times faster
-  than on one, and faster than C on one core
+  sequential one. On four cores, three benchmarks run 2.8 to 3.4 times
+  faster than on one, and faster than C on one core
   ([on every core](#on-every-core)).
+- **Users' code on your data, safely and on every core.** `lumen2
+  transform` runs a user's function over every line of a file. A function
+  that could print, read, read the clock or use randomness is rejected
+  before it runs, so the output is the same on any number of threads. On 2
+  million CSV rows it is 6.8 times as fast as Python running the same
+  function with `exec`, and 4.6 times as fast as JavaScript in a `node:vm`
+  context ([user-defined functions](#user-defined-functions-lumen2-transform)).
 - **A theorem, proved in it.** A SAT solver written in Lumen 2 proves the
   Schur number S(4) = 44. It prints the same 255,663-step refutation, byte
   for byte, as the original Lumen's imperative solver, at about the same
@@ -70,7 +77,7 @@ counting, property tests and certificates, all in the browser) ·
 
 ```sh
 cd lumen2
-npm test                                         # 59 tests, about 3.5 minutes
+npm test                                         # 68 tests, about 4 minutes
 node bin/lumen2.js check examples/refine.lm      # inferred types, effects, refinements
 node bin/lumen2.js run examples/tour.lm          # compile to wasm and run
 node bin/lumen2.js test examples/properties.lm   # check the properties
@@ -86,6 +93,8 @@ node superopt/search.js                          # search for rewrite rules (abo
 node superopt/verify.js                          # re-prove every rule the compiler applies
 node selfhost/bootstrap.js                       # the self-hosting fixed point (about 3 s)
 node bench/run.js                                # Lumen 2 against C, on one core and on all (about 3 minutes)
+node bin/lumen2.js transform transform/examples/orders.lm --input FILE   # a user's function on every line, on every core
+node transform/bench/run.js                      # the same function in Lumen 2, C, JavaScript and Python (about 2 minutes)
 LUMEN2_THREADS=2 node bin/lumen2.js run bench/nqueens-par.lm --allow input --input FILE   # par_map on 2 threads
 ```
 
@@ -522,14 +531,15 @@ the table. The C is compiled natively (`cc -O2`) and also to WebAssembly
 (clang, `wasm32-wasi`), which runs in the same Node as Lumen 2. That column
 shows what WebAssembly itself costs; the gap between it and Lumen 2 is what
 Lumen 2 costs. Best of three runs, on one core of a 2.1 GHz Xeon, with Node 22
-and clang 18:
+and clang 18 (this machine's times vary by about 20% from day to day, so
+compare within a table):
 
 | Program | n | C | C, WebAssembly | Lumen 2 | Lumen 2 / C |
 | --- | --- | --- | --- | --- | --- |
-| [fannkuch-redux](bench/fannkuch.lm): permutations, arrays updated in place | 11 | 3.10 s | 3.10 s | 4.06 s | 1.3× |
-| [binary trees](bench/binarytrees.lm): allocating and freeing trees | 18 | 1.18 s | 1.39 s | 1.74 s | 1.5× |
-| [N-queens](bench/nqueens.lm): backtracking search | 13 | 0.62 s | 0.66 s | 1.21 s | 1.9× |
-| [edit distance](bench/editdist.lm): dynamic programming over arrays | 30,000 | 0.96 s | 1.21 s | 2.78 s | 2.9× |
+| [fannkuch-redux](bench/fannkuch.lm): permutations, arrays updated in place | 11 | 3.87 s | 3.62 s | 4.66 s | 1.2× |
+| [binary trees](bench/binarytrees.lm): allocating and freeing trees | 18 | 1.56 s | 1.61 s | 1.74 s | 1.1× |
+| [N-queens](bench/nqueens.lm): backtracking search | 13 | 0.78 s | 0.90 s | 1.50 s | 1.9× |
+| [edit distance](bench/editdist.lm): dynamic programming over arrays | 30,000 | 1.02 s | 1.37 s | 2.97 s | 2.9× |
 
 The Lumen 2 programs are ordinary Lumen 2. Nothing in them mutates
 anything: every array update returns a new array, and every loop is a
@@ -549,8 +559,8 @@ Where the rest of the time goes:
   cell could be proved unnecessary from the refinements, but the checker
   does not yet try to prove anything about arithmetic.
 - **Binary trees.** The run allocates 68 million nodes, each taken from a
-  free list and given back as `check` walks the tree. That costs about 1.5
-  times as much as C's `malloc` and `free`; the allocator also keeps the
+  free list and given back as `check` walks the tree. That now costs about
+  as much as C's `malloc` and `free`, though the allocator also keeps the
   counts that the leak check reads.
 
 V8 compiles WebAssembly first with a baseline compiler and swaps in
@@ -561,7 +571,7 @@ code throughout, and would look 1.6 times slower than it is on fannkuch-redux.
 run optimized code.
 
 **What it took.** The same programs, compiled by the compiler as it was
-before this work:
+before this work (measured on another day than the table above):
 
 | Program | before | now |
 | --- | --- | --- |
@@ -594,6 +604,15 @@ before this work:
   time.
 - **Common subexpressions.** An arithmetic operation already done on the
   same path, on the same operands, is not done again.
+- **Reference counting inline.** V8 does not inline a call from one
+  WebAssembly function to another, and a call costs more than the few
+  instructions that add or remove a reference. So the code generator inlines
+  those two functions at every call. Measured on the same day, before and
+  after: binary trees went from 2.25 s to 1.74 s, edit distance from 3.55 s
+  to 2.97 s, and the other two did not change. The compiler grew from 1.7
+  MB to 2.4 MB, and compiles itself in 20 s instead of 27. Inlining
+  allocation and freeing too made it 3.9 MB, for at most 10% more speed, so
+  they stay calls.
 
 Each change was checked like every other: the test suite, 500 newly
 generated programs run four ways on every CI run, and the S(4) proof, which
@@ -619,13 +638,14 @@ parallel versions that split the same work into tasks
 ([`fannkuch-par.lm`](bench/fannkuch-par.lm),
 [`binarytrees-par.lm`](bench/binarytrees-par.lm),
 [`nqueens-par.lm`](bench/nqueens-par.lm)), and so do the C programs, with
-OpenMP. On the same 4-core machine, best of three:
+OpenMP. On the same 4-core machine, best of three, on the same day as the
+first table:
 
 | Program (split into) | n | C, 1 thread | C, 4 threads | Lumen 2, 1 thread | Lumen 2, 4 threads | Lumen 2's speedup |
 | --- | --- | --- | --- | --- | --- | --- |
-| fannkuch-redux (990 blocks of permutations) | 11 | 2.47 s | 0.67 s | 3.79 s | 0.95 s | 4.0× |
-| binary trees (the 8 depths) | 18 | 1.14 s | 0.78 s | 1.74 s | 0.61 s | 2.8× |
-| N-queens (the 132 placements of two queens) | 13 | 0.48 s | 0.16 s | 1.29 s | 0.42 s | 3.1× |
+| fannkuch-redux (990 blocks of permutations) | 11 | 3.34 s | 0.86 s | 4.50 s | 1.31 s | 3.4× |
+| binary trees (the 8 depths) | 18 | 1.55 s | 1.14 s | 1.83 s | 0.66 s | 2.8× |
+| N-queens (the 132 placements of two queens) | 13 | 0.77 s | 0.22 s | 1.56 s | 0.49 s | 3.2× |
 
 On four cores, Lumen 2 is faster than C on one in all three. It is faster
 than C on four in binary trees, where every thread allocates millions of
@@ -637,12 +657,137 @@ and all share one memory. Each thread takes chunks of the heap with an
 atomic add and keeps free lists of its own. While a `par_map` runs,
 reference counts above 1 change by atomic operations, because other threads
 may hold references to the same object. A count of 1 is still exclusive, so
-freeing, reuse and in-place updates stay as they were. The tests run every
+freeing, reuse and in-place updates stay as they were. Threads take the
+indices of a `par_map` in blocks of up to 64, so that thousands of small
+elements do not keep them all waiting on one shared counter. The tests run every
 `par_map` program on one to four threads and compare it with the
 interpreter, and the fuzzer generates them too. Two planted bugs in the
 threaded runtime must be caught: counts changed without atomics, and
 scratch memory shared between threads (a real bug the paranoid mode found
 first). In a browser, `par_map` runs as a loop.
+
+## User-defined functions: `lumen2 transform`
+
+Many systems run code written by their users on their own data: a filter in
+a log pipeline, a computed column in a spreadsheet or a database, a
+transformation in an ETL job. The usual ways to do that trade safety
+against speed. Python's `exec` and JavaScript's `eval` give the user's code
+everything the host can do. Node's `vm` contexts are, in Node's own words,
+"not a security mechanism". C is fast and checks nothing. And none of them
+can safely run the user's code on every core without knowing what it does.
+
+Lumen 2's types say what a function can do, so it can take that job.
+`lumen2 transform FILE` applies the user's function to every line of a
+file, on every core:
+
+```
+// From transform/examples/orders.lm, which also defines euro_area: keep the
+// euro-area orders of at least 100.00, with a pseudonym instead of the customer.
+fn transform(n: Int, line: String) -> Option<String> {
+  if n == 1 { Some("order,customer,country,total") }
+  else {
+    let row = fields(line);
+    let country = field(row, 2);
+    match (parse_int(field(row, 3)), parse_decimal(field(row, 4), 2)) {
+      (Some(quantity), Some(price)) -> {
+        let total = quantity * price;
+        if total >= 10000 && euro_area(country) {
+          Some(csv([field(row, 0), "c" ++ int_to_string(hash(field(row, 1)) % 1000000), country, show_decimal(total, 2)]))
+        } else { None }
+      },
+      _ -> panic("not an order: " ++ line),
+    }
+  }
+}
+```
+
+```sh
+node bin/lumen2.js transform transform/examples/orders.lm --input orders.csv > out.csv
+```
+
+- **The contract is checked before anything runs.** `transform` gets the
+  line's number and its text and returns the output line, or `None` to drop
+  it. Its only effect may be `fail`. A transform that could print, read
+  input, read the clock or use randomness is rejected, with the functions
+  responsible. For [`sample-random.lm`](transform/examples/sample-random.lm):
+
+  ```
+  error: `transform` can use randomness, but a transform may only compute (and fail)
+    transform  fn(Int, String) -> Option<String> ! random  (line 7)
+  ```
+
+  That is what makes the next two points true. Sampling one line in a
+  hundred with `random_int`, as that file does, is rejected; sampling by
+  `hash(line) % 100` ([`sample.lm`](transform/examples/sample.lm)) picks
+  the same lines on every run.
+- **On every core, with the same output.** The lines are read 4,096 at a
+  time, and `par_map` transforms each batch in tasks of 64 lines. The output
+  is the same, byte for byte, on any number of threads, in any batch and
+  chunk sizes; the tests check both.
+- **A failure names its line.** Overflow, a `panic` or an index out of
+  bounds stops the run, with what was printed before the failing batch
+  kept: `runtime error: line 12346: integer overflow`. Since the transform is
+  pure, finding the line is easy: the tool transforms the failing task's
+  lines again, one to a task.
+- **Nothing else is reachable.** The program runs as WebAssembly, and its
+  only imports are reading input, writing output, the clock, random numbers,
+  reporting a failure and starting `par_map`'s threads. The checker keeps
+  the transform from the first four. There is no file system and no network
+  to reach, even through a bug in the checker.
+
+The library ([`transform/lib.lm`](transform/lib.lm), in Lumen 2, with every
+byte access proved in bounds) has CSV fields and lines (`fields`, `field`,
+`csv`), numbers (`parse_int`, and `parse_decimal` and `show_decimal` for
+exact decimals such as money, in hundredths), text (`split`, `trim`,
+`lower`, `upper`, `starts_with`, `ends_with`, `index_of`, `includes`,
+`replace_all`, `pad_left`) and a `hash` that is the same on every machine.
+[`logs.lm`](transform/examples/logs.lm) reads web server logs with them.
+A compiled transform is kept in `~/.cache/lumen2/transforms` under the hash
+of everything it was compiled from, so running it again skips checking and
+compiling.
+
+**Against the usual ways.** `node transform/bench/run.js` runs the orders
+transform on 2 million generated orders (105 MB). The same function is
+written in C, in JavaScript and in Python, each with the same library, and
+every way must print the same output, byte for byte. Wall-clock times for
+the whole command, best of three, on the same 4-core machine:
+
+| Language | Threads | The user's code is | Time | Rows per second |
+| --- | --- | --- | --- | --- |
+| Lumen 2 | 4 | checked, compiled before | 1.43 s | 1,400,000 |
+| Lumen 2 | 4 | checked and compiled in this run | 2.78 s | 720,000 |
+| Lumen 2 | 1 | checked and compiled in this run | 3.88 s | 516,000 |
+| C (OpenMP) | 4 | not checked | 0.32 s | 6,330,000 |
+| C | 1 | not checked | 0.37 s | 5,440,000 |
+| JavaScript | 1 | in a `node:vm` context | 6.60 s | 303,000 |
+| JavaScript | 1 | not isolated (as with `eval`) | 3.07 s | 651,000 |
+| Python | 1 | run with `exec` | 9.69 s | 206,000 |
+
+- Once compiled, Lumen 2 is 6.8 times as fast as Python's `exec` and 4.6
+  times as fast as JavaScript in a `vm` context, which is what Node offers
+  for running code apart from the host's (3.5 and 2.4 times, counting
+  checking and compiling). Even so, the `vm` context isolates nothing: in
+  this benchmark's harness, the user's code reaches the host's `process`
+  object, and so the file system, with
+  `globalThis.constructor.constructor('return process')()`.
+- C on four threads is 4.5 times as fast as Lumen 2 on four, compiled
+  before. Lumen 2 copies every field it splits off and
+  every string it builds, where C points into the line. Its code is
+  WebAssembly, and its integers are checked for overflow. C on 4 threads
+  gains little: reading and writing the file is most of its time.
+- Checking and compiling takes about 1.4 s: the transform with the library
+  and the harness, and the compiler's own start. With the cache, that is
+  paid once.
+- Once compiled, Lumen 2 takes 2.6 s on one thread. Four threads make it
+  1.8 times as fast, not 4, because the main thread reads the lines and
+  writes the output while the others wait.
+
+**Limitations.** There is no floating point, so measurements such as
+temperatures cannot be parsed, though money can (as exact decimals). A
+quoted CSV field cannot hold a line break, since lines are split first.
+Strings are bytes: `lower` and `upper` change only ASCII letters. Nothing
+limits a transform's time, so one that loops forever runs forever; its
+memory is limited to the WebAssembly memory's 1 GB.
 
 ## A superoptimizer
 
@@ -958,12 +1103,15 @@ compiler/   the compiler, in Lumen 2: lexer, parser, checker, refinements,
             lumen2c.wasm, and bootstrap.js, which rebuilds it
 src/        the host that runs the compiler (lumen2c.js) and compiled
             programs (runtime.js); the reference interpreter and its front
-            end; property testing; an independent DRUP proof checker
+            end; property testing; an independent DRUP proof checker;
+            lumen2 transform (transform.js)
 proofs/     a SAT solver, a Schur encoder and a DRUP checker proved free of
             run-time errors, all written in Lumen 2; cube and conquer on
             every core (cubes.lm); S(4) = 44
 superopt/   the superoptimizer: corpus, synthesis, proofs, RULES.md
 bench/      four benchmark programs in Lumen 2 and in C, and run.js
+transform/  lumen2 transform: its library (lib.lm) and harness (harness.lm),
+            examples, and a benchmark against C, JavaScript and Python
 selfhost/   the first self-hosted compiler, and its bootstrap
 bin/        the lumen2 command
 test/       node:test suites and the differential fuzzer with planted bugs

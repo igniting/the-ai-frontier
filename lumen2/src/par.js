@@ -5,35 +5,40 @@
 // Control block (Int32Array on a SharedArrayBuffer): the task's generation,
 // the next index to take, the limit (no index at or above it is started), the
 // number of workers still running the task, how many have started (and
-// whether one failed to), and the stop flag; then a slot per thread: the
-// index of the element that failed (-1 if none), how it failed (1: a runtime
-// error, a: its code; 2: panic, a and b: the message's address and length;
-// 3: stack overflow; 4: an internal error), and the instance's live and
-// allocation counts.
-export const CTRL = { gen: 0, next: 1, limit: 2, running: 3, ready: 4, stop: 5, startError: 6 };
+// whether one failed to), the stop flag, and how many indices a thread takes
+// at a time; then a slot per thread: the index of the element that failed
+// (-1 if none), how it failed (1: a runtime error, a: its code; 2: panic, a
+// and b: the message's address and length; 3: stack overflow; 4: an internal
+// error), and the instance's live and allocation counts.
+export const CTRL = { gen: 0, next: 1, limit: 2, running: 3, ready: 4, stop: 5, startError: 6, block: 7 };
 const SLOTS = 8;
 const SLOT_SIZE = 6;
 export const slotOf = (tid) => SLOTS + tid * SLOT_SIZE;
 
-// Takes indices until none is left below the limit. An element that fails
-// lowers the limit to its index: every index below it was already taken, by
-// some thread that finishes it, so the lowest failing index found is the
+// Takes blocks of indices until none is left below the limit, and computes
+// each block's elements in order. An element that fails lowers the limit to
+// its index: every index below it was already taken, by some thread that
+// finishes it (or fails sooner), so the lowest failing index found is the
 // first one a sequential map would have stopped at.
 export function work(ctrl, item, record) {
+  const block = ctrl[CTRL.block];
   for (;;) {
-    const i = Atomics.add(ctrl, CTRL.next, 1);
-    if (i >= Atomics.load(ctrl, CTRL.limit)) return;
-    try {
-      item(i);
-    } catch (e) {
-      record(i, e);
-      let lim = Atomics.load(ctrl, CTRL.limit);
-      while (i < lim) {
-        const prev = Atomics.compareExchange(ctrl, CTRL.limit, lim, i);
-        if (prev === lim) break;
-        lim = prev;
+    const lo = Atomics.add(ctrl, CTRL.next, block);
+    const hi = lo + block;
+    for (let i = lo; i < hi; i++) {
+      if (i >= Atomics.load(ctrl, CTRL.limit)) return;
+      try {
+        item(i);
+      } catch (e) {
+        record(i, e);
+        let lim = Atomics.load(ctrl, CTRL.limit);
+        while (i < lim) {
+          const prev = Atomics.compareExchange(ctrl, CTRL.limit, lim, i);
+          if (prev === lim) break;
+          lim = prev;
+        }
+        return;
       }
-      return;
     }
   }
 }
@@ -65,6 +70,9 @@ export function makePool(module, memory, count) {
       for (let t = 0; t <= workers; t++) ctrl[slotOf(t)] = -1;
       Atomics.store(ctrl, CTRL.next, 0);
       Atomics.store(ctrl, CTRL.limit, n);
+      // Blocks small enough that every thread gets several (to share the work
+      // out evenly), and at most 64 elements.
+      Atomics.store(ctrl, CTRL.block, Math.max(1, Math.min(64, Math.floor(n / (16 * (workers + 1))))));
       Atomics.store(ctrl, CTRL.running, workers);
       Atomics.add(ctrl, CTRL.gen, 1);
       Atomics.notify(ctrl, CTRL.gen);

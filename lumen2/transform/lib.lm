@@ -1,0 +1,193 @@
+// The transform library: what a transform can use besides the prelude.
+// Every function here is pure (no output, input, clock or randomness), and
+// none can fail unless it says so: the checker proves their byte accesses
+// in bounds. Strings are bytes; the byte values used here are 10 "\n",
+// 13 "\r", 32 " ", 34 '"', 44 ",", 45 "-", 46 "." and 48 to 57 "0" to "9".
+
+// ------------------------------------------------------------------ fields --
+
+// The fields of a line of CSV (RFC 4180): separated by commas, and between
+// double quotes when they hold a comma or a quote, which is then doubled.
+// Text after a closing quote, up to the next comma, is ignored. A line with
+// no comma has one field.
+fn fields(line: String) -> Array<String> { fields_from(line, array_empty(), 0) }
+fn fields_from(line: String, row: Array<String>, i: {i: Int | 0 <= i}) -> Array<String> {
+  if i < string_length(line) && char_code_at(line, i) == 34 {
+    let (f, j) = quoted(line, i + 1, i + 1, []);
+    next_field(line, array_push(row, f), j)
+  } else {
+    let j = field_end(line, i);
+    next_field(line, array_push(row, substring(line, i, j)), j)
+  }
+}
+fn next_field(line: String, row: Array<String>, j: Int) -> Array<String> {
+  if j >= 0 && j < string_length(line) && char_code_at(line, j) == 44 { fields_from(line, row, j + 1) } else { row }
+}
+fn field_end(line: String, i: {i: Int | 0 <= i}) -> {j: Int | i <= j} {
+  if i < string_length(line) && char_code_at(line, i) != 44 { field_end(line, i + 1) } else { i }
+}
+// A quoted field from `start`, just after its opening quote: its text and
+// where it ends (at the comma after it, or the end of the line).
+fn quoted(line: String, start: {s: Int | 0 <= s}, i: {i: Int | 0 <= i}, pieces: List<String>) -> (String, Int) {
+  if i >= string_length(line) { (concat_strings(reverse([substring(line, start, i), ..pieces])), i) }
+  else if char_code_at(line, i) != 34 { quoted(line, start, i + 1, pieces) }
+  else if i + 1 < string_length(line) && char_code_at(line, i + 1) == 34 { quoted(line, i + 2, i + 2, ["\"", substring(line, start, i), ..pieces]) }
+  else { (concat_strings(reverse([substring(line, start, i), ..pieces])), field_end(line, i + 1)) }
+}
+
+// Field i of a row, or "" if the row has no field i.
+fn field(row: Array<String>, i: Int) -> String {
+  if i >= 0 && i < array_length(row) { array_get(row, i) } else { "" }
+}
+
+// The parts of s between the occurrences of sep (s itself if sep is "").
+fn split(s: String, sep: String) -> Array<String> {
+  if string_length(sep) == 0 { array_push(array_empty(), s) } else { split_from(s, sep, array_empty(), 0, 0) }
+}
+fn split_from(s: String, sep: String, parts: Array<String>, start: Int, i: {i: Int | 0 <= i}) -> Array<String> {
+  if i + string_length(sep) > string_length(s) { array_push(parts, substring(s, start, string_length(s))) }
+  else if same_at(s, i, sep, 0) { split_from(s, sep, array_push(parts, substring(s, start, i)), i + string_length(sep), i + string_length(sep)) }
+  else { split_from(s, sep, parts, start, i + 1) }
+}
+
+// One line of CSV: the fields separated by commas, each in double quotes if
+// it holds a comma, a quote or a line break.
+fn csv(xs: List<String>) -> String { join(map(xs, csv_field), ",") }
+fn csv_field(s: String) -> String {
+  if needs_quotes(s, 0) { "\"" ++ replace_all(s, "\"", "\"\"") ++ "\"" } else { s }
+}
+fn needs_quotes(s: String, i: {i: Int | 0 <= i}) -> Bool {
+  if i >= string_length(s) { false }
+  else {
+    let c = char_code_at(s, i);
+    c == 44 || c == 34 || c == 10 || c == 13 || needs_quotes(s, i + 1)
+  }
+}
+
+// ----------------------------------------------------------------- numbers --
+
+// The integer in s: an optional minus sign and 1 to 18 digits, nothing else.
+fn parse_int(s: String) -> Option<Int> {
+  if string_length(s) > 0 && char_code_at(s, 0) == 45 {
+    match digits(s, 1, 0, 0) { Some(x) -> Some(0 - x), None -> None }
+  } else { digits(s, 0, 0, 0) }
+}
+fn digits(s: String, i: {i: Int | 0 <= i}, acc: Int, k: Int) -> Option<Int> {
+  if i >= string_length(s) { if k > 0 { Some(acc) } else { None } }
+  else {
+    let c = char_code_at(s, i);
+    if c >= 48 && c <= 57 && k < 18 { digits(s, i + 1, acc * 10 + (c - 48), k + 1) } else { None }
+  }
+}
+
+// A decimal number as an integer count of 10^-places: parse_decimal("12.5", 2)
+// is Some(1250), for 12.50. None unless s is an optional minus sign, then
+// digits with at most `places` of them after a point, 18 digits in all.
+// Exact, unlike floating point: the way to handle money.
+fn parse_decimal(s: String, places: Int) -> Option<Int> {
+  if string_length(s) > 0 && char_code_at(s, 0) == 45 {
+    match decimal(s, 1, places, 0, 0, 0 - 1) { Some(x) -> Some(0 - x), None -> None }
+  } else { decimal(s, 0, places, 0, 0, 0 - 1) }
+}
+// k: the digits so far; frac: how many of them are after the point (-1 before it).
+fn decimal(s: String, i: {i: Int | 0 <= i}, places: Int, acc: Int, k: Int, frac: Int) -> Option<Int> {
+  if i >= string_length(s) {
+    let scale = places - max(frac, 0);
+    if k == 0 || k + scale > 18 { None } else { Some(acc * pow10(scale)) }
+  } else {
+    let c = char_code_at(s, i);
+    if c == 46 && frac < 0 { decimal(s, i + 1, places, acc, k, 0) }
+    else if c >= 48 && c <= 57 && k < 18 && frac < places {
+      decimal(s, i + 1, places, acc * 10 + (c - 48), k + 1, if frac >= 0 { frac + 1 } else { frac })
+    } else { None }
+  }
+}
+// n with a point before its last `places` digits: show_decimal(1250, 2) is "12.50".
+fn show_decimal(n: Int, places: Int) -> String {
+  if places <= 0 { int_to_string(n) }
+  else {
+    let p = pow10(places);
+    let a = abs(n);
+    let sign = if n < 0 { "-" } else { "" };
+    sign ++ int_to_string(a / p) ++ "." ++ pad_left(int_to_string(a % p), places, "0")
+  }
+}
+// 10^n (1 if n <= 0); fails with integer overflow past 10^18.
+fn pow10(n: Int) -> {r: Int | r >= 1} { if n <= 0 { 1 } else { 10 * pow10(n - 1) } }
+
+// -------------------------------------------------------------------- text --
+
+// Whether p occurs in s at position at.
+fn same_at(s: String, at: {a: Int | 0 <= a}, p: String, i: {i: Int | 0 <= i}) -> Bool {
+  if i >= string_length(p) { true }
+  else if at + i >= string_length(s) { false }
+  else { char_code_at(s, at + i) == char_code_at(p, i) && same_at(s, at, p, i + 1) }
+}
+fn starts_with(s: String, prefix: String) -> Bool { same_at(s, 0, prefix, 0) }
+fn ends_with(s: String, suffix: String) -> Bool {
+  let k = string_length(s) - string_length(suffix);
+  k >= 0 && same_at(s, k, suffix, 0)
+}
+// The first position of needle in s at or after from, or -1.
+fn index_from(s: String, needle: String, from: Int) -> Int {
+  if from < 0 { index_from(s, needle, 0) }
+  else if from + string_length(needle) > string_length(s) { 0 - 1 }
+  else if same_at(s, from, needle, 0) { from }
+  else { index_from(s, needle, from + 1) }
+}
+fn index_of(s: String, needle: String) -> Int { index_from(s, needle, 0) }
+fn includes(s: String, needle: String) -> Bool { index_from(s, needle, 0) >= 0 }
+
+// s with every occurrence of from replaced by to (s itself if from is "").
+fn replace_all(s: String, from: String, to: String) -> String {
+  if string_length(from) == 0 { s } else { join(array_to_list(split(s, from)), to) }
+}
+
+// s with ASCII letters made lower case or upper case.
+fn lower(s: String) -> String { shift_case(s, 65, 90, 32) }
+fn upper(s: String) -> String { shift_case(s, 97, 122, 0 - 32) }
+fn shift_case(s: String, lo: Int, hi: Int, by: Int) -> String {
+  if !has_between(s, 0, lo, hi) { s } else { concat_strings(reverse(case_pieces(s, 0, 0, lo, hi, by, []))) }
+}
+fn has_between(s: String, i: {i: Int | 0 <= i}, lo: Int, hi: Int) -> Bool {
+  if i >= string_length(s) { false }
+  else { let c = char_code_at(s, i); (c >= lo && c <= hi) || has_between(s, i + 1, lo, hi) }
+}
+fn case_pieces(s: String, start: Int, i: {i: Int | 0 <= i}, lo: Int, hi: Int, by: Int, acc: List<String>) -> List<String> {
+  if i >= string_length(s) { [substring(s, start, i), ..acc] }
+  else {
+    let c = char_code_at(s, i);
+    if c >= lo && c <= hi { case_pieces(s, i + 1, i + 1, lo, hi, by, [char_from_code(c + by), substring(s, start, i), ..acc]) }
+    else { case_pieces(s, start, i + 1, lo, hi, by, acc) }
+  }
+}
+
+// s without spaces, tabs and line breaks at either end.
+fn trim(s: String) -> String { substring(s, trim_start(s, 0), trim_end(s, string_length(s))) }
+fn blank(c: Int) -> Bool { c == 32 || c == 9 || c == 10 || c == 13 }
+fn trim_start(s: String, i: {i: Int | 0 <= i}) -> Int {
+  if i < string_length(s) && blank(char_code_at(s, i)) { trim_start(s, i + 1) } else { i }
+}
+fn trim_end(s: String, j: Int) -> Int {
+  if j >= 1 && j <= string_length(s) && blank(char_code_at(s, j - 1)) { trim_end(s, j - 1) } else { j }
+}
+
+// s with copies of fill before it, to make it at least width bytes long.
+fn pad_left(s: String, width: Int, fill: String) -> String {
+  if string_length(s) >= width || string_length(fill) == 0 { s } else { pad_left(fill ++ s, width, fill) }
+}
+
+// A hash of s from 0 to 4294967290, the same on every machine and in every
+// run (not a cryptographic one).
+fn hash(s: String) -> Int { hash_from(s, 0, 0) }
+fn hash_from(s: String, i: {i: Int | 0 <= i}, h: Int) -> Int {
+  if i >= string_length(s) { h } else { hash_from(s, i + 1, (h * 257 + char_code_at(s, i) + 1) % 4294967291) }
+}
+
+// The line without its line break ("\n" or "\r\n").
+fn chomp(line: String) -> String {
+  let n = string_length(line);
+  if n >= 2 && char_code_at(line, n - 1) == 10 && char_code_at(line, n - 2) == 13 { substring(line, 0, n - 2) }
+  else if n >= 1 && char_code_at(line, n - 1) == 10 { substring(line, 0, n - 1) }
+  else { line }
+}

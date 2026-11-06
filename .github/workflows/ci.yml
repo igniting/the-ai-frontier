@@ -56,6 +56,8 @@ jobs:
         run: node selfhost/bootstrap.js
       - name: Re-prove every superoptimizer rule
         run: node superopt/verify.js
+      - name: lumen2 transform against the same function in C, JavaScript and Python (every output identical)
+        run: node transform/bench/run.js 200000 --runs 1
 
   lumen2-schur:
     runs-on: ubuntu-latest
