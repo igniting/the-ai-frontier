@@ -28,12 +28,17 @@ fn k_max_pages() { 16384 }
 // per-type functions made, static data, string and closure addresses, the
 // function table (newest first), its index and size.
 type CG { CG(List<WFn>, Map<Bool>, Array<Int>, Map<Int>, Map<Int>, List<String>, Map<Int>, Int) }
-// What code generation reads: adts, user Ord impls by type key, the mutant, paranoid, no inlining.
-type GX { GX(OMap<AdtInfo>, List<(String, String)>, String, Bool, Bool) }
-fn gx_adts(gx) { match gx { GX(a, _, _, _, _) -> a } }
-fn gx_mutant(gx) { match gx { GX(_, _, m, _, _) -> m } }
-fn gx_paranoid(gx) { match gx { GX(_, _, _, p, _) -> p } }
-fn gx_noinline(gx) { match gx { GX(_, _, _, _, n) -> n } }
+// What code generation reads: adts, user Ord impls by type key, the mutant,
+// paranoid, no inlining, and the functions that return a tuple's fields as
+// several values (by name: the fields' types).
+// adts, Ord impls, mutant, paranoid, noinline, unboxed functions, parameters unshared on entry
+type GX { GX(OMap<AdtInfo>, List<(String, String)>, String, Bool, Bool, Map<List<Ty>>, Map<Bool>) }
+fn gx_adts(gx) { match gx { GX(a, _, _, _, _, _, _) -> a } }
+fn gx_mutant(gx) { match gx { GX(_, _, m, _, _, _, _) -> m } }
+fn gx_paranoid(gx) { match gx { GX(_, _, _, p, _, _, _) -> p } }
+fn gx_noinline(gx) { match gx { GX(_, _, _, _, n, _, _) -> n } }
+fn gx_unboxed(gx, g) { match gx { GX(_, _, _, _, _, u, _) -> m_get(u, g) } }
+fn gx_uniq(gx) { match gx { GX(_, _, _, _, _, _, q) -> q } }
 fn gx_heap(gx, t) { is_heap(gx_adts(gx), t) }
 
 fn cg_made(cg, n) { match cg { CG(_, made, _, _, _, _, _, _) -> m_has(made, n) } }
@@ -564,7 +569,7 @@ fn cmp_fn(gx, cg, t) {
       });
       (CL(reverse(out)), cg)
     };
-    let user = if gx_mutant(gx) == "ord-ignore-impl" { None } else { match gx { GX(_, ords, _, _, _) -> match find(ords, |o| match o { (k, _) -> k == tkey(t) }) { Some((_, u)) -> Some(u), None -> None } } };
+    let user = if gx_mutant(gx) == "ord-ignore-impl" { None } else { match gx { GX(_, ords, _, _, _, _, _) -> match find(ords, |o| match o { (k, _) -> k == tkey(t) }) { Some((_, u)) -> Some(u), None -> None } } };
     let (body, locals, cg) = match user {
       Some(u) -> {
         // The program's own compare takes ownership of its arguments; these are borrowed.
@@ -694,13 +699,215 @@ fn sig_of(t) { match t { TF(ps, r, _) -> (["i32", ..map(ps, valtype)], [valtype(
 fn cmp_op(o) { if o == "eq" { "eq" } else if o == "ne" { "ne" } else if o == "lt" { "lt_s" } else if o == "le" { "le_s" } else if o == "gt" { "gt_s" } else { "ge_s" } }
 fn prim_fn(o) { if o == "add" { Some("int_add") } else if o == "sub" { Some("int_sub") } else if o == "mul" { Some("int_mul") } else if o == "div" { Some("int_div") } else if o == "rem" { Some("int_rem") } else { None } }
 
+// ------------------------------------------------- tuples kept in locals
+// A variable bound to a call of a function that returns its tuple unboxed is
+// kept as its fields, in locals v$0, v$1, ..., when every use of it is one
+// that the fields can serve: a projection, a dup or drop of the whole, an
+// unpack, or (in a function that returns the same way) being returned.
+fn rhs_atoms(r) {
+  match r {
+    RAtom(a) -> [a], RPrim(_, args, _) -> args, RCmp(_, _, args) -> args, RCall(_, args) -> args,
+    RCallc(f, args) -> [f, ..args], RCtor(_, _, args, _) -> args, RTuple(_, args, _) -> args,
+    RClosure(_, _, caps, _) -> caps, RField(x, _, _, _) -> [x], RPeek(x, _, _, _) -> [x],
+    RTestTag(x, _, _, _, _) -> [x], RTestLit(x, _, _, _, _) -> [x], RBuiltinCall(_, args, _, _, _) -> args,
+    _ -> [],
+  }
+}
+fn is_var(a, v) { match a { QVar(w) -> w == v, _ -> false } }
+fn ub_rhs_ok(v, r) {
+  match r {
+    RField(x, p, _, _) -> !is_var(x, v) || !is_empty(p),
+    RPeek(x, p, _, _) -> !is_var(x, v) || !is_empty(p),
+    RTestTag(x, p, _, _, _) -> !is_var(x, v) || !is_empty(p),
+    RTestLit(x, p, _, _, _) -> !is_var(x, v) || !is_empty(p),
+    RExpr(e) -> ub_ok(v, e, false),
+    _ -> !any(rhs_atoms(r), |a| is_var(a, v)),
+  }
+}
+// top: e is in the function's tail position and the function returns unboxed.
+fn ub_ok(v, e, top) {
+  match e {
+    ILet(_, r, b) -> ub_rhs_ok(v, r) && ub_ok(v, b, top),
+    IRet(RAtom(QVar(w))) -> w != v || top,
+    IRet(r) -> ub_rhs_ok(v, r),
+    IIf(c, t, el) -> !is_var(c, v) && ub_ok(v, t, top) && ub_ok(v, el, top),
+    IDup(_, b) -> ub_ok(v, b, top),
+    IDrop(_, b) -> ub_ok(v, b, top),
+    IDropReuse(_, _, b) -> ub_ok(v, b, top),
+    IFreeToken(_, _, b) -> ub_ok(v, b, top),
+    IUnpack(_, _, _, _, b) -> ub_ok(v, b, top),
+    IUnreachable -> true,
+  }
+}
+// The variables bound to calls of unboxed functions or to new tuples, with the fields' types.
+fn ub_calls(gx, e, acc) {
+  match e {
+    ILet(v, r, b) -> {
+      let acc = match r {
+        RCall(g, _) -> match gx_unboxed(gx, g) { Some(es) -> [(v, es), ..acc], None -> acc },
+        RTuple(TT(es), _, _) -> [(v, es), ..acc],
+        RExpr(x) -> ub_calls(gx, x, acc),
+        _ -> acc,
+      };
+      ub_calls(gx, b, acc)
+    },
+    IRet(RExpr(x)) -> ub_calls(gx, x, acc),
+    IIf(_, t, el) -> ub_calls(gx, el, ub_calls(gx, t, acc)),
+    IDup(_, b) -> ub_calls(gx, b, acc),
+    IDrop(_, b) -> ub_calls(gx, b, acc),
+    IDropReuse(_, _, b) -> ub_calls(gx, b, acc),
+    IFreeToken(_, _, b) -> ub_calls(gx, b, acc),
+    IUnpack(_, _, _, _, b) -> ub_calls(gx, b, acc),
+    _ -> acc,
+  }
+}
+// The largest number of fields any unboxed callee of e returns.
+fn ub_arity(gx, e) {
+  fn rhs_ar(r) { match r { RCall(g, _) -> match gx_unboxed(gx, g) { Some(es) -> length(es), None -> 0 }, RExpr(x) -> ub_arity(gx, x), _ -> 0 } }
+  match e {
+    ILet(_, r, b) -> max(rhs_ar(r), ub_arity(gx, b)),
+    IRet(r) -> rhs_ar(r),
+    IIf(_, t, el) -> max(ub_arity(gx, t), ub_arity(gx, el)),
+    IDup(_, b) -> ub_arity(gx, b),
+    IDrop(_, b) -> ub_arity(gx, b),
+    IDropReuse(_, _, b) -> ub_arity(gx, b),
+    IFreeToken(_, _, b) -> ub_arity(gx, b),
+    IUnpack(_, _, _, _, b) -> ub_arity(gx, b),
+    _ -> 0,
+  }
+}
+fn field_local(v, k) { v ++ "$" ++ int_to_string(k) }
+
+// --------------------------------------------- arrays known to be unshared
+// array_set, array_push, array_make and array_empty give an array no one else
+// holds: an update in place gives back the same array, and a copy is new. On
+// a path it stays unshared until it is dup'ed or used other than by a read
+// (array_get, array_length), since a call that borrows it could keep a
+// reference. The set is only ever smaller than the truth: any other use, or a
+// new binding of the name, takes the name out.
+fn ir_vars(e, acc) {
+  match e {
+    ILet(v, RExpr(x), b) -> ir_vars(b, ir_vars(x, [v, ..acc])),
+    ILet(v, r, b) -> ir_vars(b, [v, ..append(atom_vars(rhs_atoms(r)), acc)]),
+    IRet(RExpr(x)) -> ir_vars(x, acc),
+    IRet(r) -> append(atom_vars(rhs_atoms(r)), acc),
+    IIf(c, t, el) -> ir_vars(el, ir_vars(t, append(atom_vars([c]), acc))),
+    IDup(v, b) -> ir_vars(b, [v, ..acc]),
+    IDrop(v, b) -> ir_vars(b, [v, ..acc]),
+    IDropReuse(v, r, b) -> ir_vars(b, [v, r, ..acc]),
+    IFreeToken(v, _, b) -> ir_vars(b, [v, ..acc]),
+    IUnpack(v, xs, _, _, b) -> ir_vars(b, [v, ..append(map(xs, |x| match x { (n, _) -> n }), acc)]),
+    IUnreachable -> acc,
+  }
+}
+fn uq_forget(uq, vs) { fold(vs, uq, |m, v| if m_has(m, v) { m_delete(m, v) } else { m }) }
+// Whether r gives an unshared array; u holds the functions that return one.
+fn uq_fresh(u, uq, r) {
+  match r {
+    RBuiltinCall(n, _, _, _, _) -> n == "array_set" || n == "array_push" || n == "array_make" || n == "array_empty",
+    RCall(g, _) -> m_has(u, g ++ "#ret"),
+    RAtom(QVar(x)) -> m_has(uq, x),
+    _ -> false,
+  }
+}
+// A read leaves an array unshared: array_get, array_length, and passing it
+// to a borrowed parameter (one the callee never consumes, so never stores,
+// returns or captures; u holds them).
+fn uq_after(u, uq, v, r) {
+  let used = match r {
+    RBuiltinCall(n, _, _, _, _) -> if n == "array_get" || n == "array_length" { [] } else { atom_vars(rhs_atoms(r)) },
+    RCall(g, args) -> flat_map(enumerate(args), |ka| match ka { (k, QVar(x)) -> if m_has(u, g ++ "#b" ++ int_to_string(k)) { [] } else { [x] }, _ -> [] }),
+    _ -> atom_vars(rhs_atoms(r)),
+  };
+  let kept = uq_forget(uq, [v, ..used]);
+  if uq_fresh(u, uq, r) { m_set(kept, v, true) } else { kept }
+}
+
+// Array parameters unshared on entry (keys f#k), and array results unshared
+// on return (f#ret), of functions only called directly by name. A parameter
+// qualifies when every call passes an array known to be unshared there (and
+// passes it once); a result, when every return gives one. They are found as
+// the largest such set: start from all of them and remove those some call or
+// return contradicts, until none does. A call passing an unshared array hands
+// over its only reference, and so does a return, so by induction on the calls
+// made, the claims hold. The map also holds the borrowed parameters (f#bk),
+// which uq_after reads.
+fn uq_key(f, k) { f ++ "#" ++ int_to_string(k) }
+fn uq_params(u, f) {
+  fold(enumerate(irf_params(f)), MEmpty, |m, kp| match kp { (k, (v, _)) -> if m_has(u, uq_key(irf_name(f), k)) { m_set(m, v, true) } else { m } })
+}
+// The parameters a call may pass a shared array to.
+fn uq_call_bad(r, uq, acc) {
+  match r {
+    RCall(g, args) -> {
+      let names = atom_vars(args);
+      fold(enumerate(args), acc, |acc, ka| match ka { (k, a) -> match a {
+        QVar(x) -> if m_has(uq, x) && length(filter(names, |y| y == x)) == 1 { acc } else { [uq_key(g, k), ..acc] },
+        _ -> [uq_key(g, k), ..acc],
+      } })
+    },
+    _ -> acc,
+  }
+}
+// The same walk as the code generator's: what is unshared at each call and
+// return of function f. top: a ret here returns from f (not from a block).
+fn uq_walk(u, f, e, uq, top, acc) {
+  match e {
+    ILet(v, RExpr(x), b) -> uq_walk(u, f, b, uq_forget(uq, [v, ..ir_vars(x, [])]), top, uq_walk(u, f, x, uq, false, acc)),
+    ILet(v, r, b) -> uq_walk(u, f, b, uq_after(u, uq, v, r), top, uq_call_bad(r, uq, acc)),
+    IRet(RExpr(x)) -> uq_walk(u, f, x, uq, top, acc),
+    IRet(r) -> { let acc = uq_call_bad(r, uq, acc); if top && !uq_fresh(u, uq, r) { [f ++ "#ret", ..acc] } else { acc } },
+    IIf(_, t, el) -> uq_walk(u, f, el, uq, top, uq_walk(u, f, t, uq, top, acc)),
+    IDup(v, b) -> uq_walk(u, f, b, uq_forget(uq, [v]), top, acc),
+    IDrop(_, b) -> uq_walk(u, f, b, uq, top, acc),
+    IDropReuse(_, _, b) -> uq_walk(u, f, b, uq, top, acc),
+    IFreeToken(_, _, b) -> uq_walk(u, f, b, uq, top, acc),
+    IUnpack(_, xs, _, _, b) -> uq_walk(u, f, b, uq_forget(uq, map(xs, |x| match x { (n, _) -> n })), top, acc),
+    IUnreachable -> acc,
+  }
+}
+// Functions used as values: called through the table, by callers not seen here.
+fn ir_fnrefs(e, acc) {
+  match e {
+    ILet(_, r, b) -> ir_fnrefs(b, rhs_fnrefs(r, acc)),
+    IRet(r) -> rhs_fnrefs(r, acc),
+    IIf(_, t, el) -> ir_fnrefs(el, ir_fnrefs(t, acc)),
+    IDup(_, b) -> ir_fnrefs(b, acc),
+    IDrop(_, b) -> ir_fnrefs(b, acc),
+    IDropReuse(_, _, b) -> ir_fnrefs(b, acc),
+    IFreeToken(_, _, b) -> ir_fnrefs(b, acc),
+    IUnpack(_, _, _, _, b) -> ir_fnrefs(b, acc),
+    IUnreachable -> acc,
+  }
+}
+fn rhs_fnrefs(r, acc) { match r { RStaticfn(f, _) -> [f, ..acc], RClosure(f, _, _, _) -> [f, ..acc], RExpr(x) -> ir_fnrefs(x, acc), _ -> acc } }
+fn unique_params(fns, main) {
+  let refs = fold(fns, [], |acc, f| ir_fnrefs(irf_body(f), acc));
+  let borrowed = fold(fns, MEmpty, |m, f| fold(enumerate(irf_modes(f)), m, |m, km| match km { (k, md) -> if md == "borrowed" { m_set(m, irf_name(f) ++ "#b" ++ int_to_string(k), true) } else { m } }));
+  let u0 = fold(fns, borrowed, |m, f| if irf_env(f) || irf_name(f) == main || contains_str(refs, irf_name(f)) { m } else {
+    let m = match irf_ret(f) { TC("Array", _) -> m_set(m, irf_name(f) ++ "#ret", true), _ -> m };
+    fold(enumerate(irf_params(f)), m, |m, kp| match kp { (k, (_, t)) -> match t { TC("Array", _) -> m_set(m, uq_key(irf_name(f), k), true), _ -> m } })
+  });
+  fn fix(u) {
+    let bad = fold(fns, [], |acc, f| uq_walk(u, irf_name(f), irf_body(f), uq_params(u, f), true, acc));
+    let u2 = uq_forget(u, bad);
+    if m_size(u2) == m_size(u) { u } else { fix(u2) }
+  }
+  if m_size(u0) == m_size(borrowed) { u0 } else { fix(u0) }
+}
+fn box_temp(k, t) { "$u" ++ int_to_string(k) ++ valtype(t) }
+
 // The state while a function is generated: the module, the next block label.
 fn gen_fn(gx, cg, f) {
   match f { IRFn(fname, _, params, ret, body, vars, _, _, _) -> {
     let vm = var_map(vars);
     let vty = |v| vm_ty(vm, v);
     let pnames = map(params, |p| match p { (v, _) -> v });
-    let locals = append(flat_map(vars, |vt| match vt { (v, t) -> if contains_str(pnames, v) { [] } else { [(v, valtype(t))] } }), [i32p("$p"), i64p("$r")]);
+    let ret_es = gx_unboxed(gx, fname);
+    let ub = fold(ub_calls(gx, body, []), MEmpty, |m, ve| match ve { (v, es) -> if ub_ok(v, body, is_some(ret_es)) { m_set(m, v, es) } else { m } });
+    let ub_locals = flat_map(m_entries(ub), |ve| match ve { (v, es) -> map(enumerate(es), |kt| match kt { (k, t) -> (field_local(v, k), valtype(t)) }) });
+    let box_locals = flat_map(range(0, ub_arity(gx, body)), |k| [(box_temp(k, t_int()), "i64"), (box_temp(k, t_unit()), "i32")]);
+    let locals = concat([flat_map(vars, |vt| match vt { (v, t) -> if contains_str(pnames, v) { [] } else { [(v, valtype(t))] } }), [i32p("$p"), i64p("$r")], ub_locals, box_locals]);
     let mutant = gx_mutant(gx);
     let chk = wchk(gx);
     let atom = |cg, a| match a {
@@ -711,11 +918,15 @@ fn gen_fn(gx, cg, f) {
       QStr(s) -> { let (addr, cg) = cg_string(cg, s); (wi32(addr), cg) },
     };
     let atoms = |cg, xs| { let (out, cg) = fold(xs, ([], cg), |acc, a| match acc { (out, cg) -> { let (c, cg) = atom(cg, a); ([c, ..out], cg) } }); (CL(reverse(out)), cg) };
-    // The value at a path of field indices inside x.
+    // The value at a path of field indices inside x. A tuple kept in locals
+    // starts from the local of the path's first field.
     let walk = |cg, x, path, ty| {
-      let (xa, cg) = atom(cg, x);
-      let n = length(path);
-      (CL([xa, CL(map(enumerate(path), |ji| match ji { (j, i) -> CL([chk, if j == n - 1 { wload(ty, 8 + 8 * i) } else { wmem("i32.load", 8 + 8 * i) }]) }))]), cg)
+      let (base, rest, cg) = match (x, path) {
+        (QVar(v), [k, ..more]) -> if m_has(ub, v) { (wget(field_local(v, k)), more, cg) } else { let (xa, cg) = atom(cg, x); (xa, path, cg) },
+        _ -> { let (xa, cg) = atom(cg, x); (xa, path, cg) },
+      };
+      let n = length(rest);
+      (CL([base, CL(map(enumerate(rest), |ji| match ji { (j, i) -> CL([chk, if j == n - 1 { wload(ty, 8 + 8 * i) } else { wmem("i32.load", 8 + 8 * i) }]) }))]), cg)
     };
     // A new object, written into the reuse token's cell when there is one.
     let new_object = |size, tag, slots, reuse| CL([
@@ -727,7 +938,35 @@ fn gen_fn(gx, cg, f) {
       CL(map(slots, |s| match s { (code, ty, off) -> CL([wget("$p"), code, wstore(ty, off)]) })),
       wget("$p"),
     ]);
+    // The results of a call to an unboxed function, on the stack, as a new tuple.
+    let box_results = |es| {
+      let n = length(es);
+      CL([
+        CL(map(reverse(range(0, n)), |k| wset(box_temp(k, list_get(es, k))))),
+        new_object(8 + 8 * n, 0, map(range(0, n), |k| (wget(box_temp(k, list_get(es, k))), list_get(es, k), 8 + 8 * k)), None),
+      ])
+    };
+    // The fields of the tuple in local p, as results: the heap ones dup'ed, then the tuple released.
+    let unbox_local = |cg, p, es| {
+      let (d, cg) = drop_fn(gx, cg, TT(es));
+      (CL([
+        CL(map(enumerate(es), |kt| match kt { (k, t) -> CL([wget(p), chk, wload(t, 8 + 8 * k), if gx_heap(gx, t) { wcall("rt_dup") } else { wnone() }]) })),
+        wget(p), wcall(d),
+      ]), cg)
+    };
+    // Each heap field of a tuple kept in locals, with an operation applied.
+    let each_heap = |cg, v, op| {
+      let es = match m_get(ub, v) { Some(es) -> es, None -> internal("codegen: unboxed tuple") };
+      let (out, cg) = fold(enumerate(es), ([], cg), |acc, kt| match (acc, kt) {
+        ((out, cg), (k, t)) -> if gx_heap(gx, t) { let (c, cg) = op(cg, field_local(v, k), t); ([c, ..out], cg) } else { (out, cg) },
+      });
+      (CL(reverse(out)), cg)
+    };
+    let drop_local = |cg, l, t| { let (d, cg) = drop_fn(gx, cg, t); (CL([wget(l), wcall(d)]), cg) };
     let konst = |a| match a { QInt(n) -> Some(n), _ -> None };
+    // A tail call of the function to itself is a jump back to its start: the
+    // arguments, all on the stack, become the parameters (the last one first).
+    let self_jump = CL([CL(map(reverse(params), |p| match p { (v, _) -> wset(v) })), wbr("$self")]);
     let at_code = |a| match a { QVar(v) -> wget(v), QInt(n) -> wi64(n), QBool(b) -> wi32(if b { 1 } else { 0 }), QUnit -> wi32(0), QStr(_) -> internal("codegen: string operand") };
     // Checked arithmetic, inline. Operands are atoms, so they can be read twice.
     let arith = |o, a, b| {
@@ -773,7 +1012,9 @@ fn gen_fn(gx, cg, f) {
       } else { None }
     };
     let elem_of = |t| match t { TC("Array", [e]) -> e, _ -> internal("codegen: element type") };
-    let builtin = |cg, name, args, ty, ats| {
+    // unique: the array an array_set updates is known to be unshared.
+    let builtin = |cg, name, args, ty, ats, proved, unique| {
+      let bounds = |i, a| if proved { wnone() } else { CL([at_code(i), at_code(a), chk, wmem("i32.load", 4), wop("i64.extend_i32_u"), wop("i64.ge_u"), wtrap(k_bounds())]) };
       let (ac, cg) = atoms(cg, args);
       if name == "print" { (CL([ac, wcall("str_print"), wi32(0)]), cg) }
       else if name == "println" { (CL([ac, wcall("str_println"), wi32(0)]), cg) }
@@ -785,7 +1026,10 @@ fn gen_fn(gx, cg, f) {
       else if name == "concat_strings" { (CL([ac, wcall("str_concat_list")]), cg) }
       else if name == "string_length" { (CL([ac, wcall("str_length")]), cg) }
       else if name == "substring" { (CL([ac, wcall("str_sub")]), cg) }
-      else if name == "char_code_at" { (CL([ac, wcall("str_code_at")]), cg) }
+      else if name == "char_code_at" {
+        if proved && !gx_noinline(gx) { let (sc, cg) = atom(cg, list_get(args, 0)); let i = list_get(args, 1); (CL([sc, at_code(i), wop("i32.wrap_i64"), wop("i32.add"), wmem("i32.load8_u", 8), wop("i64.extend_i32_u")]), cg) }
+        else { (CL([ac, wcall("str_code_at")]), cg) }
+      }
       else if name == "char_from_code" { (CL([ac, wcall("str_from_code")]), cg) }
       else if name == "concat" { (CL([ac, wcall("str_concat")]), cg) }
       else if name == "panic" { (CL([ac, wcall("str_panic"), wop("unreachable")]), cg) }
@@ -800,12 +1044,40 @@ fn gen_fn(gx, cg, f) {
           let et = elem_of(list_get(ats, 0));
           let idx = match konst(i) { Some(n) -> wi32(n), None -> CL([at_code(i), wop("i32.wrap_i64")]) };
           (CL([
-            at_code(i), at_code(a), chk, wmem("i32.load", 4), wop("i64.extend_i32_u"), wop("i64.ge_u"), wtrap(k_bounds()),
+            bounds(i, a),
             at_code(a), idx, wi32(3), wop("i32.shl"), wop("i32.add"), wload(et, 16), if gx_heap(gx, et) { wcall("rt_dup") } else { wnone() },
           ]), cg)
         }
       }
-      else if name == "array_set" { let (k, cg) = array_fns(gx, cg, elem_of(list_get(ats, 0))); (CL([ac, wcall(array_name("set", k))]), cg) }
+      else if name == "array_set" {
+        let et = elem_of(list_get(ats, 0));
+        let (k, cg) = array_fns(gx, cg, et);
+        if gx_noinline(gx) || gx_paranoid(gx) { (CL([ac, wcall(array_name("set", k))]), cg) }
+        else {
+          // Inline: the bounds check, then, when the array is not shared, the
+          // store in place (releasing the element it replaces). A shared array
+          // is copied by array_set:T, which checks the bounds again.
+          let a = list_get(args, 0);
+          let i = list_get(args, 1);
+          let (xc, cg) = atom(cg, list_get(args, 2));
+          let idx = match konst(i) { Some(n) -> wi32(n), None -> CL([at_code(i), wop("i32.wrap_i64")]) };
+          let slot_addr = CL([at_code(a), idx, wi32(3), wop("i32.shl"), wop("i32.add")]);
+          let heap = gx_heap(gx, et);
+          let (release, cg) = if heap { let (d, cg) = drop_fn(gx, cg, et); (CL([wget("$p"), wcall(d)]), cg) } else { (wnone(), cg) };
+          if unique { (CL([bounds(i, a), if heap { CL([slot_addr, wload(et, 16), wset("$p")]) } else { wnone() }, slot_addr, xc, wstore(et, 16), release, at_code(a)]), cg) }
+          else { (CL([
+            bounds(i, a),
+            at_code(a), wmem("i32.load", 0), wi32(1), wop(if gx_mutant(gx) == "array-set-shared" { "i32.ge_s" } else { "i32.eq" }), wif_r("i32"),
+            if heap { CL([slot_addr, wload(et, 16), wset("$p")]) } else { wnone() },
+            slot_addr, xc, wstore(et, 16),
+            release,
+            at_code(a),
+            wop("else"),
+            at_code(a), at_code(i), xc, wcall(array_name("set", k)),
+            wend(),
+          ]), cg) }
+        }
+      }
       else if name == "array_push" { let (k, cg) = array_fns(gx, cg, elem_of(list_get(ats, 0))); (CL([ac, wcall(array_name("push", k))]), cg) }
       else if name == "array_length" {
         if gx_noinline(gx) { (CL([ac, wcall("arr_length")]), cg) } else { (CL([at_code(list_get(args, 0)), chk, wmem("i32.load", 4), wop("i64.extend_i32_u")]), cg) }
@@ -866,7 +1138,13 @@ fn gen_fn(gx, cg, f) {
       RField(x, p, ty, _) -> { let (w, cg) = walk(cg, x, p, ty); (CL([w, if gx_heap(gx, ty) { wcall("rt_dup") } else { wnone() }]), cg) },
       RPeek(x, p, ty, _) -> walk(cg, x, p, ty),
       REnvfield(i, ty) -> (CL([wget("env"), chk, wload(ty, 16 + 8 * i), if gx_heap(gx, ty) && mutant != "capture-no-dup" { wcall("rt_dup") } else { wnone() }]), cg),
-      RTestTag(x, p, _, ty, tag) -> { let (w, cg) = walk(cg, x, p, ty); (CL([w, if gx_heap(gx, ty) { wcall("rt_tag") } else { wnone() }, wi32(tag), wop("i32.eq")]), cg) },
+      // rt_tag inline: an immediate (nullary constructor) is its own tag; otherwise the tag is in the object.
+      RTestTag(x, p, _, ty, tag) -> {
+        let (w, cg) = walk(cg, x, p, ty);
+        let tc = if !gx_heap(gx, ty) { wnone() } else if gx_paranoid(gx) || gx_noinline(gx) { wcall("rt_tag") }
+          else { CL([wset("$p"), wget("$p"), wi32(k_imm()), wop("i32.lt_u"), wif_r("i32"), wget("$p"), wop("else"), wget("$p"), wmem("i32.load", 4), wend()]) };
+        (CL([w, tc, wi32(tag), wop("i32.eq")]), cg)
+      },
       RTestLit(x, p, _, ty, lit) -> {
         let (w, cg) = walk(cg, x, p, ty);
         match lit {
@@ -876,70 +1154,136 @@ fn gen_fn(gx, cg, f) {
           _ -> internal("codegen: literal pattern"),
         }
       },
-      RBuiltinCall(name, args, ty, ats) -> builtin(cg, name, args, ty, ats),
+      // A check the checker proved can never fail is left out (paranoid mode keeps it).
+      RBuiltinCall(name, args, ty, ats, pr) -> builtin(cg, name, args, ty, ats, pr && !gx_paranoid(gx), false),
       RExpr(_) -> internal("codegen: nested expression"),
+    };
+    // rhs, given uq, the arrays known to be unshared here: updating one needs no test of its count.
+    let rhs_uq = |cg, r, uq| match r {
+      RBuiltinCall("array_set", [QVar(a), i, x], ty, ats, pr) -> builtin(cg, "array_set", [QVar(a), i, x], ty, ats, pr && !gx_paranoid(gx), m_has(uq, a)),
+      _ -> rhs(cg, r),
     };
     // label None: the expression's value is the function's result. The state:
     // (code so far, newest first; the module; the next label number).
-    fn expr(st, e, label) {
+    fn expr(st, e, label, uq) {
       match st { (out, cg, nl) -> match e {
         ILet(v, RExpr(x), b) -> {
           let l = "L" ++ int_to_string(nl);
-          let st = expr(([C1(OBlock("block", Some(l), Some(valtype(vty(v))))), ..out], cg, nl + 1), x, Some(l));
-          match st { (out, cg, nl) -> expr(([wset(v), wend(), ..out], cg, nl), b, label) }
+          let st = expr(([C1(OBlock("block", Some(l), Some(valtype(vty(v))))), ..out], cg, nl + 1), x, Some(l), uq);
+          match st { (out, cg, nl) -> expr(([wset(v), wend(), ..out], cg, nl), b, label, uq_forget(uq, [v, ..ir_vars(x, [])])) }
         },
-        ILet(v, r, b) -> { let (c, cg) = rhs(cg, r); expr(([wset(v), c, ..out], cg, nl), b, label) },
-        IRet(r) -> match (label, r) {
-          (None, RCall(g, args)) -> { let (ac, cg) = atoms(cg, args); ([C1(OCall("return_call", g)), ac, ..out], cg, nl) },
-          (None, RCallc(fa, args)) -> {
+        ILet(v, RCall(g, args), b) -> match gx_unboxed(gx, g) {
+          Some(es) -> {
+            let (ac, cg) = atoms(cg, args);
+            let after = if m_has(ub, v) { CL(map(reverse(range(0, length(es))), |k| wset(field_local(v, k)))) } else { CL([box_results(es), wset(v)]) };
+            expr(([after, wcall(g), ac, ..out], cg, nl), b, label, uq_after(gx_uniq(gx), uq, v, RCall(g, args)))
+          },
+          None -> { let (c, cg) = rhs(cg, RCall(g, args)); expr(([wset(v), c, ..out], cg, nl), b, label, uq_after(gx_uniq(gx), uq, v, RCall(g, args))) },
+        },
+        // A new tuple kept in locals: its fields, and no cell (a reuse token meant for it is freed).
+        ILet(v, RTuple(ty, args, reuse), b) -> if m_has(ub, v) {
+          let (ac, cg) = atoms(cg, args);
+          let n = length(args);
+          let free = match reuse { Some(tok) -> CL([wget(tok), wif(), wget(tok), wi32(8 + 8 * n), wcall("rt_free"), wend()]), None -> wnone() };
+          expr(([CL(map(reverse(range(0, n)), |k| wset(field_local(v, k)))), ac, free, ..out], cg, nl), b, label, uq_after(gx_uniq(gx), uq, v, RTuple(ty, args, reuse)))
+        } else { let (c, cg) = rhs(cg, RTuple(ty, args, reuse)); expr(([wset(v), c, ..out], cg, nl), b, label, uq_after(gx_uniq(gx), uq, v, RTuple(ty, args, reuse))) },
+        ILet(v, r, b) -> { let (c, cg) = rhs_uq(cg, r, uq); expr(([wset(v), c, ..out], cg, nl), b, label, uq_after(gx_uniq(gx), uq, v, r)) },
+        IRet(r) -> match (label, r, ret_es) {
+          // Returning unboxed: fields go out as the results.
+          (None, RCall(g, args), Some(es)) -> {
+            let (ac, cg) = atoms(cg, args);
+            match gx_unboxed(gx, g) {
+              Some(_) -> if g == fname { ([self_jump, ac, ..out], cg, nl) } else { ([C1(OCall("return_call", g)), ac, ..out], cg, nl) },
+              None -> { let (u, cg) = unbox_local(cg, "$p", es); ([wop("return"), u, wset("$p"), wcall(g), ac, ..out], cg, nl) },
+            }
+          },
+          (None, RTuple(_, args, reuse), Some(es)) -> {
+            let (ac, cg) = atoms(cg, args);
+            let free = match reuse { Some(tok) -> CL([wget(tok), wif(), wget(tok), wi32(8 + 8 * length(es)), wcall("rt_free"), wend()]), None -> wnone() };
+            ([wop("return"), ac, free, ..out], cg, nl)
+          },
+          (None, RAtom(QVar(t)), Some(es)) -> if m_has(ub, t) { ([wop("return"), CL(map(range(0, length(es)), |k| wget(field_local(t, k)))), ..out], cg, nl) }
+            else { let (u, cg) = unbox_local(cg, t, es); ([wop("return"), u, ..out], cg, nl) },
+          (None, _, Some(es)) -> { let (c, cg) = rhs(cg, r); let (u, cg) = unbox_local(cg, "$p", es); ([wop("return"), u, wset("$p"), c, ..out], cg, nl) },
+          // A call to an unboxed function whose value is wanted as one tuple.
+          (_, RCall(g, args), _) -> match gx_unboxed(gx, g) {
+            Some(es) -> { let (ac, cg) = atoms(cg, args); ([match label { None -> wop("return"), Some(l) -> wbr(l) }, box_results(es), wcall(g), ac, ..out], cg, nl) },
+            None -> match label {
+              None -> { let (ac, cg) = atoms(cg, args); ([if g == fname { self_jump } else { C1(OCall("return_call", g)) }, ac, ..out], cg, nl) },
+              Some(l) -> { let (c, cg) = rhs(cg, r); ([wbr(l), c, ..out], cg, nl) },
+            },
+          },
+          (None, RCallc(fa, args), _) -> {
             let (fc, cg) = atom(cg, fa);
             let (ac, cg) = atoms(cg, args);
             let (fc2, cg) = atom(cg, fa);
             let (ps, rs) = sig_of(match fa { QVar(v) -> vty(v), _ -> internal("codegen: callee") });
             ([C1(OCallInd("return_call_indirect", ps, rs)), wmem("i32.load", 4), fc2, ac, fc, ..out], cg, nl)
           },
-          _ -> { let (c, cg) = rhs(cg, r); ([match label { None -> wop("return"), Some(l) -> wbr(l) }, c, ..out], cg, nl) },
+          _ -> { let (c, cg) = rhs_uq(cg, r, uq); ([match label { None -> wop("return"), Some(l) -> wbr(l) }, c, ..out], cg, nl) },
         },
         IIf(c, t, el) -> {
           let (cc, cg) = atom(cg, c);
-          let st = expr(([wif(), cc, ..out], cg, nl), t, label);
-          let st = match st { (out, cg, nl) -> expr(([wop("else"), ..out], cg, nl), el, label) };
+          let st = expr(([wif(), cc, ..out], cg, nl), t, label, uq);
+          let st = match st { (out, cg, nl) -> expr(([wop("else"), ..out], cg, nl), el, label, uq) };
           match st { (out, cg, nl) -> ([wop("unreachable"), wend(), ..out], cg, nl) }
         },
-        IDup(v, b) -> expr(([wop("drop"), wcall("rt_dup"), wget(v), ..out], cg, nl), b, label),
-        IDrop(v, b) -> { let (d, cg) = drop_fn(gx, cg, vty(v)); expr(([wcall(d), wget(v), ..out], cg, nl), b, label) },
-        IDropReuse(v, r, b) -> { let (d, cg) = reuse_fn(gx, cg, vty(v)); expr(([wset(r), wcall(d), wget(v), ..out], cg, nl), b, label) },
-        IFreeToken(v, size, b) -> expr(([wend(), wcall("rt_free"), wi32(size), wget(v), wif(), wget(v), ..out], cg, nl), b, label),
-        IUnpack(v, xs, r, fields, b) -> {
-          // Unique: the extracted fields move out, the others are released, and
-          // the cell is kept for reuse (or freed). Shared: dup what was extracted.
+        // A tuple kept in locals: dup, drop or take apart its heap fields; it has no cell to reuse.
+        IDup(v, b) -> if m_has(ub, v) { let (c, cg) = each_heap(cg, v, |cg, l, _| (CL([wget(l), wcall("rt_dup"), wop("drop")]), cg)); expr(([c, ..out], cg, nl), b, label, uq) }
+          else { expr(([wop("drop"), wcall("rt_dup"), wget(v), ..out], cg, nl), b, label, uq_forget(uq, [v])) },
+        IDrop(v, b) -> if m_has(ub, v) { let (c, cg) = each_heap(cg, v, drop_local); expr(([c, ..out], cg, nl), b, label, uq) }
+          else { let (d, cg) = drop_fn(gx, cg, vty(v)); expr(([wcall(d), wget(v), ..out], cg, nl), b, label, uq) },
+        IDropReuse(v, r, b) -> if m_has(ub, v) { let (c, cg) = each_heap(cg, v, drop_local); expr(([wset(r), wi32(0), c, ..out], cg, nl), b, label, uq) }
+          else { let (d, cg) = reuse_fn(gx, cg, vty(v)); expr(([wset(r), wcall(d), wget(v), ..out], cg, nl), b, label, uq) },
+        IUnpack(v, xs, r, _, b) -> if m_has(ub, v) {
+          // The extracted fields are the locals already read by peek; the others are released.
           let taken = map(xs, |x| match x { (_, i) -> i });
-          let out = [wif(), wop(if mutant == "unpack-always-unique" { "i32.ge_s" } else { "i32.eq" }), wi32(1), wmem("i32.load", 0), wget(v), ..out];
-          let (out, cg) = fold(enumerate(fields), (out, cg), |acc, jf| match (acc, jf) {
-            ((out, cg), (j, ft)) -> if gx_heap(gx, ft) && !any(taken, |i| i == j) { let (d, cg) = drop_fn(gx, cg, ft); ([wcall(d), wload(ft, 8 + 8 * j), wget(v), ..out], cg) } else { (out, cg) },
-          });
-          let out = match r { Some(tok) -> [wset(tok), wget(v), ..out], None -> [wcall("rt_free"), wi32(8 + 8 * length(fields)), wget(v), ..out] };
-          let out = [wop("else"), ..out];
-          let out = fold(xs, out, |out, x| match x { (n, _) -> [wop("drop"), wcall("rt_dup"), wget(n), ..out] });
-          let (d, cg) = drop_fn(gx, cg, vty(v));
-          let out = [wcall(d), wget(v), ..out];
-          let out = match r { Some(tok) -> [wset(tok), wi32(0), ..out], None -> out };
-          expr(([wend(), ..out], cg, nl), b, label)
-        },
+          let (c, cg) = each_heap(cg, v, |cg, l, t| if any(taken, |i| field_local(v, i) == l) { (wnone(), cg) } else { drop_local(cg, l, t) });
+          let out = match r { Some(tok) -> [wset(tok), wi32(0), c, ..out], None -> [c, ..out] };
+          expr((out, cg, nl), b, label, uq_forget(uq, map(xs, |x| match x { (n, _) -> n })))
+        } else { let uq = uq_forget(uq, map(xs, |x| match x { (n, _) -> n })); gen_unpack(gx, (out, cg, nl), e, vty(v), label, mutant, |st, b, label| expr(st, b, label, uq)) },
+        IFreeToken(v, size, b) -> expr(([wend(), wcall("rt_free"), wi32(size), wget(v), wif(), wget(v), ..out], cg, nl), b, label, uq),
         IUnreachable -> ([wop("unreachable"), ..out], cg, nl),
       } }
     }
-    match expr(([], cg, 0), body, None) {
-      (out, cg, _) -> mkfn(cg, fname, map(params, |p| match p { (v, t) -> (v, valtype(t)) }), [valtype(ret)], locals, CL(reverse(out))),
+    match expr(([], cg, 0), body, None, uq_params(gx_uniq(gx), f)) {
+      // The body is a loop, so that a tail call to the function itself can jump to its start;
+      // every path through it returns, jumps or traps.
+      (out, cg, _) -> mkfn(cg, fname, map(params, |p| match p { (v, t) -> (v, valtype(t)) }), match ret_es { Some(es) -> map(es, valtype), None -> [valtype(ret)] }, locals,
+        CL([wloop("$self"), CL(reverse(out)), wend(), wop("unreachable")])),
     }
   } }
+}
+
+// Taking apart a cell (unpack): the generic case, with its run-time test of uniqueness.
+fn gen_unpack(gx, st, e, vt, label, mutant, k) {
+  match (st, e) { ((out, cg, nl), IUnpack(v, xs, r, fields, b)) -> {
+    // Unique: the extracted fields move out, the others are released, and
+    // the cell is kept for reuse (or freed). Shared: dup what was extracted.
+    let taken = map(xs, |x| match x { (_, i) -> i });
+    let out = [wif(), wop(if mutant == "unpack-always-unique" { "i32.ge_s" } else { "i32.eq" }), wi32(1), wmem("i32.load", 0), wget(v), ..out];
+    let (out, cg) = fold(enumerate(fields), (out, cg), |acc, jf| match (acc, jf) {
+      ((out, cg), (j, ft)) -> if gx_heap(gx, ft) && !any(taken, |i| i == j) { let (d, cg) = drop_fn(gx, cg, ft); ([wcall(d), wload(ft, 8 + 8 * j), wget(v), ..out], cg) } else { (out, cg) },
+    });
+    let out = match r { Some(tok) -> [wset(tok), wget(v), ..out], None -> [wcall("rt_free"), wi32(8 + 8 * length(fields)), wget(v), ..out] };
+    let out = [wop("else"), ..out];
+    let out = fold(xs, out, |out, x| match x { (n, _) -> [wop("drop"), wcall("rt_dup"), wget(n), ..out] });
+    let (d, cg) = drop_fn(gx, cg, vt);
+    let out = [wcall(d), wget(v), ..out];
+    let out = match r { Some(tok) -> [wset(tok), wi32(0), ..out], None -> out };
+    k(([wend(), ..out], cg, nl), b, label)
+  }, _ -> internal("codegen: unpack") }
 }
 
 // The whole back end: the IR (after reference counting) -> the module's bytes
 // and the superoptimizer's rewrite counts (rule id -> uses, in order of first use).
 fn codegen(adts, prog, mutant, paranoid, noinline, superopt, rules) {
   match prog { IRProg(fns, main, ords) -> {
-    let gx = GX(adts, ords, mutant, paranoid, noinline);
+    // A named function returning a tuple returns its fields as several wasm
+    // values, so returning a tuple allocates nothing (closure code and main
+    // keep one result: they are called through the table and by _start).
+    let unboxed = fold(fns, MEmpty, |m, f| match irf_ret(f) { TT(es) -> if !irf_env(f) && irf_name(f) != main { m_set(m, irf_name(f), es) } else { m }, _ -> m });
+    let gx = GX(adts, ords, mutant, paranoid, noinline, unboxed, unique_params(fns, main));
     let cg = runtime(gx, CG([], MEmpty, array_empty(), MEmpty, MEmpty, [], MEmpty, 0));
     let cg = fold(fns, cg, |cg, f| gen_fn(gx, cg, f));
     let main_ret = match find(fns, |f| irf_name(f) == main) { Some(f) -> irf_ret(f), None -> internal("codegen: no main") };

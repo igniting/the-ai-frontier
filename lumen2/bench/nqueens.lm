@@ -1,0 +1,24 @@
+// N-queens: count the ways to place n queens on an n-by-n board. Backtracking
+// search; the queens placed so far are an immutable list (newest first), so
+// trying a square allocates one cell and backtracking costs nothing.
+fn safe(qs: List<Int>, col: Int, d: Int) -> Bool {
+  match qs { Nil -> true, Cons(c, rest) -> c != col && c != col + d && c != col - d && safe(rest, col, d + 1) }
+}
+fn solve(n: Int, qs: List<Int>, row: Int) -> Int { if row == n { 1 } else { columns(n, qs, row, 0, 0) } }
+fn columns(n: Int, qs: List<Int>, row: Int, col: Int, acc: Int) -> Int {
+  if col == n { acc }
+  else if safe(qs, col, 1) { columns(n, qs, row, col + 1, acc + solve(n, Cons(col, qs), row + 1)) }
+  else { columns(n, qs, row, col + 1, acc) }
+}
+
+fn digits(s: String, i: {i: Int | 0 <= i}, acc: Int) -> Int {
+  if i >= string_length(s) { acc } else {
+    let c = char_code_at(s, i);
+    if c >= 48 && c <= 57 { digits(s, i + 1, acc * 10 + c - 48) } else { acc }
+  }
+}
+
+fn main() {
+  let n = digits(read_input(), 0, 0);
+  println(int_to_string(solve(n, Nil, 0)) ++ " solutions for " ++ int_to_string(n) ++ " queens")
+}

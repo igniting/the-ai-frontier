@@ -1,0 +1,49 @@
+// Edit distance (Levenshtein) between two pseudo-random sequences of length n,
+// by dynamic programming over two rows. Every array access is proved in bounds.
+fn gen(a: Array<Int>, i: {i: Int | 0 <= i}, x: Int) -> {b: Array<Int> | array_length(b) == array_length(a)} {
+  if i >= array_length(a) { a } else {
+    let x = (x * 1103515245 + 12345) % 2147483648;
+    gen(array_set(a, i, (x / 65536) % 4), i + 1, x)
+  }
+}
+fn min3(a: Int, b: Int, c: Int) -> Int { if a < b { if a < c { a } else { c } } else if b < c { b } else { c } }
+
+// cur[j] for j from j to m, from prev (row i - 1).
+fn fill(s: Array<Int>, t: Array<Int>, i: {i: Int | 1 <= i && i <= array_length(s)},
+    prev: {p: Array<Int> | array_length(p) == array_length(t) + 1},
+    cur: {c: Array<Int> | array_length(c) == array_length(t) + 1},
+    j: {j: Int | 1 <= j}) -> {c: Array<Int> | array_length(c) == array_length(t) + 1} {
+  if j > array_length(t) { cur } else {
+    let cost = if array_get(s, i - 1) == array_get(t, j - 1) { 0 } else { 1 };
+    let v = min3(array_get(prev, j) + 1, array_get(cur, j - 1) + 1, array_get(prev, j - 1) + cost);
+    fill(s, t, i, prev, array_set(cur, j, v), j + 1)
+  }
+}
+fn rows(s: Array<Int>, t: Array<Int>, i: {i: Int | 1 <= i},
+    prev: {p: Array<Int> | array_length(p) == array_length(t) + 1},
+    cur: {c: Array<Int> | array_length(c) == array_length(t) + 1}) -> Int {
+  if i > array_length(s) { array_get(prev, array_length(t)) } else {
+    let cur = fill(s, t, i, prev, array_set(cur, 0, i), 1);
+    rows(s, t, i + 1, cur, prev)
+  }
+}
+fn first(r: Array<Int>, j: {j: Int | 0 <= j}) -> {q: Array<Int> | array_length(q) == array_length(r)} {
+  if j >= array_length(r) { r } else { first(array_set(r, j, j), j + 1) }
+}
+
+fn digits(s: String, i: {i: Int | 0 <= i}, acc: Int) -> Int {
+  if i >= string_length(s) { acc } else {
+    let c = char_code_at(s, i);
+    if c >= 48 && c <= 57 { digits(s, i + 1, acc * 10 + c - 48) } else { acc }
+  }
+}
+
+fn main() {
+  let n = digits(read_input(), 0, 0);
+  if n < 1 || n > 100000 { println("n must be between 1 and 100000") } else {
+    let s = gen(array_make(n, 0), 0, 1);
+    let t = gen(array_make(n, 0), 0, 2);
+    let d = rows(s, t, 1, first(array_make(n + 1, 0), 0), array_make(n + 1, 0));
+    println("edit distance " ++ int_to_string(d))
+  }
+}

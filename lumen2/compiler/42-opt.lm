@@ -35,7 +35,7 @@ fn subst_rhs(r, atom, expr) {
     RCall(f, args) -> RCall(f, map(args, atom)),
     RCtor(t, tag, args, ru) -> RCtor(t, tag, map(args, atom), ru),
     RTuple(t, args, ru) -> RTuple(t, map(args, atom), ru),
-    RBuiltinCall(n, args, t, ats) -> RBuiltinCall(n, map(args, atom), t, ats),
+    RBuiltinCall(n, args, t, ats, pr) -> RBuiltinCall(n, map(args, atom), t, ats, pr),
     RCallc(f, args) -> RCallc(atom(f), map(args, atom)),
     RClosure(f, t, caps, ctys) -> RClosure(f, t, map(caps, atom), ctys),
     RField(x, p, t, o) -> RField(atom(x), p, t, o),
@@ -81,7 +81,7 @@ fn ini_rhs(cx, r, st) {
     RCall(fname, args) -> { let (xs, st) = ini_atoms(cx, args, st); (RCall(fname, xs), st) },
     RCtor(t, tag, args, ru) -> { let (xs, st) = ini_atoms(cx, args, st); (RCtor(t, tag, xs, ru), st) },
     RTuple(t, args, ru) -> { let (xs, st) = ini_atoms(cx, args, st); (RTuple(t, xs, ru), st) },
-    RBuiltinCall(n, args, t, ats) -> { let (xs, st) = ini_atoms(cx, args, st); (RBuiltinCall(n, xs, t, ats), st) },
+    RBuiltinCall(n, args, t, ats, pr) -> { let (xs, st) = ini_atoms(cx, args, st); (RBuiltinCall(n, xs, t, ats, pr), st) },
     RCallc(fa, args) -> { let (b, st) = ini_atom(cx, fa, st); let (xs, st) = ini_atoms(cx, args, st); (RCallc(b, xs), st) },
     RClosure(fname, t, caps, ctys) -> { let (xs, st) = ini_atoms(cx, caps, st); (RClosure(fname, t, xs, ctys), st) },
     RField(x, p, t, o) -> { let (b, st) = ini_atom(cx, x, st); (RField(b, p, t, o), st) },
@@ -249,7 +249,7 @@ fn rhs_uses(r, used) {
     RCall(_, args) -> fold(args, used, use_add),
     RCtor(_, _, args, _) -> fold(args, used, use_add),
     RTuple(_, args, _) -> fold(args, used, use_add),
-    RBuiltinCall(_, args, _, _) -> fold(args, used, use_add),
+    RBuiltinCall(_, args, _, _, _) -> fold(args, used, use_add),
     _ -> used,
   }
 }

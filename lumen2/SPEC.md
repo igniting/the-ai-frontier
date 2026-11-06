@@ -505,7 +505,13 @@ the compiler checks them, and so does the test suite.
   constructor that nothing else refers to and builds one of the same size,
   the new value reuses the old cell (Perceus reuse). So `reverse` of a list
   that is not used again, or inserting into a tree held only once, allocates
-  nothing new.
+  nothing new. Where the compiler can see that an array is not shared, the
+  update has no run-time test at all: an array that came from `array_set`,
+  `array_push`, `array_make` or `array_empty`, and has only been read since
+  (by `array_get`, `array_length`, or a function that only reads it), is not
+  shared. That carries across calls: a parameter is known not to be shared
+  when every call passes such an array, and a function's result when every
+  return gives one.
 - **Constant stack** for tail calls (including a call that is the right
   operand of `&&` or `||` in tail position), for freeing long lists and for
   comparing long lists.
@@ -531,8 +537,9 @@ strings, arrays and closures. They use traits, refinements, guarded and
 unguarded partial operations, and the clock and random capabilities, with a
 seeded host. Each program is run by the interpreter and by the compiled
 WebAssembly in three modes: normal; paranoid, where freed memory is never
-reused and any access to a freed object stops the program; and without
-reuse. All four runs must agree on the output and on the error, and every
+reused, any access to a freed object stops the program, and every run-time
+check stays in (including those the checker proved unnecessary, and the
+test of whether an array is shared); and without reuse. All four runs must agree on the output and on the error, and every
 run that finishes must have freed every object it allocated. Planted bugs
 in the compiler, the verifier and the SAT solver (`test/fuzz.js`,
 `MUTANTS`) check that this harness and the certificate checkers catch the

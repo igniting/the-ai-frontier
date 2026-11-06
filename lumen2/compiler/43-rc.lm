@@ -42,7 +42,7 @@ fn rc_uses(modes, r) {
     RTestTag(x, _, _, _, _) -> ([], atom_vars([x])),
     RTestLit(x, _, _, _, _) -> ([], atom_vars([x])),
     REnvfield(_, _) -> ([], ["env"]),
-    RBuiltinCall(n, args, _, _) -> split_uses(args, |i| builtin_consumes(n, i)),
+    RBuiltinCall(n, args, _, _, _) -> split_uses(args, |i| builtin_consumes(n, i)),
     RExpr(_) -> internal("rc_uses: expr"),
   }
 }
@@ -67,13 +67,17 @@ fn ib_consume(cx, st, v) {
     match m_get(root, v) { Some(x) -> ib_consume(cx, (modes, ch, bor, root), x), None -> (modes, ch, bor, root) }
   } }
 }
+// Whether v is borrowed, or a field (of a field...) of something borrowed: such
+// a field is read without taking a reference (consuming it would make its root
+// owned), so passing it in a tail call leaves nothing to release afterwards.
+fn ib_borrowed(bor, root, v) { m_has(bor, v) || match m_get(root, v) { Some(x) -> ib_borrowed(bor, root, x), None -> false } }
 fn ib_rhs(cx, st, r, tail) {
   match cx { (adts, _, vm, _) -> match r {
     RAtom(a) -> fold(atom_vars([a]), st, |st, v| ib_consume(cx, st, v)),
     RCall(g, args) -> fold(enumerate(args), st, |st, ia| match ia {
       (i, QVar(v)) -> match st { (modes, ch, bor, root) ->
         if mode_of(modes, g, i) == "owned" { ib_consume(cx, st, v) }
-        else if tail && !m_has(bor, v) && is_heap(adts, vm_ty(vm, v)) { let (m2, c) = ib_demote(modes, g, i); (m2, ch || c, bor, root) }
+        else if tail && !ib_borrowed(bor, root, v) && is_heap(adts, vm_ty(vm, v)) { let (m2, c) = ib_demote(modes, g, i); (m2, ch || c, bor, root) }
         else { st } },
       _ -> st,
     }),
@@ -81,7 +85,7 @@ fn ib_rhs(cx, st, r, tail) {
     RCtor(_, _, args, _) -> fold(atom_vars(args), st, |st, v| ib_consume(cx, st, v)),
     RTuple(_, args, _) -> fold(atom_vars(args), st, |st, v| ib_consume(cx, st, v)),
     RClosure(_, _, caps, _) -> fold(atom_vars(caps), st, |st, v| ib_consume(cx, st, v)),
-    RBuiltinCall(n, args, _, _) -> fold(enumerate(args), st, |st, ia| match ia { (i, QVar(v)) -> if builtin_consumes(n, i) { ib_consume(cx, st, v) } else { st }, _ -> st }),
+    RBuiltinCall(n, args, _, _, _) -> fold(enumerate(args), st, |st, ia| match ia { (i, QVar(v)) -> if builtin_consumes(n, i) { ib_consume(cx, st, v) } else { st }, _ -> st }),
     RExpr(e) -> ib_walk(cx, st, e, false),
     _ -> st,
   } }

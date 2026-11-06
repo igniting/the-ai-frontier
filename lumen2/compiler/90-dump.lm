@@ -109,7 +109,7 @@ fn di_rhs(r) {
     RTestTag(x, p, o, t, tag) -> "testtag " ++ di_at(x) ++ " " ++ di_path(p) ++ " " ++ tkey(o) ++ " " ++ tkey(t) ++ " " ++ int_to_string(tag),
     RTestLit(x, p, o, t, lit) -> "testlit " ++ di_at(x) ++ " " ++ di_path(p) ++ " " ++ tkey(o) ++ " " ++ tkey(t) ++ " " ++ di_at(lit),
     REnvfield(i, t) -> "envfield " ++ int_to_string(i) ++ " " ++ tkey(t),
-    RBuiltinCall(n, args, t, ats) -> "builtin " ++ n ++ " " ++ di_ats(args) ++ " " ++ tkey(t) ++ " " ++ di_tys(ats),
+    RBuiltinCall(n, args, t, ats, pr) -> "builtin " ++ n ++ " " ++ di_ats(args) ++ " " ++ tkey(t) ++ " " ++ di_tys(ats) ++ (if pr { " proved" } else { "" }),
     RExpr(_) -> "expr",
   }
 }

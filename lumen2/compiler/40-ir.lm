@@ -21,7 +21,7 @@ type Rhs {
   RTestTag(At, List<Int>, Ty, Ty, Int),            // value, path, object type, field type, tag
   RTestLit(At, List<Int>, Ty, Ty, At),             // value, path, object type, field type, literal
   REnvfield(Int, Ty),
-  RBuiltinCall(String, List<At>, Ty, List<Ty>),    // name, args, result type, argument types
+  RBuiltinCall(String, List<At>, Ty, List<Ty>, Bool),   // name, args, result type, argument types, proved not to fail
   RExpr(IR)
 }
 type IR {

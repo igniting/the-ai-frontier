@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { checkSource, interpretSource, compileSource, runSource, testSource, certifySource, makeHost, CertificateError, runWasm } from '../src/api.js';
 import { checkRefutation } from '../src/rup.js';
 import { generate, differential, MUTANTS } from './fuzz.js';
+import { readFileSync } from 'node:fs';
 
 // Runs src compiled (normally and in paranoid mode) and interpreted; all must agree.
 function agree(src, input = '') {
@@ -205,6 +206,65 @@ test('arrays are values, updated in place when unique', () => {
   const r = runSource(program(100000));
   assert.equal(r.output, '9999800001\n0 -1\n100000\n');
   assert.ok(r.allocs < 50, `in-place updates (${r.allocs} allocations)`);
+});
+
+test('an array the compiler takes to be unshared never is', () => {
+  // The code generator skips the sharing test on arrays it knows are not
+  // shared, across calls too. Each line holds a value that would change if
+  // it were wrong: the same array passed twice, returned through a parameter
+  // the caller keeps, kept in a tuple, a list, a closure, or another array.
+  const r = agree(`fn same(a: Array<Int>, b: Array<Int>) -> Int { let a2 = array_set(a, 0, 7); array_get(b, 0) + array_get(a2, 0) }
+    fn first(a: Array<Int>, b: Array<Int>) -> Array<Int> { a }
+    fn keep(a: Array<Int>) -> (Array<Int>, Int) { (a, 1) }
+    fn peek(a: Array<Int>) -> Int { array_get(a, 0) }
+    fn bump(a: Array<Int>, i: Int) -> Array<Int> { if i == 0 { a } else { bump(array_set(a, 0, array_get(a, 0) + 1), i - 1) } }
+    fn main() {
+      let x = array_make(2, 0);
+      println(int_to_string(same(x, x)));
+      let y = array_make(2, 0);
+      let z2 = array_set(first(y, x), 0, 1);
+      println(int_to_string(array_get(y, 0)) ++ " " ++ int_to_string(array_get(z2, 0)));
+      let w = array_make(2, 0);
+      let kept = keep(w);
+      let w2 = array_set(w, 0, 5);
+      println(match kept { (k, _) -> int_to_string(array_get(k, 0)) } ++ " " ++ int_to_string(array_get(w2, 0)));
+      let v = array_make(2, 0);
+      let vs = [v];
+      let v2 = array_set(v, 0, 3);
+      println(int_to_string(sum(map(vs, peek))) ++ " " ++ int_to_string(array_get(v2, 0)));
+      let u = array_make(2, 0);
+      let f = |i| array_get(u, i);
+      let u2 = array_set(u, 0, 4);
+      println(int_to_string(f(0)) ++ " " ++ int_to_string(array_get(u2, 0)));
+      let outer = array_make(2, array_make(2, 0));
+      let i2 = array_set(array_get(outer, 0), 0, 6);
+      println(int_to_string(array_get(array_get(outer, 0), 0)) ++ " " ++ int_to_string(array_get(i2, 0)));
+      let t2 = bump(array_make(2, 0), 1000);
+      let n = peek(t2);
+      let t3 = bump(t2, 1);
+      println(int_to_string(n) ++ " " ++ int_to_string(peek(t2)) ++ " " ++ int_to_string(peek(t3)))
+    }`);
+  assert.equal(r.output, '7\n0 1\n0 5\n0 3\n0 4\n0 6\n1000 1000 1001\n');
+  assert.ok(r.allocs < 100, `bump updates in place (${r.allocs} allocations)`);
+});
+
+test('the benchmark programs: right answers, and every access proved where claimed', () => {
+  const expected = {
+    fannkuch: ['7', '228\nPfannkuchen(7) = 16\n'],
+    binarytrees: ['8', 'stretch tree of depth 9\t check: 1023\n256\t trees of depth 4\t check: 7936\n64\t trees of depth 6\t check: 8128\n16\t trees of depth 8\t check: 8176\nlong lived tree of depth 8\t check: 511\n'],
+    nqueens: ['6', '4 solutions for 6 queens\n'],
+    editdist: ['300', 'edit distance 161\n'],
+  };
+  for (const [name, [input, out]] of Object.entries(expected)) {
+    const src = readFileSync(new URL(`../bench/${name}.lm`, import.meta.url), 'utf8');
+    const grants = ['input', 'output'];
+    const r = runWasm(compileSource(src, { grants }).bytes, { input });
+    assert.equal(r.output, out, name);
+    assert.equal(r.live, 0, `${name} frees everything`);
+    // Only main, which is always allowed to fail, can stop with an error.
+    const failing = checkSource(src, { grants }).signatures.filter(s => /fail/.test(s.type) && s.name !== 'main');
+    assert.deepEqual(failing.map(s => s.name), [], `${name}: functions that can fail`);
+  }
 });
 
 test('differential fuzzing: random programs agree in every mode', () => {

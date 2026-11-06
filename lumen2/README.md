@@ -57,7 +57,7 @@ counting, property tests and certificates, all in the browser) ·
 
 ```sh
 cd lumen2
-npm test                                         # 50 tests, about 3.5 minutes
+npm test                                         # 52 tests, about 3.5 minutes
 node bin/lumen2.js check examples/refine.lm      # inferred types, effects, refinements
 node bin/lumen2.js run examples/tour.lm          # compile to wasm and run
 node bin/lumen2.js test examples/properties.lm   # check the properties
@@ -632,9 +632,9 @@ after type checking.
   impls, derived `show`), refined functions, partial operations guarded so
   that they are provably safe, and others that fail when reached, plus the
   clock and random capabilities. Each program runs four ways: interpreted;
-  compiled; compiled in *paranoid* mode, where freed memory is never reused
-  and any access to a freed object stops the program; and compiled without
-  reuse. All four must print the same output and stop with the same error.
+  compiled; compiled in *paranoid* mode, where freed memory is never reused,
+  any access to a freed object stops the program, and every run-time check
+  stays in, even those the proofs removed; and compiled without reuse. All four must print the same output and stop with the same error.
 - **A leak check.** Every compiled run that finishes must report zero live
   objects.
 - **Proofs are re-checked as the program runs.** The interpreter re-checks

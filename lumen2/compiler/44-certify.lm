@@ -133,7 +133,7 @@ fn check_types(adts, fns) {
           match nth(caps, i) { Some(c) -> if !same_ty(c, ty) { cert_fail(pre ++ "capture " ++ int_to_string(i)) } else { () }, None -> cert_fail(pre ++ "capture " ++ int_to_string(i)) };
           ty
         },
-        RBuiltinCall(name, args, ty, ats) -> builtin_ty(name, args, ty, ats),
+        RBuiltinCall(name, args, ty, ats, _) -> builtin_ty(name, args, ty, ats),
         RExpr(_) -> cert_fail(pre ++ "instruction expr"),
       };
       (t, n)
@@ -218,7 +218,7 @@ fn co_operands(modes, r) {
     RTestLit(x, _, _, _, _) -> ([], atom_vars([x])),
     REnvfield(_, _) -> ([], ["env"]),
     RStaticfn(_, _) -> ([], []),
-    RBuiltinCall(n, args, _, _) -> split_uses(args, |i| (n == "array_make" && i == 1) || (n == "array_set" && (i == 0 || i == 2)) || (n == "array_push" && (i == 0 || i == 1))),
+    RBuiltinCall(n, args, _, _, _) -> split_uses(args, |i| (n == "array_make" && i == 1) || (n == "array_set" && (i == 0 || i == 2)) || (n == "array_push" && (i == 0 || i == 1))),
     RExpr(_) -> cert_fail("ownership: unknown instruction expr"),
   }
 }

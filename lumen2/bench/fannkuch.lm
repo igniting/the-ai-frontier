@@ -1,0 +1,76 @@
+// fannkuch-redux: the most prefix reversals over all permutations of 0..n-1,
+// and a checksum. The same algorithm as fannkuch.c, with every array access
+// proved in bounds: perm and perm1 are arrays of length n whose elements are
+// in 0..n-1 (so an element can index them), count has length n.
+
+fn init(n: {n: Int | 1 <= n && n <= 16}, a: {a: Array<{x: Int | 0 <= x && x < n}> | array_length(a) == n}, i: {i: Int | 0 <= i})
+    -> {b: Array<{x: Int | 0 <= x && x < n}> | array_length(b) == n} {
+  if i >= n { a } else { init(n, array_set(a, i, i), i + 1) }
+}
+fn copy_into(n: {n: Int | 1 <= n && n <= 16}, dst: {d: Array<{x: Int | 0 <= x && x < n}> | array_length(d) == n},
+    src: {s: Array<{x: Int | 0 <= x && x < n}> | array_length(s) == n}, i: {i: Int | 0 <= i})
+    -> {d: Array<{x: Int | 0 <= x && x < n}> | array_length(d) == n} {
+  if i >= n { dst } else { copy_into(n, array_set(dst, i, array_get(src, i)), src, i + 1) }
+}
+// Reverses p[i..j].
+fn reverse_prefix(n: {n: Int | 1 <= n && n <= 16}, p: {p: Array<{x: Int | 0 <= x && x < n}> | array_length(p) == n},
+    i: {i: Int | 0 <= i}, j: {j: Int | j < n}) -> {q: Array<{x: Int | 0 <= x && x < n}> | array_length(q) == n} {
+  if i >= j { p } else {
+    let a = array_get(p, i);
+    let b = array_get(p, j);
+    reverse_prefix(n, array_set(array_set(p, i, b), j, a), i + 1, j - 1)
+  }
+}
+fn set_counts(n: {n: Int | 1 <= n && n <= 16}, count: {c: Array<Int> | array_length(c) == n}, r: {r: Int | 1 <= r && r <= n})
+    -> {c: Array<Int> | array_length(c) == n} {
+  if r == 1 { count } else { set_counts(n, array_set(count, r - 1, r), r - 1) }
+}
+// perm1[0..r] rotated left by one.
+fn rotate(n: {n: Int | 1 <= n && n <= 16}, perm1: {p: Array<{x: Int | 0 <= x && x < n}> | array_length(p) == n},
+    r: {r: Int | 0 <= r && r < n}, i: {i: Int | 0 <= i && i <= r}, perm0: {x: Int | 0 <= x && x < n})
+    -> {q: Array<{x: Int | 0 <= x && x < n}> | array_length(q) == n} {
+  if i == r { array_set(perm1, r, perm0) } else { rotate(n, array_set(perm1, i, array_get(perm1, i + 1)), r, i + 1, perm0) }
+}
+// Flips perm until its first element is 0, then moves on to the next permutation.
+fn flip(n: {n: Int | 1 <= n && n <= 16}, perm: {p: Array<{x: Int | 0 <= x && x < n}> | array_length(p) == n},
+    perm1: {p: Array<{x: Int | 0 <= x && x < n}> | array_length(p) == n}, count: {c: Array<Int> | array_length(c) == n},
+    r: {r: Int | 1 <= r && r <= n}, permcount: Int, checksum: Int, maxflips: Int, flips: Int) -> (Int, Int) {
+  let k = array_get(perm, 0);
+  if k == 0 {
+    let maxflips = if flips > maxflips { flips } else { maxflips };
+    let checksum = if permcount % 2 == 0 { checksum + flips } else { checksum - flips };
+    advance(n, perm, perm1, count, r, permcount, checksum, maxflips)
+  } else { flip(n, reverse_prefix(n, perm, 0, k), perm1, count, r, permcount, checksum, maxflips, flips + 1) }
+}
+fn advance(n: {n: Int | 1 <= n && n <= 16}, perm: {p: Array<{x: Int | 0 <= x && x < n}> | array_length(p) == n},
+    perm1: {p: Array<{x: Int | 0 <= x && x < n}> | array_length(p) == n}, count: {c: Array<Int> | array_length(c) == n},
+    r: {r: Int | 1 <= r && r <= n}, permcount: Int, checksum: Int, maxflips: Int) -> (Int, Int) {
+  if r == n { (checksum, maxflips) } else {
+    let perm0 = array_get(perm1, 0);
+    let perm1 = rotate(n, perm1, r, 0, perm0);
+    let c = array_get(count, r) - 1;
+    let count = array_set(count, r, c);
+    if c > 0 { start(n, perm, perm1, count, r, permcount + 1, checksum, maxflips) } else { advance(n, perm, perm1, count, r + 1, permcount, checksum, maxflips) }
+  }
+}
+fn start(n: {n: Int | 1 <= n && n <= 16}, perm: {p: Array<{x: Int | 0 <= x && x < n}> | array_length(p) == n},
+    perm1: {p: Array<{x: Int | 0 <= x && x < n}> | array_length(p) == n}, count: {c: Array<Int> | array_length(c) == n},
+    r: {r: Int | 1 <= r && r <= n}, permcount: Int, checksum: Int, maxflips: Int) -> (Int, Int) {
+  let count = set_counts(n, count, r);
+  let perm = copy_into(n, perm, perm1, 0);
+  flip(n, perm, perm1, count, 1, permcount, checksum, maxflips, 0)
+}
+fn digits(s: String, i: {i: Int | 0 <= i}, acc: Int) -> Int {
+  if i >= string_length(s) { acc } else {
+    let c = char_code_at(s, i);
+    if c >= 48 && c <= 57 { digits(s, i + 1, acc * 10 + c - 48) } else { acc }
+  }
+}
+
+fn main() {
+  let n = digits(read_input(), 0, 0);
+  if n < 1 || n > 16 { println("n must be between 1 and 16") } else {
+    let (cs, mf) = start(n, array_make(n, 0), init(n, array_make(n, 0), 0), array_make(n, 0), n, 0, 0, 0);
+    println(int_to_string(cs) ++ "\nPfannkuchen(" ++ int_to_string(n) ++ ") = " ++ int_to_string(mf))
+  }
+}

@@ -1,0 +1,33 @@
+// binary-trees: build and walk many perfect binary trees. Allocation-heavy:
+// every node is a heap object, freed by reference counting as check walks it.
+type Tree { Leaf, Node(Tree, Tree) }
+
+fn make(d: Int) -> Tree { if d == 0 { Node(Leaf, Leaf) } else { Node(make(d - 1), make(d - 1)) } }
+fn check(t: Tree) -> Int { match t { Leaf -> 0, Node(l, r) -> 1 + check(l) + check(r) } }
+fn pow2(k: Int) -> Int { if k <= 0 { 1 } else { 2 * pow2(k - 1) } }
+
+fn iterate(d: Int, i: Int, acc: Int) -> Int { if i == 0 { acc } else { iterate(d, i - 1, acc + check(make(d))) } }
+
+fn depths(d: Int, max: Int, min: Int) {
+  if d <= max {
+    let n = pow2(max - d + min);
+    println(int_to_string(n) ++ "\t trees of depth " ++ int_to_string(d) ++ "\t check: " ++ int_to_string(iterate(d, n, 0)));
+    depths(d + 2, max, min)
+  } else { () }
+}
+
+fn digits(s: String, i: {i: Int | 0 <= i}, acc: Int) -> Int {
+  if i >= string_length(s) { acc } else {
+    let c = char_code_at(s, i);
+    if c >= 48 && c <= 57 { digits(s, i + 1, acc * 10 + c - 48) } else { acc }
+  }
+}
+
+fn main() {
+  let n = digits(read_input(), 0, 0);
+  let max = if n < 6 { 6 } else { n };
+  println("stretch tree of depth " ++ int_to_string(max + 1) ++ "\t check: " ++ int_to_string(check(make(max + 1))));
+  let long_lived = make(max);
+  depths(4, max, 4);
+  println("long lived tree of depth " ++ int_to_string(max) ++ "\t check: " ++ int_to_string(check(long_lived)))
+}

@@ -97,7 +97,7 @@ fn wrapper(lc, ls, kind, target, ty, tag) {
       else if kind == "ctor" { (IRet(RCtor(ret, tag, args, None)), ls) }
       else if kind == "cmp" { let ls = register_ord(lc, ls, list_get(pts, 0)); (IRet(RCmp("three", list_get(pts, 0), args)), ls) }
       else if kind == "unreachable" { (IUnreachable, ls) }
-      else { (IRet(RBuiltinCall(target, args, ret, pts)), ls) };
+      else { (IRet(RBuiltinCall(target, args, ret, pts, false)), ls) };
     let all_params = [("env", ty), ..params];
     let f = IRFn(name, true, all_params, ret, body, all_params, [], [], []);
     (name, ls_set_out(ls, om_set(ls_out(ls), name, Some(f))))
@@ -386,7 +386,9 @@ fn lower_call(lc, ls, id, f, args, ctx, k) {
       RBuiltin(b) -> {
         let fty = node_conc(lc, fid, sub);
         let (pts, ret) = match fty { TF(ps, r, _) -> (ps, r), _ -> internal("builtin type") };
-        lower_values(lc, ls, args, ctx, |vals, ls| k(RBuiltinCall(b, vals, ret, pts), ls))
+        // A partial builtin the checker proved safe here needs no run-time check.
+        let proved = cs_safe(cs, id);
+        lower_values(lc, ls, args, ctx, |vals, ls| k(RBuiltinCall(b, vals, ret, pts, proved), ls))
       },
       _ -> lower_value(lc, ls, f, ctx, |fa, ls| lower_values(lc, ls, args, ctx, |vals, ls| k(RCallc(fa, vals), ls))),
     },
@@ -408,7 +410,7 @@ fn lower_binop(lc, ls, id, op, l, r, ctx, k) {
       let op_ty = node_conc(lc, ex_id(l), sub);
       let arith = if op == "+" { "add" } else if op == "-" { "sub" } else if op == "*" { "mul" } else if op == "/" { "div" } else if op == "%" { "rem" } else { "" };
       if arith != "" { bind(lc, ls, RPrim(arith, [la, ra], None), ty, k, "t") }
-      else if op == "++" { bind(lc, ls, RBuiltinCall("concat", [la, ra], t_string(), [t_string(), t_string()]), ty, k, "t") }
+      else if op == "++" { bind(lc, ls, RBuiltinCall("concat", [la, ra], t_string(), [t_string(), t_string()], false), ty, k, "t") }
       else {
         let cmp = if op == "==" { "eq" } else if op == "!=" { "ne" } else if op == "<" { "lt" } else if op == "<=" { "le" } else if op == ">" { "gt" } else { "ge" };
         let native = match op_ty { TC(n, _) -> n == "Int" || n == "Bool" || n == "Unit", _ -> false };
