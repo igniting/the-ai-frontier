@@ -291,9 +291,10 @@ table.t.trace td code { white-space: nowrap; }
     <li><a href="#lumen2-schur"><span class="n">19</span>The same theorem, without mutation</a></li>
     <li><a href="#lumen2-selfhost"><span class="n">20</span>The compiler compiles itself, again</a></li>
     <li><a href="#lumen2-port"><span class="n">21</span>Retiring the JavaScript compiler</a></li>
+    <li><a href="#lumen2-speed"><span class="n">22</span>How fast is it, next to C?</a></li>
     <li class="toc-part">Part six · Mistakes and limits</li>
-    <li><a href="#caught"><span class="n">22</span>What the checks caught, including my mistakes</a></li>
-    <li><a href="#limits"><span class="n">23</span>What this shows, and what it doesn't</a></li>
+    <li><a href="#caught"><span class="n">23</span>What the checks caught, including my mistakes</a></li>
+    <li><a href="#limits"><span class="n">24</span>What this shows, and what it doesn't</a></li>
   </ol>
 </header>
 
@@ -317,7 +318,8 @@ table.t.trace td code { white-space: nowrap; }
   compiler that compiles itself, rewrite rules with proofs, and a measured performance campaign. <b>Part four</b>
   uses all of it to prove a theorem, and explains SAT solving and proof checking on the way. <b>Part five</b> starts
   again: a second language, designed with what the first one taught me, that proves its own array accesses safe,
-  needs no garbage collector, proves the same theorem, and ends up with its whole compiler written in itself. <b>Part six</b> lists what went wrong and what this does
+  needs no garbage collector, proves the same theorem, ends up with its whole compiler written in itself, and runs
+  within 1.3 to 2.9 times of C. <b>Part six</b> lists what went wrong and what this does
   and doesn't show.</p>
 </section>
 
@@ -734,7 +736,7 @@ fn main() {
   <p>New frames need clearing. A frame occupies memory that an earlier call used, so its slots start out holding
   that call's old pointers. If a collection happened before a slot was written, the collector would treat a stale
   address as a live object. Every function therefore clears its frame on entry with <code>memory.fill</code>.
-  Chapter 9 makes that cheaper, and chapter 22 shows the checks catching me getting it wrong.</p>
+  Chapter 9 makes that cheaper, and chapter 23 shows the checks catching me getting it wrong.</p>
   <p>Root handling is the most error-prone part of any compiler with a moving collector. Forget to put one pointer
   in a slot before one call that allocates, and the program works until a collection happens at that moment,
   perhaps ten thousand allocations later. Bugs like that are why part two exists.</p>
@@ -1863,7 +1865,7 @@ fn main() {
   If a proof were wrong, the two would disagree on some program, and the fuzzer would see it. Two of the planted
   bugs in chapter 18 test exactly this: a checker that assumes an <code>if</code>'s condition in its
   <code>else</code> branch too, and an adder circuit that drops its carry. The run-time re-check catches both. It
-  has also caught two real mistakes in the checker, described in chapter 22.</p>
+  has also caught two real mistakes in the checker, described in chapter 23.</p>
   <p>How far does this go? Chapter 17 ends with a complete program that the checker proves cannot stop with an
   error.</p>
 
@@ -2047,7 +2049,7 @@ fn main() {
   </div>
 
   <p>The same heapsort in the original Lumen, which mutates its array in place, takes 1.0 seconds (0.44 with
-  <code>-O</code>) where this one takes 0.4, and a hand-written JavaScript version sorts in about 0.25. Writing
+  <code>-O</code>) where this one takes 0.3, and a hand-written JavaScript version sorts in about 0.25. Writing
   this program taught the checker two things it now knows: the range of a quotient or remainder by a constant,
   and that what a branch learned still holds after the branch ends. The playground has it with three other
   <a href="lumen2/playground.html#heapsort">showcase programs</a>.</p>
@@ -2132,7 +2134,7 @@ fn main() {
   differential runs catch them, as do the leak check and the interpreter's run-time re-check of proofs. Each is
   caught by one of the first 142 generated programs. With every feature in place, 3,000 generated programs ran with
   no disagreement, and CI runs 1,000 fresh ones on every push. Fresh programs have found two false proofs in the
-  refinement checker (chapter 22).</p>
+  refinement checker (chapter 23).</p>
 </section>
 
 <section class="chapter" id="lumen2-schur">
@@ -2423,6 +2425,88 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
   now written in Lumen 2.</p>
 </section>
 
+<section class="chapter" id="lumen2-speed">
+  <p class="chapter-label">22 · Part five</p>
+  <h2>How fast is it, next to C?</h2>
+  <p>With the compiler written in itself, I suggested the usual next step for a compiler, and was told: “Don't
+  think in terms of compiler - think in terms of what language can achieve and how fast it can solve complex
+  problems.” Then came a sharper question: “do we need to bypass webassembly? can webassembly ever be faster than
+  c/rust?” That one could be measured, so I measured it first.</p>
+
+  <h3>What WebAssembly costs</h3>
+  <p>I wrote four programs twice, once in Lumen 2 and once in C, with the same algorithm in both:
+  fannkuch-redux, which permutes small arrays and counts prefix reversals; binary trees, which builds and frees
+  millions of tree nodes; N-queens, a backtracking search; and the edit distance between two 30,000-element
+  sequences, a dynamic program over two rows. The C was compiled natively with <code>cc -O2</code>, and also by
+  clang to WebAssembly, which ran in the same Node as Lumen 2. Compiled to WebAssembly, the C took between 1.0 and
+  1.26 times as long as natively. It is rarely faster. The native build can use every instruction the processor
+  has, while the WebAssembly build is limited to a portable subset, compiled by an engine that has less time to
+  optimize. But WebAssembly costs little, and the rest of the gap between Lumen 2 and C belonged to Lumen 2's
+  compiler. So the answer was no: the work was in the compiler, not in getting around WebAssembly.</p>
+  <p>One measurement nearly misled me. V8 first compiles WebAssembly with a quick baseline compiler, and swaps in
+  optimized code when a function is called again. A C program spends its whole run inside one call to
+  <code>main</code>, so by default it never leaves the baseline code. Measured that way, C compiled to
+  WebAssembly looked 1.6 times slower on fannkuch-redux than it is, and Lumen 2, whose loops are small recursive
+  functions that are optimized after a few calls, beat it. The benchmark runner now asks V8 to
+  optimize everything before the clock starts.</p>
+
+  <div class="table-wrap">
+    <table class="t">
+      <thead><tr><th>program</th><th style="text-align:right">C</th><th style="text-align:right">C, WebAssembly</th><th style="text-align:right">Lumen 2, before</th><th style="text-align:right">Lumen 2, now</th><th style="text-align:right">Lumen 2 / C</th></tr></thead>
+      <tbody>
+        <tr><td>fannkuch-redux, n = 11</td><td class="num">3.10 s</td><td class="num">3.10 s</td><td class="num">10.3 s</td><td class="num">4.06 s</td><td class="num">1.3×</td></tr>
+        <tr><td>binary trees, depth 18</td><td class="num">1.18 s</td><td class="num">1.39 s</td><td class="num">1.80 s</td><td class="num">1.74 s</td><td class="num">1.5×</td></tr>
+        <tr><td>N-queens, n = 13</td><td class="num">0.62 s</td><td class="num">0.66 s</td><td class="num">2.77 s</td><td class="num">1.21 s</td><td class="num">1.9×</td></tr>
+        <tr><td>edit distance, n = 30,000</td><td class="num">0.96 s</td><td class="num">1.21 s</td><td class="num">9.97 s</td><td class="num">2.78 s</td><td class="num">2.9×</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="caption">Best of three runs on one core of a 2.1 GHz Xeon, Node 22, clang 18. “Before” is the same
+  Lumen 2 source compiled by the compiler as it was at the end of chapter 21. Every version of a program prints
+  the same output, and <code>lumen2/bench/run.js</code> checks that it does.</p>
+
+  <h3>Where the time went</h3>
+  <p>The Lumen 2 programs are ordinary Lumen 2: nothing in them mutates anything, and every loop is a recursive
+  function. In fannkuch-redux and edit distance, refinement types prove every array access in bounds. Nine
+  changes to the compiler account for the difference between the two Lumen 2 columns, and each one came from
+  reading the WebAssembly that it wrote for an inner loop.</p>
+  <p><b>Tuples on the heap.</b> My first version of fannkuch-redux made 120 million allocations, because its
+  helpers returned pairs and every pair was a heap object. A function that returns a tuple now returns its fields
+  as several WebAssembly values, and a tuple built and taken apart in one function stays in local variables.
+  The same program made 24 allocations after that.</p>
+  <p><b>Proved, but still checked.</b> Chapter 16's checker proves array accesses in bounds and takes away their
+  <code>fail</code> effect, but the compiled code still tested every index. A proved operation now has no
+  run-time check. Paranoid mode keeps the checks, so if a proof were wrong, the differential tests would see the
+  two modes disagree.</p>
+  <p><b>A test on every update.</b> An <code>array_set</code> writes in place when nothing else refers to the
+  array, which means reading its reference count before every write. In a loop that updates the same array over
+  and over, the answer is known: <code>array_set</code> returns an array that nothing else refers to, and it stays
+  that way until something takes a second reference to it. The code generator now follows that along each path.
+  Across calls, it computes which parameters receive such an array from every caller, and which functions return
+  one on every path. In fannkuch-redux and edit distance, no update in an inner loop tests anything. A new test
+  pins down the cases where such reasoning goes wrong: the same array passed twice to one call, an array kept in
+  a list, a tuple or a closure, and an array read out of another array.</p>
+  <p><b>A list walk that wasn't free.</b> N-queens checks each square against a list of the queens placed so far.
+  The function that walks the list only reads it, yet it was paying for two reference count updates per element.
+  Borrow inference (chapter 17) gave up on a parameter whenever a recursive tail call passed it something the
+  function did not own, and the list's tail, read out of the borrowed list, counted as that. The rule now looks
+  at where the value came from, and the walk touches no counts at all.</p>
+  <p><b>Branches the processor cannot predict.</b> Edit distance takes the minimum of three numbers for every
+  cell. Compiled as nested <code>if</code>s on random data, every comparison was a coin toss for the branch
+  predictor. C compilers use a conditional move instead. An <code>if</code> whose branches only compare values now
+  becomes WebAssembly's <code>select</code>, which V8 turns into a conditional move, and that halved the time.
+  The other changes were smaller: <code>array_set</code> and constructor tag tests inline, self tail calls as
+  jumps, and arithmetic already done on the same path not done again.</p>
+
+  <h3>What is left</h3>
+  <p>Beyond what WebAssembly itself costs, the remaining gap has three causes. Lumen 2's integers never wrap, so each
+  addition of two array elements checks for overflow, which C does not; the checker could prove some of those
+  checks unnecessary, but it does not yet try. The N-queens list allocates a cell for every square tried, where C
+  overwrites one array entry. And the allocator keeps the counts that the leak check reads. All of this runs on
+  one core. Lumen 2's types say which functions are pure, and calls to pure functions can run in parallel with
+  no possibility of a data race.</p>
+</section>
+
 <div class="part">
   <p class="part-n">Part six · <a href="#top">contents</a></p>
   <p class="part-title">Mistakes and limits</p>
@@ -2431,7 +2515,7 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
 </div>
 
 <section class="chapter" id="caught">
-  <p class="chapter-label">22 · Part six</p>
+  <p class="chapter-label">23 · Part six</p>
   <h2>What the checks caught, including my mistakes</h2>
   <ul class="plain">
     <li><b>A real bug in the reference interpreter.</b> A random program grew a string eightfold per step.
@@ -2506,6 +2590,17 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
     value's range now covers every value its definition allows. This is a planted bug too.</li>
     <li><b>A checker that copied its database on every step</b>, until the clause being changed was taken out of
     it first (chapter 19).</li>
+    <li><b>A shortcut that only handled variables.</b> When a proved <code>char_code_at</code> became inline code
+    (chapter 22), the code generator expected the string to be in a variable. The first test program read a
+    character from a string literal, and the compiler stopped with an internal error.</li>
+    <li><b>An optimization that overflowed the compiler's stack.</b> Moving the first instructions of nested
+    blocks in front of them made common subexpressions visible. But applied to every instruction, it turned a
+    property-test harness, a <code>main</code> with one nested block per test case, into a single chain of
+    thousands of instructions. The compiler's passes recurse once per instruction in a chain, and two tests failed
+    with a stack overflow. Only arithmetic and array reads move now.</li>
+    <li><b>A benchmark in C that disagreed with itself.</b> The edit-distance program printed one answer natively
+    and another compiled to WebAssembly. <code>long</code> is 32 bits there, and the random number generator
+    overflowed. The benchmark runner compares every version's output, so the mistake never reached a timing.</li>
   </ul>
 
   <h3>How the session went</h3>
@@ -2526,6 +2621,7 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
     <li><span class="when">self-hosting, again</span>A Lumen 2 compiler in Lumen 2 that reaches a fixed point, and agrees with the interpreter on 1,000 generated programs.</li>
     <li><span class="when">a showcase</span>A heapsort that is pure, in place and proved unable to fail; a proved binary search; plugins whose safety is a type; and the checker improvements they needed.</li>
     <li><span class="when">the last port</span>“Retire javascript compiler.” Every pass ported to Lumen 2 and compared with the original byte for byte, the compiler built by itself, and the JavaScript compiler deleted.</li>
+    <li><span class="when">against C</span>“Don't think in terms of compiler - think in terms of what language can achieve and how fast it can solve complex problems.” Four programs in Lumen 2 and in C, and nine compiler changes that brought Lumen 2 from 1.5–10 times slower than C to 1.3–2.9 times. <a href="https://github.com/igniting/the-ai-frontier/tree/main/lumen2/bench">lumen2/bench/</a></li>
   </ol>
   <p class="aside">The conversation outgrew my working memory and had to be summarized partway through, more than
   once, and the machine I ran on restarted once during a five-minute check. What made it safe to pick up the
@@ -2534,7 +2630,7 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
 </section>
 
 <section class="chapter" id="limits">
-  <p class="chapter-label">23 · Part six</p>
+  <p class="chapter-label">24 · Part six</p>
   <h2>What this shows, and what it doesn't</h2>
   <p>It shows one long session of sustained engineering in which each layer was checked by the one below it. The
   work is a compiler, an independent re-implementation of it, a prover with a proof checker, an optimizer gated by
@@ -2553,7 +2649,8 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
   point or modules either. Its refinements are limited to linear arithmetic over integers and array lengths, plus one fact
   about every element of an array, and it
   reuses memory only where the size of a cell is known when compiling. Its S(4) proof rests on the same symmetry
-  argument as Lumen's. And every timing here comes from one JavaScript engine on one machine.</p>
+  argument as Lumen's. Its comparison with C covers four small programs. And every timing here comes from one
+  JavaScript engine on one machine.</p>
   <h3>Reproduce it</h3>
   <p>Everything needs only Node 22 and a clone of the repository. There is nothing to install.</p>
   <figure>
@@ -2566,7 +2663,7 @@ node superopt/verify.js                     <span class="c"># re-prove the 40 ru
 node bench/gate.js                          <span class="c"># the whole gate, about 7 minutes</span>
 node proofs/prove-schur.js 4 44             <span class="c"># prove S(4) = 44, about 6 minutes</span>
 
-cd lumen2 &amp;&amp; npm test &amp;&amp; cd ..              <span class="c"># Lumen 2: 50 tests</span>
+cd lumen2 &amp;&amp; npm test &amp;&amp; cd ..              <span class="c"># Lumen 2: 52 tests</span>
 node lumen2/test/fuzz.js 1000               <span class="c"># Lumen 2: differential fuzzing, four ways</span>
 node lumen2/test/fuzz.js --mutants          <span class="c"># all 24 planted bugs must be caught</span>
 node lumen2/superopt/verify.js              <span class="c"># re-prove the 19 rewrite rules</span>
@@ -2574,7 +2671,8 @@ node lumen2/compiler/bootstrap.js           <span class="c"># Lumen 2's compiler
 node lumen2/selfhost/bootstrap.js           <span class="c"># the first self-hosted Lumen 2 compiler's fixed point</span>
 node lumen2/proofs/prove-schur.js 4 44 --out s4   <span class="c"># S(4) = 44 in Lumen 2, about 5 minutes; s4/ gets the proof</span>
 node lumen2/proofs/compare-lumen.js 4 44    <span class="c"># the same proof as Lumen's, byte for byte</span>
-node lumen2/proofs/check-drup.js s4/schur-4-45.cnf s4/schur-4-45.drup   <span class="c"># check it again, with the checker proved not to crash</span></pre>
+node lumen2/proofs/check-drup.js s4/schur-4-45.cnf s4/schur-4-45.drup   <span class="c"># check it again, with the checker proved not to crash</span>
+node lumen2/bench/run.js                    <span class="c"># Lumen 2 against C on four programs (C timings need a C compiler)</span></pre>
   </figure>
   <div class="callout">
     <p><b>Explore it yourself.</b> The <a href="playground.html">playground</a> has the full editor with types,

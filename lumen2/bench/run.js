@@ -10,6 +10,7 @@
 // that column separates what WebAssembly costs from what Lumen 2 costs.
 // Every run is a fresh process; the time is the best of N runs, measured
 // inside the process around the program's run (not compiling or loading it).
+// Both WebAssembly columns run code from V8's optimizing compiler.
 // The outputs of all versions must be identical.
 
 import { spawnSync } from 'node:child_process';
@@ -75,7 +76,11 @@ function best(run) {
   return { output: out, ms };
 }
 function child(flag, path, n) {
-  const r = spawnSync(process.execPath, ['--no-warnings', '--stack-size=65500', self, flag, path, String(n)], { encoding: 'utf8', maxBuffer: 1 << 26 });
+  // --no-liftoff: V8 compiles every function with its optimizing compiler up
+  // front (before the clock starts). Otherwise a C program, which spends its
+  // whole run in one call to main, would run baseline code throughout, since
+  // V8 only swaps in optimized code for the next call of a function.
+  const r = spawnSync(process.execPath, ['--no-warnings', '--no-liftoff', '--stack-size=65500', self, flag, path, String(n)], { encoding: 'utf8', maxBuffer: 1 << 26 });
   if (r.status !== 0) throw new Error(`${flag} ${path} failed: ${r.stderr}`);
   return { output: r.stdout, ms: Number(r.stderr.trim().split('\n').pop()) };
 }

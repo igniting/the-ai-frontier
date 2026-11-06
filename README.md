@@ -54,7 +54,9 @@ itself; it was ported from JavaScript pass by pass, wrote the same bytes as
 the original for every program in a 1,086-program corpus, and replaced it. Its [showcase](lumen2/README.md#showcase) has a heapsort that is pure,
 sorts a million numbers in place with 106 allocations, and is proved unable
 to fail. The S(4) proof is also checked by a DRUP checker written in Lumen 2
-whose every array access is proved in bounds, so it cannot crash. It has its own
+whose every array access is proved in bounds, so it cannot crash. On four
+[benchmark programs](lumen2/README.md#how-fast-it-is), the same algorithm
+takes 1.3 to 2.9 times as long in Lumen 2 as in C compiled natively. It has its own
 [playground](https://igniting.github.io/the-ai-frontier/lumen2/playground.html),
 and [Part five of the story](https://igniting.github.io/the-ai-frontier/#lumen2)
 explains it.

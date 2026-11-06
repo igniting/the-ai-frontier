@@ -1158,6 +1158,24 @@ fn gen_fn(gx, cg, f) {
       RBuiltinCall(name, args, ty, ats, pr) -> builtin(cg, name, args, ty, ats, pr && !gx_paranoid(gx), false),
       RExpr(_) -> internal("codegen: nested expression"),
     };
+    // An if whose branches only compare and give a value is a select: both
+    // sides run (a comparison cannot fail), and there is no branch to mispredict.
+    fn sel_ok(e, depth) {
+      match e {
+        IRet(RAtom(a)) -> match a { QStr(_) -> false, QVar(v) -> !m_has(ub, v), _ -> true },
+        ILet(v, RPrim(o, _, ty), b) -> (o == "not" || is_some(ty)) && sel_ok(b, depth),
+        IIf(_, t, el) -> depth < 3 && sel_ok(t, depth + 1) && sel_ok(el, depth + 1),
+        _ -> false,
+      }
+    }
+    fn sel_code(cg, e) {
+      match e {
+        IRet(RAtom(a)) -> atom(cg, a),
+        ILet(v, r, b) -> { let (c, cg) = rhs(cg, r); let (bc, cg) = sel_code(cg, b); (CL([c, wset(v), bc]), cg) },
+        IIf(c, t, el) -> { let (tc, cg) = sel_code(cg, t); let (ec, cg) = sel_code(cg, el); let (cc, cg) = atom(cg, c); (CL([tc, ec, cc, wop("select")]), cg) },
+        _ -> internal("codegen: select"),
+      }
+    }
     // rhs, given uq, the arrays known to be unshared here: updating one needs no test of its count.
     let rhs_uq = |cg, r, uq| match r {
       RBuiltinCall("array_set", [QVar(a), i, x], ty, ats, pr) -> builtin(cg, "array_set", [QVar(a), i, x], ty, ats, pr && !gx_paranoid(gx), m_has(uq, a)),
@@ -1222,7 +1240,10 @@ fn gen_fn(gx, cg, f) {
           },
           _ -> { let (c, cg) = rhs_uq(cg, r, uq); ([match label { None -> wop("return"), Some(l) -> wbr(l) }, c, ..out], cg, nl) },
         },
-        IIf(c, t, el) -> {
+        IIf(c, t, el) -> if !gx_noinline(gx) && sel_ok(e, 0) && (match (label, ret_es) { (None, Some(_)) -> false, _ -> true }) {
+          let (sc, cg) = sel_code(cg, e);
+          ([match label { None -> wop("return"), Some(l) -> wbr(l) }, sc, ..out], cg, nl)
+        } else {
           let (cc, cg) = atom(cg, c);
           let st = expr(([wif(), cc, ..out], cg, nl), t, label, uq);
           let st = match st { (out, cg, nl) -> expr(([wop("else"), ..out], cg, nl), el, label, uq) };

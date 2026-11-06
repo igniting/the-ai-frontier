@@ -34,12 +34,17 @@ no garbage collector.** Lumen 2 is a fresh design, not an extension of
   WebAssembly for cheaper equivalent code; every rule it found is proved
   with a checked SAT refutation, including side conditions on constants.
 - **Written in itself.** The compiler is a Lumen 2 program
-  ([`compiler/`](compiler/), about 8,200 lines), and it compiles itself to
+  ([`compiler/`](compiler/), about 8,600 lines), and it compiles itself to
   itself byte for byte. It began as a JavaScript program; the port wrote
   identical modules for every program in a 1,086-program corpus before the
   JavaScript compiler was deleted.
 - **64-bit integers that never wrap silently.** Overflow is a runtime error,
   not a wrong answer.
+- **Within 1.3 to 2.9 times of C.** On four benchmark programs, the same
+  algorithm takes 1.3 to 2.9 times as long in Lumen 2 as in C compiled
+  natively, with no mutation in the source and, where the program's types
+  say so, every array access proved in bounds
+  ([how fast it is](#how-fast-it-is)).
 - **A theorem, proved in it.** A SAT solver written in Lumen 2 proves the
   Schur number S(4) = 44. It prints the same 255,663-step refutation, byte
   for byte, as the original Lumen's imperative solver, at about the same
@@ -71,6 +76,7 @@ node proofs/check-drup.js s4/schur-4-45.cnf s4/schur-4-45.drup   # check it agai
 node superopt/search.js                          # search for rewrite rules (about 30 s)
 node superopt/verify.js                          # re-prove every rule the compiler applies
 node selfhost/bootstrap.js                       # the self-hosting fixed point (about 3 s)
+node bench/run.js                                # Lumen 2 against C (about 2 minutes)
 ```
 
 Requires Node.js 22 or later. There are no dependencies.
@@ -85,7 +91,7 @@ marked with a star.
 - **[`heapsort.lm`](examples/showcase/heapsort.lm): pure, in place, and
   proved.** Every function returns a new array; no line mutates anything.
   Yet sorting a million numbers allocates the array once and never copies
-  it: 106 allocations in the whole run, in about 0.4 s. The same heapsort in
+  it: 106 allocations in the whole run, in about 0.3 s. The same heapsort in
   the original Lumen, which mutates its array, takes 1.0 s (0.44 s with
   `-O`), and hand-written JavaScript about 0.25 s for the sort alone.
   Refinement types state each index's range and that every function
@@ -95,7 +101,7 @@ marked with a star.
   running out of memory.
 - **[`search.lm`](examples/showcase/search.lm): a binary search with no
   run-time checks.** The loop invariant is in the parameter types, and three
-  million lookups in a million-element array take about 0.3 s, with 30
+  million lookups in a million-element array take about 0.23 s, with 30
   allocations. Change `n - half - 1` to `n - half` and the checker refuses
   the program with a counterexample: `array_length(a) = 16, lo = 13, n = 3`.
 - **[`plugins.lm`](examples/showcase/plugins.lm): plugins whose safety is a
@@ -463,6 +469,96 @@ copied. The source code is the same in both cases. Likewise `array_set` on
 an array nothing else refers to writes in place, and reversing a list that
 is not used again allocates nothing.
 
+## How fast it is
+
+[`bench/`](bench/) holds four programs, each written twice, in Lumen 2 and
+in C, with the same algorithm in both. `node bench/run.js` compiles every
+version, runs it, checks that all of them print the same thing, and prints
+the table. The C is compiled natively (`cc -O2`) and also to WebAssembly
+(clang, `wasm32-wasi`), which runs in the same Node as Lumen 2. That column
+shows what WebAssembly itself costs; the gap between it and Lumen 2 is what
+Lumen 2 costs. Best of three runs, on one core of a 2.1 GHz Xeon, with Node 22
+and clang 18:
+
+| Program | n | C | C, WebAssembly | Lumen 2 | Lumen 2 / C |
+| --- | --- | --- | --- | --- | --- |
+| [fannkuch-redux](bench/fannkuch.lm): permutations, arrays updated in place | 11 | 3.10 s | 3.10 s | 4.06 s | 1.3× |
+| [binary trees](bench/binarytrees.lm): allocating and freeing trees | 18 | 1.18 s | 1.39 s | 1.74 s | 1.5× |
+| [N-queens](bench/nqueens.lm): backtracking search | 13 | 0.62 s | 0.66 s | 1.21 s | 1.9× |
+| [edit distance](bench/editdist.lm): dynamic programming over arrays | 30,000 | 0.96 s | 1.21 s | 2.78 s | 2.9× |
+
+The Lumen 2 programs are ordinary Lumen 2. Nothing in them mutates
+anything: every array update returns a new array, and every loop is a
+recursive function. In `fannkuch.lm` and `editdist.lm`, refinement types
+prove every array access in bounds, so no function there except `main` has
+`fail` in its type, and the compiled code has no bounds checks. The C
+programs check nothing. Checking and compiling takes about 1.5 s for each
+of those two, which prove things, and 40 ms for the others.
+
+Where the rest of the time goes:
+- **N-queens.** The Lumen 2 version keeps the queens placed so far in an
+  immutable list, so trying a square allocates one cell, freed when the
+  search backs up. The C version overwrites one entry of an array.
+- **Edit distance.** Each cell adds array elements, and nothing is known
+  about how large they are, so each addition checks for overflow: Lumen 2's
+  integers never wrap silently, while C's do. Three of the six checks per
+  cell could be proved unnecessary from the refinements, but the checker
+  does not yet try to prove anything about arithmetic.
+- **Binary trees.** The run allocates 68 million nodes, each taken from a
+  free list and given back as `check` walks the tree. That costs about 1.5
+  times as much as C's `malloc` and `free`; the allocator also keeps the
+  counts that the leak check reads.
+
+V8 compiles WebAssembly first with a baseline compiler and swaps in
+optimized code only when a function is called again. A C program spends its
+whole run in one call to `main`, so with default flags it would run baseline
+code throughout, and would look 1.6 times slower than it is on fannkuch-redux.
+`run.js` therefore passes `--no-liftoff`, so that both WebAssembly columns
+run optimized code.
+
+**What it took.** The same programs, compiled by the compiler as it was
+before this work:
+
+| Program | before | now |
+| --- | --- | --- |
+| fannkuch-redux | 10.3 s | 4.06 s |
+| binary trees | 1.80 s | 1.74 s |
+| N-queens | 2.77 s | 1.21 s |
+| edit distance | 9.97 s | 2.78 s |
+
+- **`array_set` inline.** The bounds check, a test that the array is not
+  shared, and a store, with a call only for a shared array.
+- **Tuples in registers.** A function returning a tuple returns its fields
+  as several WebAssembly values, and a tuple built and taken apart in one
+  function lives in locals. A version of fannkuch-redux whose helpers
+  return pairs went from 120 million allocations to 24.
+- **Loops.** A tail call of a function to itself jumps back to its start.
+- **Proved means unchecked.** An `array_get`, `array_set` or
+  `char_code_at` that the checker proved safe has no run-time check.
+- **Arrays known not to be shared.** The result of `array_set`,
+  `array_push`, `array_make` or `array_empty` is not shared, and stays so
+  while it is only read. A fixpoint over the program's calls carries this
+  into parameters, when every call passes such an array, and into results,
+  when every return gives one. An update to such an array has no test at
+  all.
+- **Reading a list costs nothing.** A function that walks a list it only
+  reads now borrows it all the way down, with no reference counting. Before,
+  passing the tail to the recursive call made the function own its argument.
+- **`select` instead of branches.** An `if` whose branches only compare
+  values becomes a WebAssembly `select`, so the CPU has no branch to
+  mispredict. For edit distance's `min3` on random data, that halved the
+  time.
+- **Common subexpressions.** An arithmetic operation already done on the
+  same path, on the same operands, is not done again.
+
+Each change was checked like every other: the 52 tests, 500 newly
+generated programs run four ways on every CI run, and the S(4) proof, which
+must stay identical to the original Lumen solver's, byte for byte. Paranoid
+mode keeps every check that the proofs removed, so if a proof were unsound,
+the four runs would disagree.
+
+Not measured here: more than one core. Lumen 2 runs on one thread.
+
 ## A superoptimizer
 
 `superopt/` searches the WebAssembly that Lumen 2 emits for straight-line
@@ -517,7 +613,7 @@ engine's own optimizing compiler already performs rewrites like these.
 ## The compiler, in Lumen 2
 
 The compiler is written in Lumen 2: [`compiler/`](compiler/) holds it, in
-the order of its passes, about 8,200 lines. It runs as WebAssembly.
+the order of its passes, about 8,600 lines. It runs as WebAssembly.
 [`compiler/lumen2c.wasm`](compiler/lumen2c.wasm) is the compiler compiled
 by itself, and [`src/lumen2c.js`](src/lumen2c.js) hands it a program and
 reads back its report and module. A change to the compiler is built by the
@@ -525,16 +621,17 @@ previous build:
 
 ```
 $ node compiler/bootstrap.js
-stage 1: 1517876 bytes (f43367a03042ef50) in 19678 ms
-stage 2: 1517876 bytes (f43367a03042ef50) in 19275 ms
+stage 1: 1650451 bytes (608f8a04ac5ad38b) in 27282 ms
 fixed point: compiler/lumen2c.wasm compiles its source to itself
 ```
 
-Stage 1 is the committed build compiling the source; stage 2 is stage 1
-compiling it again. They are the same bytes, and so is the committed build:
-the compiler, compiled by itself, compiles itself to itself.
-`node compiler/bootstrap.js --write` replaces the build after a change, and
-CI and the tests check the fixed point on every push.
+Stage 1 is the committed build compiling the source, and it gives the
+committed build's own bytes: the compiler, compiled by itself, compiles
+itself to itself. After a change, `node compiler/bootstrap.js --write`
+compiles again with each stage's result until two stages agree (a change to
+code generation takes three stages: the old build compiles the new source,
+that compiler compiles it again, and the third stage confirms it) and
+replaces the build. CI and the tests check the fixed point on every push.
 
 It was ported pass by pass from a JavaScript compiler, and every pass was
 compared with the original before the next one was written: the syntax
@@ -780,6 +877,7 @@ src/        the host that runs the compiler (lumen2c.js) and compiled
 proofs/     a SAT solver, a Schur encoder and a DRUP checker proved free of
             run-time errors, all written in Lumen 2; S(4) = 44
 superopt/   the superoptimizer: corpus, synthesis, proofs, RULES.md
+bench/      four benchmark programs in Lumen 2 and in C, and run.js
 selfhost/   the first self-hosted compiler, and its bootstrap
 bin/        the lumen2 command
 test/       node:test suites and the differential fuzzer with planted bugs

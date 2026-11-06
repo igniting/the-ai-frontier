@@ -291,8 +291,55 @@ fn sm_dce(e) {
     _ -> (e, MEmpty),
   }
 }
+// Common subexpressions: an arithmetic operation or comparison already done
+// on the path, on the same operands, is not done again: later uses of its
+// result use the first one's. (Operands are atoms and variables are bound
+// once; a checked operation that succeeded once succeeds again, with the same
+// result.) What a branch or a nested block computes is not available after it.
+fn cse_atom(sub, a) { match a { QVar(x) -> match m_get(sub, x) { Some(y) -> QVar(y), None -> a }, _ -> a } }
+fn cse_key(op, args, t) {
+  let ak = map(args, |a| match a { QVar(v) -> "v" ++ v, QInt(n) -> "i" ++ int_to_string(n), QBool(b) -> if b { "t" } else { "f" }, QUnit -> "u", QStr(_) -> "s" });
+  op ++ (match t { Some(_) -> "?", None -> "" }) ++ "(" ++ join(ak, ",") ++ ")"
+}
+fn cse_hoist(r) {
+  match r {
+    RPrim(_, _, _) -> true,
+    RBuiltinCall(n, _, _, _, _) -> n == "array_get" || n == "array_length" || n == "char_code_at" || n == "string_length",
+    _ -> false,
+  }
+}
+fn cse(e, av, sub) {
+  match e {
+    // The arithmetic and reads a nested block starts with run whenever the
+    // block does, so they can run just before it, where what follows can reuse
+    // them. (Only those: the passes recurse once per let in a chain, so
+    // flattening every block would make some chains too long.)
+    ILet(v, RExpr(ILet(w, r, x)), b) -> if cse_hoist(r) { cse(ILet(w, r, ILet(v, RExpr(x), b)), av, sub) }
+      else { ILet(v, RExpr(cse(ILet(w, r, x), av, sub)), cse(b, av, sub)) },
+    IRet(RExpr(ILet(w, r, x))) -> if cse_hoist(r) { cse(ILet(w, r, IRet(RExpr(x))), av, sub) } else { IRet(RExpr(cse(ILet(w, r, x), av, sub))) },
+    ILet(v, RExpr(x), b) -> ILet(v, RExpr(cse(x, av, sub)), cse(b, av, sub)),
+    ILet(v, r0, b) -> {
+      let r = subst_rhs(r0, |a| cse_atom(sub, a), |x| x);
+      match r {
+        RPrim(op, args, t) -> if any(args, |a| match a { QStr(_) -> true, _ -> false }) { ILet(v, r, cse(b, av, sub)) } else {
+          let key = cse_key(op, args, t);
+          match m_get(av, key) {
+            Some(w) -> cse(b, av, m_set(sub, v, w)),
+            None -> ILet(v, r, cse(b, m_set(av, key, v), sub)),
+          }
+        },
+        _ -> ILet(v, r, cse(b, av, sub)),
+      }
+    },
+    IRet(RExpr(x)) -> IRet(RExpr(cse(x, av, sub))),
+    IRet(r) -> IRet(subst_rhs(r, |a| cse_atom(sub, a), |x| x)),
+    IIf(c, t, el) -> IIf(cse_atom(sub, c), cse(t, av, sub), cse(el, av, sub)),
+    _ -> e,
+  }
+}
+
 fn simplify(f) {
   let (b, _) = sm_walk(SS(MEmpty, MEmpty), irf_body(f));
-  let (b2, _) = sm_dce(b);
+  let (b2, _) = sm_dce(cse(b, MEmpty, MEmpty));
   irf_with_body(f, b2)
 }
