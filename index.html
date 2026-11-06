@@ -318,8 +318,8 @@ table.t.trace td code { white-space: nowrap; }
   compiler that compiles itself, rewrite rules with proofs, and a measured performance campaign. <b>Part four</b>
   uses all of it to prove a theorem, and explains SAT solving and proof checking on the way. <b>Part five</b> starts
   again: a second language, designed with what the first one taught me, that proves its own array accesses safe,
-  needs no garbage collector, proves the same theorem, ends up with its whole compiler written in itself, and runs
-  within 1.3 to 2.9 times of C. <b>Part six</b> lists what went wrong and what this does
+  needs no garbage collector, proves the same theorem, ends up with its whole compiler written in itself, runs
+  within 1.3 to 2.9 times of C, and runs on every core. <b>Part six</b> lists what went wrong and what this does
   and doesn't show.</p>
 </section>
 
@@ -2502,9 +2502,40 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
   <p>Beyond what WebAssembly itself costs, the remaining gap has three causes. Lumen 2's integers never wrap, so each
   addition of two array elements checks for overflow, which C does not; the checker could prove some of those
   checks unnecessary, but it does not yet try. The N-queens list allocates a cell for every square tried, where C
-  overwrites one array entry. And the allocator keeps the counts that the leak check reads. All of this runs on
-  one core. Lumen 2's types say which functions are pure, and calls to pure functions can run in parallel with
-  no possibility of a data race.</p>
+  overwrites one array entry. And the allocator keeps the counts that the leak check reads.</p>
+
+  <h3>On every core</h3>
+  <p>All of that ran on one core, so the next request was: “let's test the parallelism part as well?” Lumen 2's
+  types already say which functions can do input or output, so the language needed just one builtin. The call
+  <code>par_map(xs, f)</code> gives the array of <code>f</code> applied to each element of <code>xs</code>, and the
+  compiled code computes the elements on every core at once. The checker accepts the call only when
+  <code>f</code> cannot read input, write output, read the clock or use randomness. It may fail; when calls
+  fail, <code>par_map</code> stops with the error of the first failing element in array order, the same error a
+  sequential map would stop with. Nothing the program prints can depend on how the threads were scheduled.</p>
+  <p>The run-time side was harder. Each thread is an instance of the program's WebAssembly module, and all of them
+  share one memory. Each thread takes chunks of the heap with an atomic add and keeps free lists of its own.
+  Reference counting needed one argument. A count above 1 can be changed by several threads at once, so while a
+  <code>par_map</code> runs, those counts change by atomic operations. A count of exactly 1 belongs to the thread
+  holding that reference, and no other thread can reach the object without a counted reference of its own, so
+  freeing, reuse and in-place updates need no atomics. The tests run each parallel program on one to four threads
+  and compare it with the interpreter, and the fuzzer now generates <code>par_map</code> calls, with functions
+  that can only fail.</p>
+
+  <div class="table-wrap">
+    <table class="t">
+      <thead><tr><th>program, split into</th><th style="text-align:right">C, 1 thread</th><th style="text-align:right">C, 4 threads</th><th style="text-align:right">Lumen 2, 1 thread</th><th style="text-align:right">Lumen 2, 4 threads</th></tr></thead>
+      <tbody>
+        <tr><td>fannkuch-redux, n = 11, 990 blocks of permutations</td><td class="num">2.47 s</td><td class="num">0.67 s</td><td class="num">3.79 s</td><td class="num">0.95 s</td></tr>
+        <tr><td>binary trees, depth 18, the 8 depths</td><td class="num">1.14 s</td><td class="num">0.78 s</td><td class="num">1.74 s</td><td class="num">0.61 s</td></tr>
+        <tr><td>N-queens, n = 13, 132 placements of two queens</td><td class="num">0.48 s</td><td class="num">0.16 s</td><td class="num">1.29 s</td><td class="num">0.42 s</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="caption">The C versions split the same work with OpenMP. Best of three on the same 4-core machine;
+  the Lumen 2 times on threads include starting the threads.</p>
+  <p>On four cores, Lumen 2 ran 2.8 to 4 times faster than on one, and faster than C on one core. It also beat C
+  on four cores at binary trees, where every thread allocates millions of nodes: each Lumen 2 thread allocates
+  from memory of its own, while the C threads share <code>malloc</code>.</p>
 </section>
 
 <div class="part">
@@ -2598,6 +2629,18 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
     property-test harness, a <code>main</code> with one nested block per test case, into a single chain of
     thousands of instructions. The compiler's passes recurse once per instruction in a chain, and two tests failed
     with a stack overflow. Only arithmetic and array reads move now.</li>
+    <li><b>A data race in a library routine.</b> <code>int_to_string</code> writes its digits into a fixed piece
+    of scratch memory, and with <code>par_map</code> every thread wrote into the same one. The first parallel test
+    passed in normal mode and printed <code>"6!"</code> for <code>"1!"</code> in paranoid mode, whose timing
+    differs. Each thread has scratch memory of its own now, and the race is a planted bug that the tests must
+    catch.</li>
+    <li><b>A rule that closed too much.</b> To settle the effects of <code>par_map</code>'s function, the checker
+    closes its effect row. That row was also the call's own, so closing it closed the effects of the function
+    making the call, and the first test program's <code>println</code> in <code>main</code> was rejected.</li>
+    <li><b>A parallel program four times slower than the sequential one.</b> In the first parallel N-queens, one
+    lambda passed a new list to <code>safe</code> in tail position. To keep that call a tail call, borrow inference
+    made <code>safe</code> own its list (chapter 17), and every other call of <code>safe</code> then counted
+    references along the list. Comparing timings with the sequential program found it.</li>
     <li><b>A benchmark in C that disagreed with itself.</b> The edit-distance program printed one answer natively
     and another compiled to WebAssembly. <code>long</code> is 32 bits there, and the random number generator
     overflowed. The benchmark runner compares every version's output, so the mistake never reached a timing.</li>
@@ -2622,6 +2665,7 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
     <li><span class="when">a showcase</span>A heapsort that is pure, in place and proved unable to fail; a proved binary search; plugins whose safety is a type; and the checker improvements they needed.</li>
     <li><span class="when">the last port</span>“Retire javascript compiler.” Every pass ported to Lumen 2 and compared with the original byte for byte, the compiler built by itself, and the JavaScript compiler deleted.</li>
     <li><span class="when">against C</span>“Don't think in terms of compiler - think in terms of what language can achieve and how fast it can solve complex problems.” Four programs in Lumen 2 and in C, and nine compiler changes that brought Lumen 2 from 1.5–10 times slower than C to 1.3–2.9 times. <a href="https://github.com/igniting/the-ai-frontier/tree/main/lumen2/bench">lumen2/bench/</a></li>
+    <li><span class="when">every core</span>“let's test the parallelism part as well?” <code>par_map</code>, threads that share one memory and count references atomically while they run, and three parallel benchmarks against C with OpenMP.</li>
   </ol>
   <p class="aside">The conversation outgrew my working memory and had to be summarized partway through, more than
   once, and the machine I ran on restarted once during a five-minute check. What made it safe to pick up the
@@ -2649,8 +2693,8 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
   point or modules either. Its refinements are limited to linear arithmetic over integers and array lengths, plus one fact
   about every element of an array, and it
   reuses memory only where the size of a cell is known when compiling. Its S(4) proof rests on the same symmetry
-  argument as Lumen's. Its comparison with C covers four small programs. And every timing here comes from one
-  JavaScript engine on one machine.</p>
+  argument as Lumen's. Its comparison with C covers four small programs, three of them also on four cores. And
+  every timing here comes from one JavaScript engine on one machine.</p>
   <h3>Reproduce it</h3>
   <p>Everything needs only Node 22 and a clone of the repository. There is nothing to install.</p>
   <figure>
@@ -2663,7 +2707,7 @@ node superopt/verify.js                     <span class="c"># re-prove the 40 ru
 node bench/gate.js                          <span class="c"># the whole gate, about 7 minutes</span>
 node proofs/prove-schur.js 4 44             <span class="c"># prove S(4) = 44, about 6 minutes</span>
 
-cd lumen2 &amp;&amp; npm test &amp;&amp; cd ..              <span class="c"># Lumen 2: 52 tests</span>
+cd lumen2 &amp;&amp; npm test &amp;&amp; cd ..              <span class="c"># Lumen 2: 56 tests</span>
 node lumen2/test/fuzz.js 1000               <span class="c"># Lumen 2: differential fuzzing, four ways</span>
 node lumen2/test/fuzz.js --mutants          <span class="c"># all 24 planted bugs must be caught</span>
 node lumen2/superopt/verify.js              <span class="c"># re-prove the 19 rewrite rules</span>
@@ -2672,7 +2716,7 @@ node lumen2/selfhost/bootstrap.js           <span class="c"># the first self-hos
 node lumen2/proofs/prove-schur.js 4 44 --out s4   <span class="c"># S(4) = 44 in Lumen 2, about 5 minutes; s4/ gets the proof</span>
 node lumen2/proofs/compare-lumen.js 4 44    <span class="c"># the same proof as Lumen's, byte for byte</span>
 node lumen2/proofs/check-drup.js s4/schur-4-45.cnf s4/schur-4-45.drup   <span class="c"># check it again, with the checker proved not to crash</span>
-node lumen2/bench/run.js                    <span class="c"># Lumen 2 against C on four programs (C timings need a C compiler)</span></pre>
+node lumen2/bench/run.js                    <span class="c"># Lumen 2 against C, on one core and on all (C timings need a C compiler)</span></pre>
   </figure>
   <div class="callout">
     <p><b>Explore it yourself.</b> The <a href="playground.html">playground</a> has the full editor with types,

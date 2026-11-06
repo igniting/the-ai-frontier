@@ -56,7 +56,9 @@ sorts a million numbers in place with 106 allocations, and is proved unable
 to fail. The S(4) proof is also checked by a DRUP checker written in Lumen 2
 whose every array access is proved in bounds, so it cannot crash. On four
 [benchmark programs](lumen2/README.md#how-fast-it-is), the same algorithm
-takes 1.3 to 2.9 times as long in Lumen 2 as in C compiled natively. It has its own
+takes 1.3 to 2.9 times as long in Lumen 2 as in C compiled natively, and
+`par_map`, whose function the types keep free of input and output, runs on
+every core: on four, faster than C on one. It has its own
 [playground](https://igniting.github.io/the-ai-frontier/lumen2/playground.html),
 and [Part five of the story](https://igniting.github.io/the-ai-frontier/#lumen2)
 explains it.

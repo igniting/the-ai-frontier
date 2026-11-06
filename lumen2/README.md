@@ -45,6 +45,12 @@ no garbage collector.** Lumen 2 is a fresh design, not an extension of
   natively, with no mutation in the source and, where the program's types
   say so, every array access proved in bounds
   ([how fast it is](#how-fast-it-is)).
+- **Every core, safely.** `par_map` runs a function on every core. The
+  types guarantee that the function does no input or output and uses
+  neither the clock nor randomness, so the parallel result is the
+  sequential one. On four cores, three benchmarks run 2.8 to 4 times faster
+  than on one, and faster than C on one core
+  ([on every core](#on-every-core)).
 - **A theorem, proved in it.** A SAT solver written in Lumen 2 proves the
   Schur number S(4) = 44. It prints the same 255,663-step refutation, byte
   for byte, as the original Lumen's imperative solver, at about the same
@@ -62,7 +68,7 @@ counting, property tests and certificates, all in the browser) ·
 
 ```sh
 cd lumen2
-npm test                                         # 52 tests, about 3.5 minutes
+npm test                                         # 56 tests, about 3.5 minutes
 node bin/lumen2.js check examples/refine.lm      # inferred types, effects, refinements
 node bin/lumen2.js run examples/tour.lm          # compile to wasm and run
 node bin/lumen2.js test examples/properties.lm   # check the properties
@@ -76,7 +82,8 @@ node proofs/check-drup.js s4/schur-4-45.cnf s4/schur-4-45.drup   # check it agai
 node superopt/search.js                          # search for rewrite rules (about 30 s)
 node superopt/verify.js                          # re-prove every rule the compiler applies
 node selfhost/bootstrap.js                       # the self-hosting fixed point (about 3 s)
-node bench/run.js                                # Lumen 2 against C (about 2 minutes)
+node bench/run.js                                # Lumen 2 against C, on one core and on all (about 3 minutes)
+LUMEN2_THREADS=2 node bin/lumen2.js run bench/nqueens-par.lm --allow input --input FILE   # par_map on 2 threads
 ```
 
 Requires Node.js 22 or later. There are no dependencies.
@@ -551,13 +558,54 @@ before this work:
 - **Common subexpressions.** An arithmetic operation already done on the
   same path, on the same operands, is not done again.
 
-Each change was checked like every other: the 52 tests, 500 newly
+Each change was checked like every other: the test suite, 500 newly
 generated programs run four ways on every CI run, and the S(4) proof, which
 must stay identical to the original Lumen solver's, byte for byte. Paranoid
 mode keeps every check that the proofs removed, so if a proof were unsound,
 the four runs would disagree.
 
-Not measured here: more than one core. Lumen 2 runs on one thread.
+### On every core
+
+`par_map(xs, f)` is the array of `f` applied to each element of `xs`, and
+the compiled code computes the elements on every core at once. The checker
+accepts it only when `f` cannot read input, write output, read the clock or
+use randomness (it may fail), so running the calls at the same time, in any
+order, cannot change what the program prints:
+
+```
+error: the function given to `par_map` can write output, but `par_map` runs it in parallel
+```
+
+If calls fail, `par_map` stops with the error of the first failing element,
+in array order, as a sequential map would. Three of the benchmarks have
+parallel versions that split the same work into tasks
+([`fannkuch-par.lm`](bench/fannkuch-par.lm),
+[`binarytrees-par.lm`](bench/binarytrees-par.lm),
+[`nqueens-par.lm`](bench/nqueens-par.lm)), and so do the C programs, with
+OpenMP. On the same 4-core machine, best of three:
+
+| Program (split into) | n | C, 1 thread | C, 4 threads | Lumen 2, 1 thread | Lumen 2, 4 threads | Lumen 2's speedup |
+| --- | --- | --- | --- | --- | --- | --- |
+| fannkuch-redux (990 blocks of permutations) | 11 | 2.47 s | 0.67 s | 3.79 s | 0.95 s | 4.0× |
+| binary trees (the 8 depths) | 18 | 1.14 s | 0.78 s | 1.74 s | 0.61 s | 2.8× |
+| N-queens (the 132 placements of two queens) | 13 | 0.48 s | 0.16 s | 1.29 s | 0.42 s | 3.1× |
+
+On four cores, Lumen 2 is faster than C on one in all three. It is faster
+than C on four in binary trees, where every thread allocates millions of
+nodes: each Lumen 2 thread allocates from memory of its own, while the C
+threads share `malloc`. The Lumen 2 times on threads include starting them.
+
+How it runs, in Node: every thread is an instance of the program's module,
+and all share one memory. Each thread takes chunks of the heap with an
+atomic add and keeps free lists of its own. While a `par_map` runs,
+reference counts above 1 change by atomic operations, because other threads
+may hold references to the same object. A count of 1 is still exclusive, so
+freeing, reuse and in-place updates stay as they were. The tests run every
+`par_map` program on one to four threads and compare it with the
+interpreter, and the fuzzer generates them too. Two planted bugs in the
+threaded runtime must be caught: counts changed without atomics, and
+scratch memory shared between threads (a real bug the paranoid mode found
+first). In a browser, `par_map` runs as a loop.
 
 ## A superoptimizer
 
