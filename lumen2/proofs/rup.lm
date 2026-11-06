@@ -43,11 +43,13 @@ fn is_space(c) { c == 32 || c == 10 || c == 13 || c == 9 }
 fn line_end(src: String, i: {i: Int | 0 <= i}) -> {j: Int | 0 <= j} {
   if i >= string_length(src) { i } else if char_code_at(src, i) == 10 { i + 1 } else { line_end(src, i + 1) }
 }
-// The next position that is not a space, skipping comment lines.
+// The next position that is not a space, skipping comment lines, and
+// deletions ("d lits 0"): checking without deleting is slower, but a lemma
+// that follows with a clause deleted also follows with it kept.
 fn skip(src: String, i: {i: Int | 0 <= i}) -> {j: Int | 0 <= j} {
   if i >= string_length(src) { i }
   else if is_space(char_code_at(src, i)) { skip(src, i + 1) }
-  else if char_code_at(src, i) == 99 { skip(src, line_end(src, i)) }
+  else if char_code_at(src, i) == 99 || char_code_at(src, i) == 100 { skip(src, line_end(src, i)) }
   else { i }
 }
 // The next position that is not a space (comments not skipped: inside the header).

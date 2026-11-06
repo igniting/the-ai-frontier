@@ -54,7 +54,9 @@ no garbage collector.** Lumen 2 is a fresh design, not an extension of
 - **A theorem, proved in it.** A SAT solver written in Lumen 2 proves the
   Schur number S(4) = 44. It prints the same 255,663-step refutation, byte
   for byte, as the original Lumen's imperative solver, at about the same
-  speed.
+  speed. Split into 256 cubes and run on every core, the whole proof,
+  checked, takes 22 s instead of 8 minutes
+  ([on every core](#a-theorem-s4--44)).
 - **A proof checker that cannot crash.** [`proofs/rup.lm`](proofs/rup.lm),
   a DRUP checker written in Lumen 2, has every array access proved in
   bounds, so none of its functions has `fail` in its type. It checks the
@@ -68,7 +70,7 @@ counting, property tests and certificates, all in the browser) ·
 
 ```sh
 cd lumen2
-npm test                                         # 56 tests, about 3.5 minutes
+npm test                                         # 59 tests, about 3.5 minutes
 node bin/lumen2.js check examples/refine.lm      # inferred types, effects, refinements
 node bin/lumen2.js run examples/tour.lm          # compile to wasm and run
 node bin/lumen2.js test examples/properties.lm   # check the properties
@@ -77,6 +79,7 @@ node bin/lumen2.js ir examples/tour.lm insert    # the IR, with reference counti
 node test/fuzz.js 1000                           # differential fuzzing
 node test/fuzz.js --mutants                      # are planted bugs caught?
 node proofs/prove-schur.js 4 44 --out s4         # prove S(4) = 44 (about 5 minutes)
+node proofs/prove-schur.js 4 44 --split 3,4,5,6  # the same theorem on every core (about 25 s)
 node proofs/compare-lumen.js 4 44                # the same proof as the Lumen solver's?
 node proofs/check-drup.js s4/schur-4-45.cnf s4/schur-4-45.drup   # check it again, with a checker proved not to crash
 node superopt/search.js                          # search for rewrite rules (about 30 s)
@@ -439,6 +442,40 @@ whatever the values of the atoms it does not define. So an atom defined as
 equal to a term now has a range wide enough for every value the term can
 take, as does the quotient in a division by a constant. This too is a
 planted bug, with a test.
+
+**On every core.** With [`par_map`](#on-every-core), the refutation runs on
+every core, by cube and conquer. [`proofs/cubes.lm`](proofs/cubes.lm) splits
+1..45 by the groups of 3, 4, 5 and 6 (1 and 2 are placed already), which
+gives 256 cubes, and `par_map` refutes each with the same solver, given the
+cube as unit clauses. Then it prints one refutation of the whole formula:
+each cube's learnt clauses, each with the negation of the cube added, which
+makes the cube's last clause its negation; then, going up the split, the
+negation of each partial cube, which follows by unit propagation from its
+children and the clause saying that the next number is in some group; at
+the top, the empty clause. Once a cube is done, its clauses are deleted
+(DRUP's `d` lines), so the checker's database stays as small as each cube's
+solver's was. `src/rup.js` checks this refutation against the unchanged
+formula, as it does the sequential one:
+
+```
+$ node proofs/prove-schur.js 4 44 --split 3,4,5,6
+encodings: 1982 and 2071 clauses from proofs/schur.lm; identical to the reference encoder
+1..44: split found in 2.6 s (27684 conflicts); checked: every group is sum-free
+1..45: refuted in 4.5 s (292561 conflicts, 256 cubes on 4 threads, 585587 proof lines)
+refutation CHECKED by src/rup.js in 10.2 s
+PROVED: S(4) = 44  (22.0 s in total)
+```
+
+The sequential run took 481.8 s on the same 4-core machine: the
+refutation 153.5 s and its check 315.9 s. Most of the gain comes from the
+split, not from the threads. The solver never forgets a learnt clause, so
+each unit propagation slows down as its database grows; 256 small searches
+each keep a small one. On one thread the same 256 cubes take 11.6 s, and
+the solving alone 7.4 s, against 2.0 s on four threads. The checker gains
+the same way, through the deletions. `proofs/rup.lm`, which skips deletion
+lines (that is slower, but a lemma that follows with a clause deleted also
+follows with it kept), verified the same refutation too, in 1,139 s. CI
+runs the parallel proof on every push, along with the sequential one.
 
 ## Memory without a garbage collector
 
@@ -923,7 +960,8 @@ src/        the host that runs the compiler (lumen2c.js) and compiled
             programs (runtime.js); the reference interpreter and its front
             end; property testing; an independent DRUP proof checker
 proofs/     a SAT solver, a Schur encoder and a DRUP checker proved free of
-            run-time errors, all written in Lumen 2; S(4) = 44
+            run-time errors, all written in Lumen 2; cube and conquer on
+            every core (cubes.lm); S(4) = 44
 superopt/   the superoptimizer: corpus, synthesis, proofs, RULES.md
 bench/      four benchmark programs in Lumen 2 and in C, and run.js
 selfhost/   the first self-hosted compiler, and its bootstrap

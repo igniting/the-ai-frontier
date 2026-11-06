@@ -2536,6 +2536,23 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
   <p>On four cores, Lumen 2 ran 2.8 to 4 times faster than on one, and faster than C on one core. It also beat C
   on four cores at binary trees, where every thread allocates millions of nodes: each Lumen 2 thread allocates
   from memory of its own, while the C threads share <code>malloc</code>.</p>
+
+  <h3>The theorem again, on every core</h3>
+  <p>The hardest problem in this project is still S(4) = 44 (chapter 19). Its slowest step is the refutation of
+  1..45, which took 153 seconds on one core, and checking that refutation took 316 more. Cube and conquer splits
+  the formula into parts that can be refuted separately. Fixing the groups of 3, 4, 5 and 6 (1 and 2 are placed
+  already) gives 256 cubes, and <code>par_map</code> refutes them on every core, each with the unchanged solver.
+  The solver cannot print inside <code>par_map</code>, so each cube returns its learnt clauses as data, and the
+  program prints one refutation of the whole formula. That refutation contains every cube's clauses, each with
+  the cube's negation added. Then, going up the split, it contains the negation of each partial cube, down to the
+  empty clause. The same independent checker accepts it. The refutation took 4.5 seconds and the check 10, and the
+  whole proof 22 seconds instead of 8 minutes. On one thread, the same 256 cubes take 11.6 seconds.</p>
+  <p>That last number matters, because most of the gain did not come from the cores. The solver never forgets a
+  clause it has learnt, and unit propagation over 255,000 of them is slow. Each of 256 small searches keeps a
+  small database instead. The checker needed the same remedy: without deletions, a refutation from 64 cubes took 486
+  seconds to check. After each cube, its clauses are deleted, a standard part of the DRUP format that the
+  checker now supports. The four cores then added a factor of 3.7 to the solving, and the proof runs in CI on
+  every push, next to the sequential one.</p>
 </section>
 
 <div class="part">
@@ -2672,6 +2689,7 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
     <li><span class="when">the last port</span>“Retire javascript compiler.” Every pass ported to Lumen 2 and compared with the original byte for byte, the compiler built by itself, and the JavaScript compiler deleted.</li>
     <li><span class="when">against C</span>“Don't think in terms of compiler - think in terms of what language can achieve and how fast it can solve complex problems.” Four programs in Lumen 2 and in C, and nine compiler changes that brought Lumen 2 from 1.5–10 times slower than C to 1.3–2.9 times. <a href="https://github.com/igniting/the-ai-frontier/tree/main/lumen2/bench">lumen2/bench/</a></li>
     <li><span class="when">every core</span>“let's test the parallelism part as well?” <code>par_map</code>, threads that share one memory and count references atomically while they run, and three parallel benchmarks against C with OpenMP.</li>
+    <li><span class="when">the theorem in parallel</span>“Yes go ahead with proof.” S(4) = 44 by cube and conquer: 256 cubes refuted with <code>par_map</code>, one checked refutation, 22 seconds instead of 8 minutes.</li>
   </ol>
   <p class="aside">The conversation outgrew my working memory and had to be summarized partway through, more than
   once, and the machine I ran on restarted once during a five-minute check. What made it safe to pick up the
@@ -2713,7 +2731,7 @@ node superopt/verify.js                     <span class="c"># re-prove the 40 ru
 node bench/gate.js                          <span class="c"># the whole gate, about 7 minutes</span>
 node proofs/prove-schur.js 4 44             <span class="c"># prove S(4) = 44, about 6 minutes</span>
 
-cd lumen2 &amp;&amp; npm test &amp;&amp; cd ..              <span class="c"># Lumen 2: 56 tests</span>
+cd lumen2 &amp;&amp; npm test &amp;&amp; cd ..              <span class="c"># Lumen 2: 59 tests</span>
 node lumen2/test/fuzz.js 1000               <span class="c"># Lumen 2: differential fuzzing, four ways</span>
 node lumen2/test/fuzz.js --mutants          <span class="c"># all 24 planted bugs must be caught</span>
 node lumen2/superopt/verify.js              <span class="c"># re-prove the 19 rewrite rules</span>

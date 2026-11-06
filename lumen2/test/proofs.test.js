@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 import { interpretSource, runSource, compileSource, makeHost } from '../src/api.js';
 import { runWasm } from '../src/runtime.js';
 import { checkRefutation } from '../src/rup.js';
-import { proveSchur, parseSolverOutput, referenceEncoding } from '../proofs/prove-schur.js';
+import { proveSchur, parseSolverOutput, referenceEncoding, cubeSource, splitLine } from '../proofs/prove-schur.js';
 
 const source = (f) => readFileSync(new URL(`../proofs/${f}`, import.meta.url), 'utf8');
 const dimacs = ({ numVars, clauses }) => `p cnf ${numVars} ${clauses.length}\n${clauses.map((c) => `${c.join(' ')} 0`).join('\n')}\n`;
@@ -84,4 +84,39 @@ test('the proved checker: no function can fail, and it agrees with src/rup.js', 
   assert.equal(check('p cnf 2 2\n1 2 0\n-1 0\n-2'), 's NOT VERIFIED: the last clause has no terminating 0');
   assert.equal(check('p cnf 1 2\n1 0\n-1 0\n'), 's VERIFIED', 'the formula refutes itself by unit propagation');
   assert.equal(check('p cnf 2 1\n1 2 0\n0\n'), 's NOT VERIFIED: lemma 1 does not follow by unit propagation');
+});
+
+test('src/rup.js: a deleted clause is no longer used, and deleting an unknown one does nothing', () => {
+  // 2 follows from (1 or 2) and (-1 or 2); then (-2 or 3) and (-2 or -3) refute.
+  const f = [[1, 2], [-1, 2], [-2, 3], [-2, -3]];
+  assert.equal(checkRefutation(3, f, [[2], []]).ok, true);
+  assert.equal(checkRefutation(3, f, [{ d: [2, 1] }, [2], []]).ok, false, 'without (1 or 2), 2 does not follow');
+  assert.equal(checkRefutation(3, f, [{ d: [3, 1] }, [2], []]).ok, true, 'an unknown clause');
+  assert.equal(checkRefutation(3, f, [[2], { d: [1, 2] }, []]).ok, true, 'deleted after it was used');
+});
+
+// proofs/cubes.lm: the cubes are refuted on threads, with par_map, and one
+// refutation of the whole formula is printed, which both checkers accept.
+test('cube and conquer: one checked refutation of the whole formula, the same on any number of threads', () => {
+  const cubes = compileSource(cubeSource());
+  assert.ok(cubes.ok, cubes.errors?.[0]?.message);
+  const rup = compileSource(source('rup.lm')).bytes;
+  for (const [k, n, split] of [[3, 14, []], [3, 14, [5]], [3, 14, [3, 5, 7]], [3, 15, [4, 9]]]) {
+    const f = referenceEncoding(k, n);
+    const input = (split.length ? splitLine(k, split) : '') + dimacs(f);
+    const runs = [1, 4].map((threads) => runWasm(cubes.bytes, { input, threads }));
+    for (const r of runs) { assert.equal(r.error, null); assert.equal(r.live, 0); }
+    assert.equal(runs[1].output, runs[0].output, 'the same proof on 1 and 4 threads');
+    const p = parseSolverOutput(runs[0].output);
+    assert.equal(p.sat, false);
+    assert.equal(checkRefutation(f.numVars, f.clauses, p.proof).ok, true, `S(${k}), 1..${n}, split on ${split}`);
+    const text = runs[0].output.split('\n').filter((l) => /^(-?\d|d )/.test(l)).join('\n');
+    assert.equal(runWasm(rup, { input: `${dimacs(f)}${text}\n`, host: makeHost() }).output.trim(), 's VERIFIED');
+  }
+  // A formula that can be satisfied: a model of it, from one of the cubes.
+  const f = referenceEncoding(4, 25);
+  const r = parseSolverOutput(runWasm(cubes.bytes, { input: splitLine(4, [3, 4]) + dimacs(f) }).output);
+  assert.equal(r.sat, true);
+  const truth = new Set(r.model);
+  assert.ok(f.clauses.every((c) => c.some((l) => truth.has(l))), 'the model satisfies every clause');
 });

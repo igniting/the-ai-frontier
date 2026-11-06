@@ -10,6 +10,11 @@
 //
 // What unit propagation derives from the clauses alone (the top level) is
 // kept between lemmas, so each check only propagates its own assumptions.
+//
+// A proof may also delete clauses ({ d: [literals] }, from a DRUP line
+// "d literals 0"): later lemmas are checked without them, which is faster
+// and only ever harder to pass. What the top level derived while a deleted
+// clause was there stays: it follows from the formula either way.
 
 export function checkRefutation(nvars, clauses, proof, { mutant = null } = {}) {
   if (mutant === 'rup-accept-all') return { ok: true, lemmas: proof.length };
@@ -18,7 +23,8 @@ export function checkRefutation(nvars, clauses, proof, { mutant = null } = {}) {
   const value = (l) => (l > 0 ? val[l] : -val[-l]);
   const trail = new Int32Array(nvars + 1);
   const watch = Array.from({ length: 2 * nvars + 2 }, () => []); // clauses watching a literal, visited when it becomes false
-  const db = [];
+  const db = []; // clauses (null once deleted)
+  const byKey = new Map(); // a clause's sorted literals -> indices in db of its copies
   let top = 0; // trail length
   let base = 0; // the top-level part of the trail, kept between checks
   let head = 0; // the next trail position to propagate
@@ -37,6 +43,7 @@ export function checkRefutation(nvars, clauses, proof, { mutant = null } = {}) {
       const ws = watch[slot(f)];
       for (let i = 0; i < ws.length;) {
         const c = db[ws[i]];
+        if (c === null) { ws[i] = ws[ws.length - 1]; ws.pop(); continue; } // deleted
         if (c[0] === f) { c[0] = c[1]; c[1] = f; }
         if (value(c[0]) === 1) { i++; continue; }
         let moved = false;
@@ -68,6 +75,8 @@ export function checkRefutation(nvars, clauses, proof, { mutant = null } = {}) {
     const open = lits.filter((l) => value(l) !== -1).length;
     if (lits.length >= 2) {
       const ci = db.length;
+      const k = [...lits].sort((x, y) => x - y).join(' ');
+      if (byKey.has(k)) byKey.get(k).push(ci); else byKey.set(k, [ci]);
       db.push(Int32Array.from(lits));
       watch[slot(lits[0])].push(ci);
       watch[slot(lits[1])].push(ci);
@@ -87,6 +96,12 @@ export function checkRefutation(nvars, clauses, proof, { mutant = null } = {}) {
   }
   for (let i = 0; i < proof.length; i++) {
     const lemma = proof[i];
+    if (!Array.isArray(lemma)) {
+      // A deletion: one copy of the clause is no longer used (unknown clauses are ignored).
+      const copies = byKey.get([...new Set(lemma.d)].sort((x, y) => x - y).join(' '));
+      if (copies?.length) db[copies.pop()] = null;
+      continue;
+    }
     if (lemma.some((l) => !Number.isInteger(l) || l === 0 || Math.abs(l) > nvars)) return { ok: false, reason: `lemma ${i + 1} mentions an unknown variable` };
     // Assume the lemma false and propagate; then return to the top level.
     let conflict = false;

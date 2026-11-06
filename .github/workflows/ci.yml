@@ -72,6 +72,8 @@ jobs:
         run: node proofs/prove-schur.js 4 44 --out lumen2-schur-proof
       - name: The Lumen 2 and Lumen solvers print the same proof, byte for byte
         run: node proofs/compare-lumen.js 4 44
+      - name: Prove S(4) = 44 on every core (cube and conquer with par_map; the refutation checked by src/rup.js)
+        run: node proofs/prove-schur.js 4 44 --split 3,4,5,6
       - name: Upload the formulas and the refutation (DIMACS + DRUP)
         uses: actions/upload-artifact@v4
         with:

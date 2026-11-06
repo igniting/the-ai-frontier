@@ -13,19 +13,34 @@
 // schur.lm (1 in group 1, hence 2 in group 2), a one-line "without loss of
 // generality" over interchangeable groups.
 //
-//   node proofs/prove-schur.js <k> <n> [--out DIR]   (DIR gets the CNFs and the DRUP proof)
+// With --split, step 3 runs on every core: proofs/cubes.lm splits 1..n+1 by
+// the groups of the numbers given (a cube for each choice), refutes the
+// cubes with par_map, and prints one refutation of the whole formula, which
+// src/rup.js checks the same way.
+//
+//   node proofs/prove-schur.js <k> <n> [--split 3,4,5,6] [--out DIR]   (DIR gets the CNFs and the DRUP proof)
 
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { compileSource } from '../src/api.js';
 import { runWasm } from '../src/runtime.js';
 import { makeHost } from '../src/host.js';
 import { checkRefutation } from '../src/rup.js';
+import { threadCount } from '../src/par.js';
 
 const program = (file) => {
   const c = compileSource(readFileSync(new URL(file, import.meta.url), 'utf8'));
   if (!c.ok) throw new Error(`${file}: ${c.errors[0].message}`);
   return c.bytes;
 };
+// The parallel solver: sat.lm without its main, then cubes.lm.
+export function cubeSource() {
+  const sat = readFileSync(new URL('./sat.lm', import.meta.url), 'utf8');
+  return `${sat.slice(0, sat.lastIndexOf('\nfn main() {'))}\n${readFileSync(new URL('./cubes.lm', import.meta.url), 'utf8')}`;
+}
+// The line that tells cubes.lm to split on the groups of the given numbers.
+export function splitLine(k, numbers) {
+  return `c split ${numbers.map((m) => [...Array.from({ length: k }, (_, g) => (m - 1) * k + g + 1), 0].join(' ')).join('  ')}\n`;
+}
 const run = (bytes, input) => {
   const t = performance.now();
   const r = runWasm(bytes, { input, host: makeHost() });
@@ -104,10 +119,12 @@ export function parseSolverOutput(text) {
   const ints = (l) => l.trim().split(/\s+/).map(Number);
   if (status === 's SATISFIABLE') return { sat: true, model: ints(lines.find((l) => l.startsWith('v ')).slice(2)).slice(0, -1), conflicts };
   if (status !== 's UNSATISFIABLE') throw new Error(`unexpected solver output: ${text.slice(0, 200)}`);
-  return { sat: false, proof: lines.filter((l) => /^-?\d/.test(l)).map((l) => ints(l).slice(0, -1)), conflicts, text };
+  // Lemmas, and deletions ("d ... 0") as { d: literals }.
+  const proof = lines.filter((l) => /^(-?\d|d )/.test(l)).map((l) => (l.startsWith('d ') ? { d: ints(l.slice(2)).slice(0, -1) } : ints(l).slice(0, -1)));
+  return { sat: false, proof, conflicts, text };
 }
 
-export function proveSchur(k, n, { out = null, log = console.log } = {}) {
+export function proveSchur(k, n, { out = null, log = console.log, split = null } = {}) {
   const t0 = performance.now();
   const encoder = program('./schur.lm'), solver = program('./sat.lm');
   // 1. Encode with Lumen 2, and cross-check against the reference encoding.
@@ -122,10 +139,11 @@ export function proveSchur(k, n, { out = null, log = console.log } = {}) {
   const splitError = groups ? checkSplit(groups, n) : 'no split found';
   log(`1..${n}: ${a.sat ? 'split found' : 'UNSATISFIABLE?!'} in ${(ra.ms / 1000).toFixed(1)} s (${a.conflicts} conflicts); ${splitError ? `INVALID: ${splitError}` : 'checked: every group is sum-free'}`);
   if (groups) groups.forEach((g, i) => log(`  group ${i + 1}: ${g.join(' ')}`));
-  // 3. No split of 1..n+1, with a checked refutation.
-  const rb = run(solver, cnfN1);
+  // 3. No split of 1..n+1, with a checked refutation (in parallel, with --split).
+  const rb = split ? run(compileSource(cubeSource()).bytes, splitLine(k, split) + cnfN1) : run(solver, cnfN1);
   const b = parseSolverOutput(rb.output);
-  log(`1..${n + 1}: ${b.sat ? 'SATISFIABLE?!' : 'refuted'} in ${(rb.ms / 1000).toFixed(1)} s (${b.conflicts} conflicts, ${b.sat ? 0 : b.proof.length} proof lines)`);
+  const how = split ? `, ${/in (\d+) cubes/.exec(rb.output)?.[1]} cubes on ${threadCount()} threads` : '';
+  log(`1..${n + 1}: ${b.sat ? 'SATISFIABLE?!' : 'refuted'} in ${(rb.ms / 1000).toFixed(1)} s (${b.conflicts} conflicts${how}, ${b.sat ? 0 : b.proof.length} proof lines)`);
   let rup = { ok: false, reason: 'no proof' };
   let checkMs = 0;
   if (!b.sat) {
@@ -138,7 +156,7 @@ export function proveSchur(k, n, { out = null, log = console.log } = {}) {
     mkdirSync(out, { recursive: true });
     writeFileSync(`${out}/schur-${k}-${n}.cnf`, cnfN);
     writeFileSync(`${out}/schur-${k}-${n + 1}.cnf`, cnfN1);
-    if (!b.sat) writeFileSync(`${out}/schur-${k}-${n + 1}.drup`, `${b.proof.map((c) => [...c, 0].join(' ')).join('\n')}\n`);
+    if (!b.sat) writeFileSync(`${out}/schur-${k}-${n + 1}.drup`, `${b.proof.map((c) => (Array.isArray(c) ? [...c, 0].join(' ') : `d ${[...c.d, 0].join(' ')}`)).join('\n')}\n`);
   }
   const proved = encodingsAgree && !splitError && !b.sat && rup.ok;
   log(proved ? `PROVED: S(${k}) = ${n}  (${((performance.now() - t0) / 1000).toFixed(1)} s in total)` : `NOT PROVED: S(${k}) = ${n}`);
@@ -148,6 +166,7 @@ export function proveSchur(k, n, { out = null, log = console.log } = {}) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   const [k, n] = process.argv.slice(2, 4).map(Number);
   const i = process.argv.indexOf('--out');
-  const r = proveSchur(k, n, { out: i >= 0 ? process.argv[i + 1] : null });
+  const j = process.argv.indexOf('--split');
+  const r = proveSchur(k, n, { out: i >= 0 ? process.argv[i + 1] : null, split: j >= 0 ? process.argv[j + 1].split(',').map(Number) : null });
   process.exitCode = r.proved ? 0 : 1;
 }

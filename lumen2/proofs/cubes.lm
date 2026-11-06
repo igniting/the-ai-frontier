@@ -1,0 +1,152 @@
+// Cube and conquer: proofs/sat.lm without its main, followed by this file
+// (proofs/prove-schur.js puts them together, as compiler/build.js does for
+// the compiler). The formula is split into cubes, and par_map refutes the
+// cubes on every core at once, each with the same solver, given the cube's
+// literals as unit clauses. Then one refutation of the whole formula is
+// printed, which the same independent checker as before can check.
+//
+// Input (read_input): a formula in DIMACS CNF, with a line
+//   c split  a1 a2 ... 0  b1 b2 ... 0  ...
+// listing clauses of the formula (or tautologies) to split on: a cube takes
+// one literal from each, so there is a cube for every choice. For a Schur
+// formula, the clause "number m is in some group" splits by m's group.
+//
+// Output: like sat.lm's. For an unsatisfiable formula, a DRUP refutation of
+// the formula itself (not of the cubes):
+//   - for each cube C, in order, the clauses the solver learnt refuting the
+//     formula with C, each with not-C added: they follow from the formula as
+//     the originals followed from it with C, and the last becomes not-C;
+//   - then, going up the split, not-P for each partial cube P: assuming P,
+//     the not-(P and l) for each literal l of the next split clause make every
+//     l false, against that clause; at the top, P is empty: the empty clause.
+// Once not-C is derived, the cube's other clauses are deleted ("d ... 0"),
+// and so are the not-(P and l) once not-P is, which keeps the checker's
+// database as small as each cube's solver's was.
+// The solver here keeps its learnt clauses as data instead of printing them,
+// since a function given to par_map cannot do output; each cube's part of
+// the refutation is written as text on its thread too, and main prints it.
+
+// A learnt clause, as DIMACS literals.
+fn learnt_array(s) {
+  let m = get(s, i_learnt());
+  fn go(a, k) { if k >= m { a } else { go(array_set(a, k, to_dimacs(buf_get(s, k))), k + 1) } }
+  go(array_make(m, 0), 0)
+}
+
+// sat.lm's search, with the learnt clauses kept, newest first (the empty clause last of all).
+fn search_kept(s, proof) {
+  let (s, confl) = propagate(s);
+  if confl >= 0 {
+    let s = put(s, i_conflicts(), get(s, i_conflicts()) + 1);
+    if get(s, i_level()) == 0 { (s, false, [array_empty(), ..proof]) }
+    else {
+      let (s, back) = analyze(s, confl);
+      let proof = [learnt_array(s), ..proof];
+      let s = cancel_until(s, back);
+      let s = if get(s, i_learnt()) == 1 { enqueue(s, buf_get(s, 0), -1) }
+        else { let (s, c) = add_clause(s, learnt_clause(s)); enqueue(s, buf_get(s, 0), c) };
+      let s = decay(s);
+      let budget = get(s, i_budget()) - 1;
+      let s = if budget <= 0 {
+        let r = get(s, i_restarts()) + 1;
+        cancel_until(put(put(s, i_restarts(), r), i_budget(), 100 * luby(r)), 0)
+      } else { put(s, i_budget(), budget) };
+      search_kept(s, proof)
+    }
+  } else {
+    let (s, v) = if get(s, i_trail()) == get(s, i_nvars()) { (s, 0) } else { pick_branch(s) };
+    if v == 0 { (s, true, proof) }
+    else {
+      let lvl = get(s, i_level());
+      let s = put(lim_set(s, lvl, get(s, i_trail())), i_level(), lvl + 1);
+      search_kept(enqueue(s, if var_get(s, v, f_phase()) == 1 { 2 * v } else { 2 * v + 1 }, -1), proof)
+    }
+  }
+}
+
+// One cube: (satisfiable?, conflicts, its part of the refutation as text, a
+// model). The text: each learnt clause with not-cube added, the last one
+// not-cube itself, then the deletions of all but that one; in chunks of at
+// most 1024 lines (a string has at most 16 MB).
+fn solve_cube(n: Int, clauses: List<List<Int>>, cube: List<Int>) -> (Bool, Int, List<String>, List<Int>) {
+  let (s, ok) = load(new_solver(n), append(clauses, map(cube, |l| [l])));
+  let (s, sat, proof) = if !ok { (s, false, [array_empty()]) }
+    else {
+      let (s, c) = propagate(s);
+      if c >= 0 { (s, false, [array_empty()]) } else { search_kept(s, []) }
+    };
+  let model = if sat { map(range(1, n + 1), |v| if value(s, 2 * v) == 1 { v } else { 0 - v }) } else { [] };
+  let not_cube = map(cube, |l| 0 - l);
+  let lemmas = reverse(proof);
+  let lines = if sat { [] } else {
+    append(map(lemmas, |c| clause_line(append(array_to_list(c), not_cube)) ++ "\n"),
+      flat_map(lemmas, |c| if array_length(c) > 0 { ["d " ++ clause_line(append(array_to_list(c), not_cube)) ++ "\n"] } else { [] }))
+  };
+  (sat, get(s, i_conflicts()), chunks(lines, 0, [], []), model)
+}
+fn chunks(lines: List<String>, k: Int, cur: List<String>, acc: List<String>) -> List<String> {
+  match lines {
+    [] -> reverse(if k > 0 { [concat_strings(reverse(cur)), ..acc] } else { acc }),
+    [l, ..rest] -> if k == 1024 { chunks(rest, 1, [l], [concat_strings(reverse(cur)), ..acc]) } else { chunks(rest, k + 1, [l, ..cur], acc) },
+  }
+}
+
+// The split clauses, from the line "c split ..." (none if there is no such line).
+fn split_of(src: String) -> List<List<Int>> {
+  let n = string_length(src);
+  let tag = "c split ";
+  fn line_end(i) { if i < n && char_code_at(src, i) != 10 { line_end(i + 1) } else { i } }
+  fn tagged(i, j) { j >= string_length(tag) || (i + j < n && char_code_at(src, i + j) == char_code_at(tag, j) && tagged(i, j + 1)) }
+  fn go(i) {
+    if i >= n { [] }
+    else if tagged(i, 0) { match parse_dimacs(substring(src, i + string_length(tag), line_end(i))) { (_, cs) -> cs } }
+    else { go(line_end(i) + 1) }
+  }
+  go(0)
+}
+
+// Every choice of one literal from each split clause, in order.
+fn cubes_of(split: List<List<Int>>) -> List<List<Int>> {
+  match split {
+    [] -> [[]],
+    [c, ..rest] -> { let tails = cubes_of(rest); flat_map(c, |l| map(tails, |t| [l, ..t])) }
+  }
+}
+
+fn clause_line(lits: List<Int>) -> String { join(append(map(lits, int_to_string), ["0"]), " ") }
+
+// Prints the refutation below the partial cube `prefix` (its literals,
+// newest first): the cubes' clauses, then not-prefix. Returns the next cube's index.
+fn emit(split: List<List<Int>>, prefix: List<Int>, results: Array<(Bool, Int, List<String>, List<Int>)>, next: Int) -> Int {
+  let not_prefix = map(reverse(prefix), |l| 0 - l);
+  match split {
+    [] -> match array_get(results, next) { (_, _, text, _) -> { each(text, print); next + 1 } },
+    [c, ..rest] -> {
+      let after = fold(c, next, |i, l| emit(rest, [l, ..prefix], results, i));
+      println(clause_line(not_prefix));
+      each(c, |l| println("d " ++ clause_line(map(reverse([l, ..prefix]), |x| 0 - x))));
+      after
+    },
+  }
+}
+
+fn main() {
+  let src = read_input();
+  let (n, clauses) = parse_dimacs(src);
+  let split = split_of(src);
+  let cubes = cubes_of(split);
+  let results = par_map(array_from_list(cubes), |cube| solve_cube(n, clauses, cube));
+  let all = array_to_list(results);
+  let conflicts = sum(map(all, |r| match r { (_, k, _, _) -> k }));
+  match find(all, |r| match r { (sat, _, _, _) -> sat }) {
+    Some((_, _, _, model)) -> {
+      println("s SATISFIABLE");
+      println("v " ++ clause_line(model))
+    },
+    _ -> {
+      let _ = emit(split, [], results, 0);
+      println("s UNSATISFIABLE")
+    },
+  };
+  println("c " ++ int_to_string(conflicts) ++ " conflicts, in " ++ int_to_string(length(cubes)) ++ " cubes")
+}

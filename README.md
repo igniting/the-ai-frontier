@@ -49,7 +49,8 @@ counting with in-place reuse instead of a garbage collector. It is a fresh
 design with its own compiler, interpreter, spec and fuzzer, and shares no
 code with Lumen. A SAT solver written in Lumen 2 proves S(4) = 44 too,
 printing the same 255,663-step refutation as Lumen's solver, byte for
-byte. Lumen 2's compiler is written in Lumen 2 and compiles itself to
+byte; split into 256 cubes and refuted on every core, the whole checked
+proof takes 22 seconds instead of 8 minutes. Lumen 2's compiler is written in Lumen 2 and compiles itself to
 itself; it was ported from JavaScript pass by pass, wrote the same bytes as
 the original for every program in a 1,086-program corpus, and replaced it. Its [showcase](lumen2/README.md#showcase) has a heapsort that is pure,
 sorts a million numbers in place with 106 allocations, and is proved unable
