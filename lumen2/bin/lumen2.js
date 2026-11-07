@@ -12,6 +12,7 @@
 // lumen2 ir FILE [FN]               print the IR with its reference-count operations
 // lumen2 transform FILE [--input F]  apply FILE's `transform` to every line of F (or of
 //            [--threads N]          standard input), on N threads (default: one per core)
+//            [--steps N|none]       the steps each line may take (default ten million)
 //            [--check]              only check the transform
 //            [--no-cache]           compile it again (compiled transforms are kept in
 //                                   ~/.cache/lumen2/transforms, under the hash of their source)
@@ -25,7 +26,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { lineCol } from '../src/diagnostics.js';
 import { CAPABILITIES } from '../src/types.js';
-import { compileTransform, runTransform, defaultCache } from '../src/transform.js';
+import { compileTransform, runTransform, defaultCache, DEFAULT_STEPS } from '../src/transform.js';
 import { retrying } from '../src/runtime.js';
 
 const [cmd, file, ...rest] = process.argv.slice(2);
@@ -34,7 +35,7 @@ const flag = (name) => rest.includes(name);
 
 function main() {
   if (!cmd || !file) {
-    console.error('usage: lumen2 check FILE | run FILE [--allow CAPS] [--input FILE] [--seed N] [--interp] [--paranoid] | test FILE [--runs N] [--seed N] | certify FILE [--out DIR] | build FILE [-o OUT] | ir FILE [FN] | transform FILE [--input FILE] [--threads N] [--check] [--no-cache]');
+    console.error('usage: lumen2 check FILE | run FILE [--allow CAPS] [--input FILE] [--seed N] [--interp] [--paranoid] | test FILE [--runs N] [--seed N] | certify FILE [--out DIR] | build FILE [-o OUT] | ir FILE [FN] | transform FILE [--input FILE] [--threads N] [--steps N|none] [--check] [--no-cache]');
     return 2;
   }
   const source = readFileSync(file, 'utf8');
@@ -138,7 +139,10 @@ function main() {
 // lumen2 transform: the transform is checked (its type, and that it can only
 // fail), then run over the input as it is read, its output written as it is made.
 function transform(source) {
-  const t = compileTransform(source, { cache: flag('--no-cache') ? null : defaultCache() });
+  const stepsOpt = opt('--steps');
+  if (stepsOpt !== null && stepsOpt !== 'none' && !(Number(stepsOpt) >= 1)) { console.error('--steps: give a number from 1, or none'); return 2; }
+  const steps = stepsOpt === null ? DEFAULT_STEPS : stepsOpt === 'none' ? null : Math.floor(Number(stepsOpt));
+  const t = compileTransform(source, { steps, cache: flag('--no-cache') ? null : defaultCache() });
   if (!t.ok) { for (const e of t.errors) console.error(e); return 1; }
   if (flag('--check')) { console.log(`transform : ${t.signature}`); return 0; }
   const threads = opt('--threads');

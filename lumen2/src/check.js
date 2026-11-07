@@ -94,6 +94,7 @@ function builtinTable() {
   t.float_to_string = fn([FLOAT], STRING);
   t.float_to_fixed = fn([FLOAT, INT], STRING);
   t.parse_float = fn([STRING], tcon('Option', [FLOAT]));
+  t.tf_steps = fn([INT], UNIT);
   return t;
 }
 export const BUILTIN_NAMES = Object.keys(builtinTable());

@@ -61,8 +61,8 @@ no garbage collector.** Lumen 2 is a fresh design, not an extension of
   transform` runs a user's function over every line of a file. A function
   that could print, read, read the clock or use randomness is rejected
   before it runs, so the output is the same on any number of threads. On 2
-  million CSV rows it is 6.8 times as fast as Python running the same
-  function with `exec`, and 4.6 times as fast as JavaScript in a `node:vm`
+  million CSV rows it is 6 times as fast as Python running the same
+  function with `exec`, and 4 times as fast as JavaScript in a `node:vm`
   context ([user-defined functions](#user-defined-functions-lumen2-transform)).
 - **A theorem, proved in it.** A SAT solver written in Lumen 2 proves the
   Schur number S(4) = 44. It prints the same 255,663-step refutation, byte
@@ -83,7 +83,7 @@ counting, property tests and certificates, all in the browser) ·
 
 ```sh
 cd lumen2
-npm test                                         # 78 tests, about 3 minutes
+npm test                                         # 79 tests, about 3 minutes
 node bin/lumen2.js check examples/refine.lm      # inferred types, effects, refinements
 node bin/lumen2.js run examples/tour.lm          # compile to wasm and run
 node bin/lumen2.js test examples/properties.lm   # check the properties
@@ -825,6 +825,15 @@ node bin/lumen2.js transform transform/examples/orders.lm --input orders.csv > o
   kept: `runtime error: line 12346: integer overflow`. Since the transform is
   pure, finding the line is easy: the tool transforms the failing task's
   lines again, one to a task.
+- **Every line has a budget.** A line may take ten million steps
+  (`--steps N` to change it, `--steps none` for no limit), where a step is
+  the start of a function or a round of a loop. A transform that runs too
+  long on some line stops there:
+  `runtime error: line 812: out of steps (each line may take 10,000,000 steps)`.
+  The count depends only on the line, not on the clock or the machine's
+  load, so the same line fails on every run, on any number of threads. A
+  line of the orders example below takes at most 172 steps, and counting
+  costs about 8% of the run.
 - **Nothing else is reachable.** The program runs as WebAssembly, and its
   only imports are reading input, writing output, the clock, random numbers,
   reporting a failure and starting `par_map`'s threads. The checker keeps
@@ -849,43 +858,46 @@ compiling.
 transform on 2 million generated orders (105 MB). The same function is
 written in C, in JavaScript and in Python, each with the same library, and
 every way must print the same output, byte for byte. Wall-clock times for
-the whole command, best of three, on the same 4-core machine:
+the whole command, best of three, on the same 4-core machine, with Lumen 2
+counting each line's steps:
 
 | Language | Threads | The user's code is | Time | Rows per second |
 | --- | --- | --- | --- | --- |
-| Lumen 2 | 4 | checked, compiled before | 1.43 s | 1,400,000 |
-| Lumen 2 | 4 | checked and compiled in this run | 2.78 s | 720,000 |
-| Lumen 2 | 1 | checked and compiled in this run | 3.88 s | 516,000 |
-| C (OpenMP) | 4 | not checked | 0.32 s | 6,330,000 |
-| C | 1 | not checked | 0.37 s | 5,440,000 |
-| JavaScript | 1 | in a `node:vm` context | 6.60 s | 303,000 |
-| JavaScript | 1 | not isolated (as with `eval`) | 3.07 s | 651,000 |
-| Python | 1 | run with `exec` | 9.69 s | 206,000 |
+| Lumen 2 | 4 | checked, compiled before | 1.50 s | 1,330,000 |
+| Lumen 2 | 4 | checked and compiled in this run | 2.03 s | 983,000 |
+| Lumen 2 | 1 | checked and compiled in this run | 2.81 s | 711,000 |
+| C (OpenMP) | 4 | not checked | 0.34 s | 5,840,000 |
+| C | 1 | not checked | 0.31 s | 6,400,000 |
+| JavaScript | 1 | in a `node:vm` context | 6.08 s | 329,000 |
+| JavaScript | 1 | not isolated (as with `eval`) | 2.23 s | 896,000 |
+| Python | 1 | run with `exec` | 9.03 s | 221,000 |
 
-- Once compiled, Lumen 2 is 6.8 times as fast as Python's `exec` and 4.6
+- Once compiled, Lumen 2 is 6.0 times as fast as Python's `exec` and 4.1
   times as fast as JavaScript in a `vm` context, which is what Node offers
-  for running code apart from the host's (3.5 and 2.4 times, counting
+  for running code apart from the host's (4.4 and 3.0 times, counting
   checking and compiling). Even so, the `vm` context isolates nothing: in
   this benchmark's harness, the user's code reaches the host's `process`
   object, and so the file system, with
   `globalThis.constructor.constructor('return process')()`.
-- C on four threads is 4.5 times as fast as Lumen 2 on four, compiled
+- C on one thread is 4.8 times as fast as Lumen 2 on four, compiled
   before. Lumen 2 copies every field it splits off and
   every string it builds, where C points into the line. Its code is
   WebAssembly, and its integers are checked for overflow. C on 4 threads
   gains little: reading and writing the file is most of its time.
-- Checking and compiling takes about 1.4 s: the transform with the library
+- Checking and compiling takes about 0.5 s: the transform with the library
   and the harness, and the compiler's own start. With the cache, that is
   paid once.
-- Once compiled, Lumen 2 takes 2.6 s on one thread. Four threads make it
-  1.8 times as fast, not 4, because the main thread reads the lines and
+- Once compiled, Lumen 2 takes 2.4 s on one thread. Four threads make it
+  1.6 times as fast, not 4, because the main thread reads the lines and
   writes the output while the others wait.
 
 **Limitations.** A quoted CSV field cannot hold a line break, since lines
 are split first.
-Strings are bytes: `lower` and `upper` change only ASCII letters. Nothing
-limits a transform's time, so one that loops forever runs forever; its
-memory is limited to the WebAssembly memory's 1 GB.
+Strings are bytes: `lower` and `upper` change only ASCII letters. A
+transform's memory is limited to the WebAssembly memory's 1 GB, and its
+time per line by the step budget. A step's cost is not fixed: a builtin
+such as `concat_strings` is one call however long its strings, so the
+budget bounds a line's time in proportion to its data, not absolutely.
 
 ## A superoptimizer
 

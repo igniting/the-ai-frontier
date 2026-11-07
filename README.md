@@ -65,7 +65,8 @@ every core: on four, faster than C on one. The same guarantee makes
 [`lumen2 transform`](lumen2/README.md#user-defined-functions-lumen2-transform)
 practical: it runs a user's function over every line of a file on every
 core, after rejecting any function that could do input or output or read
-the clock or randomness, and on 2 million CSV rows it is 6.8 times as fast
+the clock or randomness, and gives each line a budget of steps that stops a
+runaway at the same line on every run; on 2 million CSV rows it is 6 times as fast
 as Python running the same function with `exec`. It has its own
 [playground](https://igniting.github.io/the-ai-frontier/lumen2/playground.html),
 and [Part five of the story](https://igniting.github.io/the-ai-frontier/#lumen2)

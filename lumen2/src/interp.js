@@ -135,6 +135,8 @@ export function interpret(program, { input = '', maxSteps = Infinity, maxDepth =
     trunc: ([x]) => Math.trunc(x),
     round: ([x]) => { const t = Math.trunc(x); return Math.abs(x - t) >= 0.5 ? t + Math.sign(x) : t; },
     float_to_string: ([x]) => floatToString(x),
+    // A transform's step budget, which only compiled code in fuel mode counts.
+    tf_steps: () => null,
     float_to_fixed: ([x, d]) => floatToFixed(x, Number(d < 0n ? 0n : d > 20n ? 20n : d)),
     parse_float: ([s]) => {
       const x = parseFloatText(s);

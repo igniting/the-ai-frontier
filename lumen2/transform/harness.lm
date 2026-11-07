@@ -1,6 +1,7 @@
 // The transform harness, which src/transform.js puts after a transform and
-// the library, with three constants: tf_first() (the first line's number),
-// tf_batch() and tf_chunk(). It reads tf_batch() lines at a time, transforms
+// the library, with four constants: tf_first() (the first line's number),
+// tf_batch(), tf_chunk() and tf_budget() (the steps a line may take, when
+// the program is compiled to count them). It reads tf_batch() lines at a time, transforms
 // a batch on every core with par_map, tf_chunk() lines to a task, and prints
 // the results in order. Its names start with `tf_`, which transforms cannot use.
 
@@ -13,12 +14,22 @@ fn tf_read(rows: Array<String>, k: Int) -> Array<String> ! input {
   }
 }
 
+// One line's transform, within the budget: each line may take tf_budget()
+// steps, counted from its start, so whether it runs out depends only on the
+// line. The harness's own steps, between lines, are not counted.
+fn tf_line(n: Int, line: String) -> Option<String> ! fail {
+  tf_steps(tf_budget());
+  let out = transform(n, line);
+  tf_steps(4611686018427387904);
+  out
+}
+
 // The outputs of rows i to hi - 1 of a batch whose row 0 is line n, each
 // with a line break, newest first.
 fn tf_lines(rows: Array<String>, n: Int, i: {i: Int | 0 <= i}, hi: Int, acc: List<String>) -> List<String> ! fail {
   if i >= hi || i >= array_length(rows) { acc }
   else {
-    match transform(n + i, array_get(rows, i)) {
+    match tf_line(n + i, array_get(rows, i)) {
       Some(out) -> tf_lines(rows, n, i + 1, hi, ["\n", out, ..acc]),
       None -> tf_lines(rows, n, i + 1, hi, acc),
     }

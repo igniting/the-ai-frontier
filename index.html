@@ -294,9 +294,10 @@ table.t.trace td code { white-space: nowrap; }
     <li><a href="#lumen2-speed"><span class="n">22</span>How fast is it, next to C?</a></li>
     <li><a href="#lumen2-transform"><span class="n">23</span>Other people's code, on every core</a></li>
     <li><a href="#lumen2-floats"><span class="n">24</span>Numbers that are always numbers</a></li>
+    <li><a href="#lumen2-budget"><span class="n">25</span>A budget for every line</a></li>
     <li class="toc-part">Part six · Mistakes and limits</li>
-    <li><a href="#caught"><span class="n">25</span>What the checks caught, including my mistakes</a></li>
-    <li><a href="#limits"><span class="n">26</span>What this shows, and what it doesn't</a></li>
+    <li><a href="#caught"><span class="n">26</span>What the checks caught, including my mistakes</a></li>
+    <li><a href="#limits"><span class="n">27</span>What this shows, and what it doesn't</a></li>
   </ol>
 </header>
 
@@ -321,8 +322,8 @@ table.t.trace td code { white-space: nowrap; }
   uses all of it to prove a theorem, and explains SAT solving and proof checking on the way. <b>Part five</b> starts
   again: a second language, designed with what the first one taught me, that proves its own array accesses safe,
   needs no garbage collector, proves the same theorem, ends up with its whole compiler written in itself, runs
-  within 1.1 to 3.5 times of C, runs on every core, runs other people's code there safely, and has floats that
-  are always numbers. <b>Part six</b> lists what went wrong and what this does
+  within 1.1 to 3.5 times of C, runs on every core, runs other people's code there safely, gives that code a budget that stops it at the same
+  line on every run, and has floats that are always numbers. <b>Part six</b> lists what went wrong and what this does
   and doesn't show.</p>
 </section>
 
@@ -2645,7 +2646,7 @@ error: `transform` can use randomness, but a transform may only compute (and fai
   threads wait, so four threads give 1.8 times the speed of one, not 4. Without floating point, a transform could
   handle money exactly, as decimals in hundredths, but not parse a measurement (chapter 24 adds floats). A quoted CSV field cannot hold
   a line break, because lines are split first. And nothing limits a transform's time: one that loops forever
-  runs forever, though its memory stops at the WebAssembly memory's 1 GB.</p>
+  runs forever, though its memory stops at the WebAssembly memory's 1 GB (chapter 25 adds a budget).</p>
 </section>
 
 <section class="chapter" id="lumen2-floats">
@@ -2746,6 +2747,49 @@ mean([1.5, 2.5, 3.0])     <span class="c">// 2.3333333333333335</span>
   <code>fail</code>.</p>
 </section>
 
+<section class="chapter" id="lumen2-budget">
+  <p class="chapter-label">25 · Part five</p>
+  <h2>A budget for every line</h2>
+  <p>Asked “what next” again, I went back to the last limitation of chapter 23: nothing limited a transform's
+  time. A function that looped forever on one line of a file hung the whole run, and nothing said which line it
+  was. I proposed a budget of steps for each line; the answer was “Yes”.</p>
+  <p>The usual fix is a timeout, and it is the wrong one here. A timeout depends on the machine and on what else
+  it is doing, so a line that takes nine seconds passes on one run and fails on the next, and on four threads it
+  does not even say which line ran out. A transform is pure, so its output is the same on any number of threads.
+  I wanted its failures to be the same too, and that means counting work, not time.</p>
+  <p>Lumen 2 has no loop statement. Every loop is a function that calls itself, and the compiler turns a call in
+  tail position into a jump back to the start of the function. So a computation that runs long passes the start
+  of some function again and again, and that is where the compiled code counts. With counting on, every
+  function begins by taking one from a 64-bit global and stops with <code>out of steps</code> if the result is
+  below zero. A self tail call jumps back to just before that test, so a loop pays once per turn. Each thread runs
+  its own instance of the module, with its own counter, so the threads never share one.</p>
+  <figure>
+    <pre class="listing">fn spin(k: Int) -&gt; Int { if k &lt; 0 { k } else { spin(k + 1) } }
+fn transform(n: Int, line: String) -&gt; Option&lt;String&gt; {
+  if n == 1235 { Some(int_to_string(spin(0))) } else { Some(line) }
+}
+
+<span class="c">$ lumen2 transform spin.lm --input rows.csv</span>
+runtime error: line 1235: out of steps (each line may take 10,000,000 steps)</pre>
+  </figure>
+  <p>The harness sets the budget before each line with a builtin that exists only for it,
+  <code>tf_steps</code>, and the tool refuses a transform that names anything starting with <code>tf_</code>, so
+  a transform cannot give itself more. When a task of 64 lines fails, the tool runs its lines again, one to a task,
+  to find the failing one, as it does for any other error. The count depends only on the line, so the second run
+  fails at the same line. The test puts an endless loop on line 1,235 and expects that line on one thread and on
+  four, in two batch sizes. It then searches for the smallest budget that a whole file passes with, takes one step
+  off, and expects the same line to fail on one thread and on four.</p>
+  <p>Ten million steps is the default, and <code>--steps</code> changes it. A line of the orders benchmark takes
+  at most 172 steps, the log example 225 and the sensor example 76, so the default leaves room for functions
+  tens of thousands of times as heavy. The loop above uses up its budget, and the whole command finishes, in 0.9
+  seconds. Counting costs about 8% of a compiled run, measured back to back, for a subtraction, a write, a
+  comparison and a branch on every call. <code>--steps none</code> compiles without it.</p>
+  <p>A step is not a unit of time. A builtin such as <code>concat_strings</code> is one call however long its
+  strings are, so the budget bounds a line's time in proportion to the size of its data, not absolutely. What it
+  does guarantee is the property a timeout lacks: the same line, given the same budget, fails on every machine
+  and every run.</p>
+</section>
+
 <div class="part">
   <p class="part-n">Part six · <a href="#top">contents</a></p>
   <p class="part-title">Mistakes and limits</p>
@@ -2754,7 +2798,7 @@ mean([1.5, 2.5, 3.0])     <span class="c">// 2.3333333333333335</span>
 </div>
 
 <section class="chapter" id="caught">
-  <p class="chapter-label">25 · Part six</p>
+  <p class="chapter-label">26 · Part six</p>
   <h2>What the checks caught, including my mistakes</h2>
   <ul class="plain">
     <li><b>A real bug in the reference interpreter.</b> A random program grew a string eightfold per step.
@@ -2899,6 +2943,7 @@ mean([1.5, 2.5, 3.0])     <span class="c">// 2.3333333333333335</span>
     <li><span class="when">the theorem in parallel</span>“Yes go ahead with proof.” S(4) = 44 by cube and conquer: 256 cubes refuted with <code>par_map</code>, one checked refutation, 22 seconds instead of 8 minutes.</li>
     <li><span class="when">other people's code</span>“Anything else which is easier/faster in this language and is more practical as well”. <code>lumen2 transform</code>, which runs a user's function over a file on every core after checking that it can only compute, against the same function in C, JavaScript and Python; and reference counting inlined. <a href="https://github.com/igniting/the-ai-frontier/tree/main/lumen2/transform">lumen2/transform/</a></li>
     <li><span class="when">floats</span>“What next in this project?” Floats that are always finite, literals rounded exactly by the compiler, n-body and spectral norm against C, and a parallel sum that is the same bits on any number of threads. <a href="https://github.com/igniting/the-ai-frontier/tree/main/lumen2/bench">lumen2/bench/</a></li>
+    <li><span class="when">a budget</span>“what next”, then “Yes”. A per-line budget of steps for <code>lumen2 transform</code>, counted by the compiled code, so a runaway transform stops at the same line on every run, for about 8% of the run's time.</li>
   </ol>
   <p class="aside">The conversation outgrew my working memory and had to be summarized partway through, more than
   once, and the machine I ran on restarted once during a five-minute check. What made it safe to pick up the
@@ -2907,7 +2952,7 @@ mean([1.5, 2.5, 3.0])     <span class="c">// 2.3333333333333335</span>
 </section>
 
 <section class="chapter" id="limits">
-  <p class="chapter-label">26 · Part six</p>
+  <p class="chapter-label">27 · Part six</p>
   <h2>What this shows, and what it doesn't</h2>
   <p>It shows one long session of sustained engineering in which each layer was checked by the one below it. The
   work is a compiler, an independent re-implementation of it, a prover with a proof checker, an optimizer gated by
@@ -2941,7 +2986,7 @@ node superopt/verify.js                     <span class="c"># re-prove the 40 ru
 node bench/gate.js                          <span class="c"># the whole gate, about 7 minutes</span>
 node proofs/prove-schur.js 4 44             <span class="c"># prove S(4) = 44, about 6 minutes</span>
 
-cd lumen2 &amp;&amp; npm test &amp;&amp; cd ..              <span class="c"># Lumen 2: 78 tests</span>
+cd lumen2 &amp;&amp; npm test &amp;&amp; cd ..              <span class="c"># Lumen 2: 79 tests</span>
 node lumen2/test/fuzz.js 1000               <span class="c"># Lumen 2: differential fuzzing, four ways</span>
 node lumen2/test/fuzz.js --mutants          <span class="c"># all 24 planted bugs must be caught</span>
 node lumen2/superopt/verify.js              <span class="c"># re-prove the 19 rewrite rules</span>

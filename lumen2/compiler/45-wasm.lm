@@ -145,6 +145,7 @@ fn encode_module(funcs, table, data, heap_start, max_pages, threads) {
   let fi = |n| match m_get(fidx, n) { Some(i) -> i, None -> internal("wasm: unknown function " ++ n) };
   let gidx = |g| if g == "hp" { 0 } else if g == "live" { 1 } else if g == "allocs" { 2 }
     else if threads && g == "hp_end" { 3 } else if threads && g == "fl" { 4 } else if threads && g == "par" { 5 } else if threads && g == "heap0" { 6 } else if threads && g == "sc" { 7 }
+    else if g == "fuel" { if threads { 8 } else { 3 } }
     else { internal("wasm: unknown global " ++ g) };
   let out = push_list(array_empty(), [0, 97, 115, 109, 1, 0, 0, 0]);
   // 1: types
@@ -169,10 +170,12 @@ fn encode_module(funcs, table, data, heap_start, max_pages, threads) {
   let out = if threads { out } else { push_section(out, 5, push_uleb(push_uleb(array_push(push_uleb(array_empty(), 1), 1), min_pages), max_pages)) };
   // 6: globals (hp, live, allocs; in threads mode hp_end, fl (the free lists),
   // par, heap0 and sc (scratch memory) too, and hp starts empty, so that the
-  // first allocation takes a chunk)
+  // first allocation takes a chunk), and the steps left (an i64, 2^62 until
+  // a transform's harness sets a budget)
   let g = |o, init| array_push(push_sleb(push_list(o, [127, 1, 65]), init), 11);
-  let out = if threads { push_section(out, 6, g(g(g(g(g(g(g(g(push_uleb(array_empty(), 8), 0), 0), 0), 0), 64), 0), heap_start), 256)) }
-    else { push_section(out, 6, g(g(g(push_uleb(array_empty(), 3), heap_start), 0), 0)) };
+  let g64 = |o, init| array_push(push_sleb(push_list(o, [126, 1, 66]), init), 11);
+  let out = if threads { push_section(out, 6, g64(g(g(g(g(g(g(g(g(push_uleb(array_empty(), 9), 0), 0), 0), 0), 64), 0), heap_start), 256), 4611686018427387904)) }
+    else { push_section(out, 6, g64(g(g(g(push_uleb(array_empty(), 4), heap_start), 0), 0), 4611686018427387904)) };
   // 7: exports
   let body = push_uleb(array_empty(), if threads { 6 } else { 4 });
   let body = push_uleb(array_push(push_str(body, "_start"), 0), fi("_start"));

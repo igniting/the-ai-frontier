@@ -125,6 +125,39 @@ test('a failure names the first line that fails, on any number of threads; the b
   for (const threads of [1, 4]) assert.equal(runTransform(none, { input: rows, threads }).error, 'line 1235: panic: x');
 });
 
+test('a step budget: a line that runs too long fails at that line, the same way on any number of threads', () => {
+  const text = orders(3000, 3);
+  const spin = 'fn spin(k: Int) -> Int { if k < 0 { k } else { spin(k + 1) } }\n';
+  const udf = `${spin}fn transform(n: Int, line: String) -> Option<String> {\n  let id = field(fields(line), 0);\n  if id == "100001234" { Some(int_to_string(spin(0))) } else { Some(id) }\n}\n`;
+  for (const sizes of [{}, { batch: 100, chunk: 7 }]) {
+    const t = compiled(udf, { ...sizes, steps: 100000 });
+    for (const threads of [1, 4]) {
+      const r = runTransform(t, { input: text, threads });
+      assert.equal(r.error, 'line 1235: out of steps (each line may take 100,000 steps)', `${JSON.stringify(sizes)} on ${threads} threads`);
+      assert.equal(r.output.split('\n').filter(Boolean).length, Math.floor(1234 / (sizes.batch ?? 4096)) * (sizes.batch ?? 4096));
+    }
+  }
+  // The budget is per line: the fewest steps that let every line through, and
+  // one fewer, which stops at the same line on any number of threads.
+  const work = 'fn count(k: Int) -> Int { if k <= 0 { 0 } else { 1 + count(k - 1) } }\nfn transform(n: Int, line: String) -> Option<String> { Some(int_to_string(count(string_length(line)))) }\n';
+  const input = Array.from({ length: 200 }, (_, i) => 'x'.repeat((i * 37) % 101)).join('\n') + '\n';
+  const passes = (steps, threads = 1) => runTransform(compiled(work, { steps, batch: 50, chunk: 4 }), { input, threads });
+  let lo = 1, hi = 10000;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (passes(mid).ok) hi = mid; else lo = mid + 1; }
+  assert.ok(lo > 100 && lo < 1000, `${lo} steps`);
+  const longest = 1 + Array.from({ length: 200 }, (_, i) => (i * 37) % 101).indexOf(100);
+  for (const threads of [1, 4]) {
+    assert.ok(passes(lo, threads).ok);
+    assert.equal(passes(lo - 1, threads).error, `line ${longest}: out of steps (each line may take ${(lo - 1).toLocaleString('en')} steps)`);
+  }
+  // No budget: no counting, and the same output.
+  const none = runTransform(compiled(work, { steps: null }), { input, threads: 2 });
+  assert.equal(none.output, passes(lo).output);
+  // A transform may not set its own budget (or use any harness name); comments and strings may mention them.
+  assert.match(rejected('fn transform(n: Int, line: String) -> Option<String> { tf_steps(1000000000); Some(line) }\n'), /`tf_steps`: names starting with `tf_` are the harness's/);
+  compiled('// tf_steps belongs to the harness\nfn transform(n: Int, line: String) -> Option<String> { Some("tf_x" ++ line) }\n');
+});
+
 test('the library agrees with JavaScript: CSV fields and lines, numbers, hashes', () => {
   // Random rows of fields, written as CSV by the JavaScript csv(); the Lumen 2
   // transform parses each line and prints every field's length and text,

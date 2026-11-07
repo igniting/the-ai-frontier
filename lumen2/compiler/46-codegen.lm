@@ -19,6 +19,10 @@ fn k_strlong() { 5 }
 fn k_uaf() { 6 }
 fn k_float_overflow() { 7 }
 fn k_sqrt_negative() { 8 }
+fn k_out_of_steps() { 9 }
+// Fuel mode (for transforms): every function's start, and every jump back to
+// it, is a step, taken from the global fuel; none left stops the program.
+fn wfuel() { CL([wgget("fuel"), wi64(1), wop("i64.sub"), wgset("fuel"), wgget("fuel"), wi64(0), wop("i64.lt_s"), wtrap(k_out_of_steps())]) }
 // Doubles used by the generated code, as bits.
 fn f64_inf() { 9218868437227405312 }
 fn f64_half() { 4602678819172646912 }
@@ -46,14 +50,16 @@ type CG { CG(List<WFn>, Map<Bool>, Array<Int>, Map<Int>, Map<Int>, List<String>,
 // several values (by name: the fields' types).
 // adts, Ord impls, mutant, paranoid, noinline, unboxed functions, parameters
 // unshared on entry, threads (the program uses par_map and runs on threads)
-type GX { GX(OMap<AdtInfo>, List<(String, String)>, String, Bool, Bool, Map<List<Ty>>, Map<Bool>, Bool) }
-fn gx_adts(gx) { match gx { GX(a, _, _, _, _, _, _, _) -> a } }
-fn gx_mutant(gx) { match gx { GX(_, _, m, _, _, _, _, _) -> m } }
-fn gx_paranoid(gx) { match gx { GX(_, _, _, p, _, _, _, _) -> p } }
-fn gx_noinline(gx) { match gx { GX(_, _, _, _, n, _, _, _) -> n } }
-fn gx_unboxed(gx, g) { match gx { GX(_, _, _, _, _, u, _, _) -> m_get(u, g) } }
-fn gx_uniq(gx) { match gx { GX(_, _, _, _, _, _, q, _) -> q } }
-fn gx_threads(gx) { match gx { GX(_, _, _, _, _, _, _, t) -> t } }
+// adts, ords, mutant, paranoid, noinline, unboxed, unique arrays, threads, fuel (count steps)
+type GX { GX(OMap<AdtInfo>, List<(String, String)>, String, Bool, Bool, Map<List<Ty>>, Map<Bool>, Bool, Bool) }
+fn gx_adts(gx) { match gx { GX(a, _, _, _, _, _, _, _, _) -> a } }
+fn gx_mutant(gx) { match gx { GX(_, _, m, _, _, _, _, _, _) -> m } }
+fn gx_paranoid(gx) { match gx { GX(_, _, _, p, _, _, _, _, _) -> p } }
+fn gx_noinline(gx) { match gx { GX(_, _, _, _, n, _, _, _, _) -> n } }
+fn gx_unboxed(gx, g) { match gx { GX(_, _, _, _, _, u, _, _, _) -> m_get(u, g) } }
+fn gx_uniq(gx) { match gx { GX(_, _, _, _, _, _, q, _, _) -> q } }
+fn gx_threads(gx) { match gx { GX(_, _, _, _, _, _, _, t, _) -> t } }
+fn gx_fuel(gx) { match gx { GX(_, _, _, _, _, _, _, _, f) -> f } }
 fn gx_heap(gx, t) { is_heap(gx_adts(gx), t) }
 
 fn cg_funcs(cg) { match cg { CG(fs, _, _, _, _, _, _, _) -> fs } }
@@ -774,7 +780,7 @@ fn cmp_fn(gx, cg, t) {
       });
       (CL(reverse(out)), cg)
     };
-    let user = if gx_mutant(gx) == "ord-ignore-impl" { None } else { match gx { GX(_, ords, _, _, _, _, _, _) -> match find(ords, |o| match o { (k, _) -> k == tkey(t) }) { Some((_, u)) -> Some(u), None -> None } } };
+    let user = if gx_mutant(gx) == "ord-ignore-impl" { None } else { match gx { GX(_, ords, _, _, _, _, _, _, _) -> match find(ords, |o| match o { (k, _) -> k == tkey(t) }) { Some((_, u)) -> Some(u), None -> None } } };
     let (body, locals, cg) = match user {
       Some(u) -> {
         // The program's own compare takes ownership of its arguments; these are borrowed.
@@ -1315,6 +1321,8 @@ fn gen_fn(gx, cg, f) {
       else if name == "array_push" { let (k, cg) = array_fns(gx, cg, elem_of(list_get(ats, 0))); (CL([ac, wcall(array_name("push", k))]), cg) }
       else if name == "par_map" { let (pm, cg) = par_fns(gx, cg, ats); (CL([ac, wcall(pm)]), cg) }
       else if name == "int_to_float" { (CL([ac, wop("f64.convert_i64_s")]), cg) }
+      // The steps left (fuel mode; otherwise nothing): what a transform's harness sets for each line.
+      else if name == "tf_steps" { (if gx_fuel(gx) { CL([ac, wgset("fuel"), wi32(0)]) } else { wi32(0) }, cg) }
       else if name == "float_to_int" {
         // In range when -2^63 <= x < 2^63; then truncation cannot trap.
         (CL([ac, wset("$f"), wget("$f"), wf64(f64_neg_two63()), wop("f64.ge"), wget("$f"), wf64(f64_two63()), wop("f64.lt"), wop("i32.and"), wop("i32.eqz"), wtrap(k_overflow()),
@@ -1555,7 +1563,7 @@ fn gen_fn(gx, cg, f) {
       // The body is a loop, so that a tail call to the function itself can jump to its start;
       // every path through it returns, jumps or traps.
       (out, cg, _) -> mkfn(cg, fname, map(params, |p| match p { (v, t) -> (v, valtype(t)) }), match ret_es { Some(es) -> map(es, valtype), None -> [valtype(ret)] }, locals,
-        CL([wloop("$self"), CL(reverse(out)), wend(), wop("unreachable")])),
+        CL([wloop("$self"), if gx_fuel(gx) { wfuel() } else { wnone() }, CL(reverse(out)), wend(), wop("unreachable")])),
     }
   } }
 }
@@ -1626,14 +1634,14 @@ fn wasm_inline_code(g, d) {
 
 // The whole back end: the IR (after reference counting) -> the module's bytes
 // and the superoptimizer's rewrite counts (rule id -> uses, in order of first use).
-fn codegen(adts, prog, mutant, paranoid, noinline, superopt, rules, threads_ok) {
+fn codegen(adts, prog, mutant, paranoid, noinline, superopt, rules, threads_ok, fuel) {
   match prog { IRProg(fns, main, ords) -> {
     // A named function returning a tuple returns its fields as several wasm
     // values, so returning a tuple allocates nothing (closure code and main
     // keep one result: they are called through the table and by _start).
     let unboxed = fold(fns, MEmpty, |m, f| match irf_ret(f) { TT(es) -> if !irf_env(f) && irf_name(f) != main { m_set(m, irf_name(f), es) } else { m }, _ -> m });
     let threads = threads_ok && any(fns, |f| ir_calls_builtin(irf_body(f), "par_map"));
-    let gx = GX(adts, ords, mutant, paranoid, noinline, unboxed, unique_params(fns, main), threads);
+    let gx = GX(adts, ords, mutant, paranoid, noinline, unboxed, unique_params(fns, main), threads, fuel);
     let cg = runtime(gx, CG([], MEmpty, array_empty(), MEmpty, MEmpty, [], MEmpty, 0));
     let cg = fold(fns, cg, |cg, f| gen_fn(gx, cg, f));
     let main_ret = match find(fns, |f| irf_name(f) == main) { Some(f) -> irf_ret(f), None -> internal("codegen: no main") };

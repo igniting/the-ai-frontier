@@ -145,12 +145,14 @@ export function makeCompiler(bytes = seedBytes()) {
     // threads: a program that calls par_map runs it on threads (shared memory and
     // workers); without them par_map is a loop. The default is whether this
     // host can run threads (see canThread).
-    compile(source, { given = null, keepProofs = false, inline = true, borrow = true, reuse = true, specialize = true, superopt = true, paranoid = false, ir = false, funcs = false, threads = canThread(), ...opts } = {}) {
+    // fuel: count steps (each function start and each jump back to it), for
+    // the budget a transform's harness sets with tf_steps.
+    compile(source, { given = null, keepProofs = false, inline = true, borrow = true, reuse = true, specialize = true, superopt = true, paranoid = false, ir = false, funcs = false, threads = canThread(), fuel = false, ...opts } = {}) {
       const lines = given ? [...given.safe.map((k) => `S ${k}`), ...given.unproved.map(([k, n]) => `U ${k} ${n}`)] : [];
       const words = [
         'compile', ...options(opts), given ? `given=${lines.length}` : '', keepProofs ? 'keep' : '',
         inline ? '' : 'noinline', borrow ? '' : 'noborrow', reuse ? '' : 'noreuse', specialize ? '' : 'nospec',
-        superopt ? '' : 'nosuperopt', paranoid ? 'paranoid' : '', ir ? 'ir' : '', funcs ? 'funcs' : '', threads ? '' : 'nothreads',
+        superopt ? '' : 'nosuperopt', paranoid ? 'paranoid' : '', ir ? 'ir' : '', funcs ? 'funcs' : '', threads ? '' : 'nothreads', fuel ? 'fuel' : '',
       ];
       const r = run(words, lines, source);
       if (r.error) return { ok: false, errors: [r.error] };

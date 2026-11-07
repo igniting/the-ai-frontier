@@ -78,7 +78,7 @@ fn drive(mode, words, input, grants, entry) {
       match main_fn {
         None -> println("}"),
         Some(_) -> {
-          let c = back_end(checked, CgOpts(!flag("noinline"), !flag("noborrow"), !flag("noreuse"), !flag("nospec"), !flag("nosuperopt"), flag("paranoid"), mutant, !flag("nothreads")));
+          let c = back_end(checked, CgOpts(!flag("noinline"), !flag("noborrow"), !flag("noreuse"), !flag("nospec"), !flag("nosuperopt"), flag("paranoid"), mutant, !flag("nothreads"), flag("fuel")));
           print_compile_report(c, flag("ir"), flag("funcs"));
           println("}");
           match c { Compiled(bytes, _, _, _, _, _) -> print_bytes(bytes) }
@@ -158,7 +158,7 @@ fn main() {
     let checked = check_once(src, Opts(grants, entry, true, MEmpty, MEmpty));
     match checked {
       Checked(_, _, _, _, None, _, _, _, _, _) -> println("NOMAIN"),
-      _ -> match back_end(checked, CgOpts(!flag("noinline"), !flag("noborrow"), !flag("noreuse"), !flag("nospec"), !flag("nosuperopt"), flag("paranoid"), mutant, !flag("nothreads"))) {
+      _ -> match back_end(checked, CgOpts(!flag("noinline"), !flag("noborrow"), !flag("noreuse"), !flag("nospec"), !flag("nosuperopt"), flag("paranoid"), mutant, !flag("nothreads"), flag("fuel"))) {
         Compiled(bytes, (tf, ti), OStats(a, b, c, e, g), stats, _, _) -> {
           println("types " ++ int_to_string(tf) ++ " " ++ int_to_string(ti));
           println("ownership " ++ join(map([a, b, c, e, g], int_to_string), " "));

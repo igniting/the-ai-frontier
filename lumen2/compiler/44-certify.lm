@@ -59,6 +59,7 @@ fn check_types(adts, fns) {
         else if name == "float_to_string" { Some(([t_float()], t_string())) }
         else if name == "float_to_fixed" { Some(([t_float(), t_int()], t_string())) }
         else if name == "parse_float" { Some(([t_string()], TC("Option", [t_float()]))) }
+        else if name == "tf_steps" { Some(([t_int()], t_unit())) }
         else if name == "string_length" { Some(([t_string()], t_int())) }
         else if name == "substring" { Some(([t_string(), t_int(), t_int()], t_string())) }
         else if name == "char_code_at" { Some(([t_string(), t_int()], t_int())) }

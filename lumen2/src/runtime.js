@@ -7,7 +7,7 @@ import { makeHost } from './host.js';
 import { makePool, threadCount, minPages } from './par.js';
 import { floatHost } from './floats.js';
 
-export const FAILURES = ['', 'integer overflow', 'division by zero', 'index out of bounds', 'out of memory', 'string too long', 'use after free', 'float overflow', 'square root of a negative number'];
+export const FAILURES = ['', 'integer overflow', 'division by zero', 'index out of bounds', 'out of memory', 'string too long', 'use after free', 'float overflow', 'square root of a negative number', 'out of steps'];
 
 export class LumenTrap extends Error {}
 

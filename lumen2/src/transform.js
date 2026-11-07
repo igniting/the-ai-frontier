@@ -55,21 +55,33 @@ function report(udf, combined, errors, what) {
 }
 
 // The program that runs a transform: line numbers from first, batch lines read
-// at a time, chunk lines to a task.
-function program(udf, { first, batch, chunk }) {
-  return `${udf}\n${LIBRARY}\nfn tf_first() -> Int { ${first} }\nfn tf_batch() -> Int { ${batch} }\nfn tf_chunk() -> Int { ${chunk} }\n${HARNESS}`;
+// at a time, chunk lines to a task, at most steps steps a line (null: no limit).
+function program(udf, { first, batch, chunk, steps }) {
+  return `${udf}\n${LIBRARY}\nfn tf_first() -> Int { ${first} }\nfn tf_batch() -> Int { ${batch} }\nfn tf_chunk() -> Int { ${chunk} }\nfn tf_budget() -> Int { ${steps ?? 0} }\n${HARNESS}`;
 }
+const compileProgram = (src, sizes) => compileSource(src, { grants: ['input', 'output'], fuel: sizes.steps !== null });
+
+// The default budget: ten million steps a line. A step is the start of a
+// function (the transform's, the library's, a lambda's) or a jump back to the
+// start of a loop; a line of CSV takes hundreds.
+export const DEFAULT_STEPS = 10000000;
+
+// The transform's text without comments and string literals.
+const code = (src) => src.replace(/"(?:\\.|[^"\\\n])*"/g, '""').replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, '');
 
 // Checks a transform and compiles the program that runs it. Returns
 // { ok: true, bytes, signature, ... } or { ok: false, errors } (formatted).
 // batch: how many lines are read at a time; chunk: how many lines a task
-// transforms (par_map maps a batch's chunks). cache: a directory where
-// compiled transforms are kept (see cacheKey), or null.
-export function compileTransform(udf, { batch = 4096, chunk = 64, cache = null } = {}) {
+// transforms (par_map maps a batch's chunks). steps: how many steps each
+// line may take, or null for no limit. cache: a directory where compiled
+// transforms are kept (see cacheKey), or null.
+export function compileTransform(udf, { batch = 4096, chunk = 64, steps = DEFAULT_STEPS, cache = null } = {}) {
   const defs = definitions(udf);
   if (defs.has('main')) return fail(`error: a transform does not define \`main\` (the harness does): define \`${CONTRACT}\``);
-  for (const name of defs.keys()) if (name.startsWith('tf_')) return fail(`error: \`${name}\`: names starting with \`tf_\` are the harness's (line ${defs.get(name)})`);
-  const sizes = { first: 1, batch: Math.max(1, Math.floor(batch)), chunk: Math.max(1, Math.floor(chunk)) };
+  // Names starting with tf_ are the harness's, to define or to use (tf_steps would let a transform set its own budget).
+  const reserved = /\btf_\w*/.exec(code(udf));
+  if (reserved) return fail(`error: \`${reserved[0]}\`: names starting with \`tf_\` are the harness's${defs.has(reserved[0]) ? ` (line ${defs.get(reserved[0])})` : ''}`);
+  const sizes = { first: 1, batch: Math.max(1, Math.floor(batch)), chunk: Math.max(1, Math.floor(chunk)), steps: steps === null ? null : Math.max(1, Math.floor(steps)) };
   const key = cache ? cacheKey(udf, sizes) : null;
   const hit = key && fromCache(cache, key);
   if (hit) return { ok: true, ...hit, udf, ...sizes, cached: true };
@@ -77,7 +89,7 @@ export function compileTransform(udf, { batch = 4096, chunk = 64, cache = null }
   // The whole program. The harness calls transform from a function declared
   // with only `fail`, inside par_map, so if it compiles, transform has the
   // contract's type and can only fail.
-  const r = compileSource(program(udf, sizes), { grants: ['input', 'output'] });
+  const r = compileProgram(program(udf, sizes), sizes);
   if (!r.ok) return fail(...diagnose(udf, defs, program(udf, sizes), r.errors));
   const signature = r.signatures.find((s) => s.name === 'transform').type;
   if (key) toCache(cache, key, r.bytes, signature);
@@ -148,7 +160,9 @@ export function runTransform(t, { input, write = null, threads = null }) {
   const r = runWasm(t.bytes, { input: src, threads, write: (b) => { src.mark(); if (write) write(b); else kept.push(b.slice()); } });
   const output = write ? undefined : new TextDecoder().decode(Buffer.concat(kept));
   if (!r.error) return { ok: true, lines: r.lines, output };
-  return { ok: false, error: r.item ? located(t, src.sinceMark(), r) : r.error, lines: r.lines, output };
+  const error = r.item ? located(t, src.sinceMark(), r) : r.error;
+  const why = /out of steps$/.test(error) ? ` (each line may take ${t.steps.toLocaleString('en')} steps)` : '';
+  return { ok: false, error: error + why, lines: r.lines, output };
 }
 
 // The error of a run that failed in par_map, with the line that failed: the
@@ -166,7 +180,8 @@ function located(t, read, r) {
   const first = t.first + before + lo;
   if (chunk.length === 1) return `line ${first}: ${r.error}`;
   const span = `lines ${first} to ${first + chunk.length - 1}: ${r.error}`;
-  const again = compileSource(program(t.udf, { first, batch: t.chunk, chunk: 1 }), { grants: ['input', 'output'] });
+  const sizes = { first, batch: t.chunk, chunk: 1, steps: t.steps };
+  const again = compileProgram(program(t.udf, sizes), sizes);
   if (!again.ok) return span;
   const r2 = runWasm(again.bytes, { input: Buffer.concat(chunk), threads: 1, write: () => {} });
   return r2.item ? `line ${first + r2.item.index}: ${r2.error}` : span;

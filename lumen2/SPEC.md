@@ -436,7 +436,11 @@ constraints.
   so far is kept. The messages are `integer overflow`, `float overflow`,
   `division by zero`, `square root of a negative number`,
   `index out of bounds`, `panic: <message>`, `out of memory`,
-  `string too long` and `stack overflow`. How deep non-tail recursion can
+  `string too long` and `stack overflow`. Code compiled with step counting
+  (only `lumen2 transform` asks for it) also stops with `out of steps`
+  when its budget runs out: a step is a function call or a turn of a loop
+  that a self tail call makes, and the builtin `tf_steps(n)` sets the
+  budget to `n` (without step counting it does nothing). How deep non-tail recursion can
   go before `stack overflow` is up to the implementation: the interpreter
   allows 10,000 nested calls, and compiled code allows as many as the
   WebAssembly engine's stack holds.
