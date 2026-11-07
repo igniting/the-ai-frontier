@@ -293,9 +293,10 @@ table.t.trace td code { white-space: nowrap; }
     <li><a href="#lumen2-port"><span class="n">21</span>Retiring the JavaScript compiler</a></li>
     <li><a href="#lumen2-speed"><span class="n">22</span>How fast is it, next to C?</a></li>
     <li><a href="#lumen2-transform"><span class="n">23</span>Other people's code, on every core</a></li>
+    <li><a href="#lumen2-floats"><span class="n">24</span>Numbers that are always numbers</a></li>
     <li class="toc-part">Part six · Mistakes and limits</li>
-    <li><a href="#caught"><span class="n">24</span>What the checks caught, including my mistakes</a></li>
-    <li><a href="#limits"><span class="n">25</span>What this shows, and what it doesn't</a></li>
+    <li><a href="#caught"><span class="n">25</span>What the checks caught, including my mistakes</a></li>
+    <li><a href="#limits"><span class="n">26</span>What this shows, and what it doesn't</a></li>
   </ol>
 </header>
 
@@ -320,7 +321,8 @@ table.t.trace td code { white-space: nowrap; }
   uses all of it to prove a theorem, and explains SAT solving and proof checking on the way. <b>Part five</b> starts
   again: a second language, designed with what the first one taught me, that proves its own array accesses safe,
   needs no garbage collector, proves the same theorem, ends up with its whole compiler written in itself, runs
-  within 1.1 to 2.9 times of C, runs on every core, and runs other people's code there safely. <b>Part six</b> lists what went wrong and what this does
+  within 1.1 to 3.5 times of C, runs on every core, runs other people's code there safely, and has floats that
+  are always numbers. <b>Part six</b> lists what went wrong and what this does
   and doesn't show.</p>
 </section>
 
@@ -2364,7 +2366,7 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
   <h3>Copying the accidents</h3>
   <p>Byte-identical output means reproducing the original's accidents, not just its algorithms. The SAT solver
   ranks variables by activities that JavaScript stores as floating-point numbers, and every decision it makes
-  follows a comparison between two of them. Lumen 2 has no floating point, so the port computes IEEE 754 doubles
+  follows a comparison between two of them. Lumen 2 had no floating point then, so the port computes IEEE 754 doubles
   exactly with integers: a mantissa and an exponent, rounded to nearest with ties to even, as the hardware does.
   A test compares it with the engine's doubles on thousands of random additions and multiplications. JavaScript's
   maps iterate in insertion order, and the order of drops, of captured variables and of the per-type functions in
@@ -2640,10 +2642,108 @@ error: `transform` can use randomness, but a transform may only compute (and fai
   so I took it out again. Together, the three changes brought the transform's run from 3.4 to 2.5 seconds on one
   thread, and from 1.9 to 1.4 seconds on four.</p>
   <p>What is left is mostly structure. The main thread reads the lines and writes the output while the other
-  threads wait, so four threads give 1.8 times the speed of one, not 4. With no floating point, a transform can
-  handle money exactly, as decimals in hundredths, but cannot parse a measurement. A quoted CSV field cannot hold
+  threads wait, so four threads give 1.8 times the speed of one, not 4. Without floating point, a transform could
+  handle money exactly, as decimals in hundredths, but not parse a measurement (chapter 24 adds floats). A quoted CSV field cannot hold
   a line break, because lines are split first. And nothing limits a transform's time: one that loops forever
   runs forever, though its memory stops at the WebAssembly memory's 1 GB.</p>
+</section>
+
+<section class="chapter" id="lumen2-floats">
+  <p class="chapter-label">24 · Part five</p>
+  <h2>Numbers that are always numbers</h2>
+  <p>Asked “What next in this project?”, I named the limitation that every section had come to end on: Lumen 2
+  had no floating point. A transform could not parse a temperature, the benchmarks could not include the usual
+  numeric programs, and the language could not simulate anything. The answer was “Yes”.</p>
+  <p>The one real design decision was what to do about infinity and NaN. In C, JavaScript or Python, a division
+  by zero or an overflow quietly produces one, and a NaN then compares unequal to everything, itself included,
+  sorts nowhere in particular, and spreads through every result that touches it. Lumen 2 already refused to let
+  integers wrap silently, so a <code>Float</code> follows the same rule: it is an IEEE 754 double that is always
+  finite. An operation whose result would be infinite stops the program with <code>float overflow</code>, and
+  <code>x / 0.0</code> stops with <code>division by zero</code>. With finite operands there is then no way to make
+  a NaN at all. Equality, ordering and sorting work on floats as on any other type, and a result is the same bits
+  on every machine and every thread.</p>
+  <figure>
+    <pre class="listing">fn mean(xs: List&lt;Float&gt;) -&gt; Float { fold(xs, 0.0, |acc, x| acc + x) / int_to_float(length(xs)) }
+
+mean([1.5, 2.5, 3.0])     <span class="c">// 2.3333333333333335</span>
+0.1 + 0.2                 <span class="c">// 0.30000000000000004</span>
+1e308 * 10.0              <span class="c">// runtime error: float overflow</span></pre>
+  </figure>
+  <p>Arithmetic now takes two integers or two floats, never one of each. Inference has to settle which, and
+  <code>fold(xs, 0.0, |acc, x| acc + x)</code> shows why it cannot decide on the spot: the lambda is checked
+  before the call tells it that <code>acc</code> is a float. So an operator whose operands are still unknown
+  waits, and is settled when its top-level function is finished; one still unknown then is an integer, so every
+  program written before floats keeps its types.</p>
+
+  <h3>Rounding literals without floats</h3>
+  <p>The compiler is a Lumen 2 program that does not use floats, yet it has to turn a literal such as
+  <code>0.1</code> into the 64 bits of the nearest double. It does the arithmetic exactly, with the bignums its
+  refinement checker already had: the decimal becomes a fraction, scaled until its quotient has 54 bits, and the
+  last bit and the remainder decide the rounding, ties to even, with subnormals handled apart. The interpreter
+  reads the same literal with JavaScript's <code>Number</code>, so a test compares the two on 600 literals, among
+  them exact ties between adjacent doubles, values a hair to either side, and subnormal ties. They agree on every
+  bit. Writing and reading floats as text is left to the host, JavaScript, whose shortest round-trip formatting is
+  hard to get right; compiled code and the interpreter call the same functions.</p>
+
+  <h3>An old bug, found by the new fuzzer</h3>
+  <p>Half the fuzzer's programs now use floats, and in the first 300 one made the compiler run out of memory.
+  The cause had nothing to do with floats. It was <code>(c1 - c2) * 7</code>, tested to lie between 0 and 6,
+  halved, and used as an index into an array of three. The refinement checker built <code>7*c1 - 7*c2</code> and
+  <code>c1 - c2</code> as two separate 64-bit adders, and the SAT solver had to discover that one was seven times
+  the other, and its search, which keeps every clause it learns, ran the compiler out of memory first. The
+  compiler from before floats failed the same way. Now every comparison is divided by the greatest common divisor of its coefficients, and every term
+  is built as that divisor times a shared reduced sum, so <code>7*c1 - 7*c2</code> reuses the circuit of
+  <code>c1 - c2</code>. What the facts say about one then reaches the other by unit propagation, and the proof
+  takes no search. Every program in the repository proves exactly the obligations it proved before.</p>
+
+  <h3>Against C</h3>
+  <div class="table-wrap">
+    <table class="t">
+      <thead><tr><th>program</th><th style="text-align:right">C</th><th style="text-align:right">C, WebAssembly</th><th style="text-align:right">Lumen 2</th><th style="text-align:right">Lumen 2 / C</th></tr></thead>
+      <tbody>
+        <tr><td>n-body, 5,000,000 steps</td><td class="num">0.25 s</td><td class="num">0.31 s</td><td class="num">0.70 s</td><td class="num">2.8×</td></tr>
+        <tr><td>spectral norm, n = 3,000</td><td class="num">0.47 s</td><td class="num">0.47 s</td><td class="num">1.63 s</td><td class="num">3.5×</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="caption">Best of three on one core of the same machine. Each Lumen 2 program does the same
+  floating-point operations as the C one, in the same order, and prints the same digits: −0.169075164 and
+  −0.169087605 for n-body, the published reference values.</p>
+  <p>Floats cost more than integers did, and I measured why. The first version tested every float result for
+  being finite, and dropping all those tests (as a planted bug) made n-body take a third less time. But an infinity or a
+  NaN stays one through <code>+</code>, <code>-</code> and <code>*</code>, so a result whose only use is the next
+  such operation needs no test of its own: the later test fails exactly when the earlier one would have, with the
+  same message. In <code>dx * dx + dy * dy + dz * dz</code> only the last addition is tested now, and n-body went
+  from 0.75 to 0.55 seconds. A division is not such a use, because <code>1 / inf</code> is 0, and a planted bug
+  that treats it as one must be caught by the fuzzer. Spectral norm had a cost of its own. Multiplying two
+  integers tested for overflow by dividing the product back, a 64-bit division; when both operands fit in 32 bits
+  the product cannot overflow, two comparisons show it, and spectral norm went from 2.2 to 1.6 seconds.</p>
+
+  <h3>The same sum on any number of threads</h3>
+  <p>A parallel sum of floats is where C and Lumen 2 differ most. Floating-point addition does not associate, so
+  the answer depends on how the terms are grouped. With OpenMP's <code>reduction</code>, each thread sums its own
+  share, and the shares depend on how many threads there are:</p>
+  <div class="table-wrap">
+    <table class="t">
+      <thead><tr><th style="text-align:right">threads</th><th style="text-align:right">C, OpenMP reduction</th><th style="text-align:right">Lumen 2, par_map</th></tr></thead>
+      <tbody>
+        <tr><td class="num">1</td><td class="num">0.69314713056010635</td><td class="num">0.6931471305599604</td></tr>
+        <tr><td class="num">2</td><td class="num">0.69314713056006005</td><td class="num">0.6931471305599604</td></tr>
+        <tr><td class="num">3</td><td class="num">0.69314713056002475</td><td class="num">0.6931471305599604</td></tr>
+        <tr><td class="num">4</td><td class="num">0.69314713056005628</td><td class="num">0.6931471305599604</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="caption">The 10 million terms of 1 − 1/2 + 1/3 − …, in <code>lumen2/bench/sum-par.c</code> and
+  <code>sum-par.lm</code>.</p>
+  <p>The Lumen 2 program splits the terms into 1,000 blocks, which <code>par_map</code> sums, and adds up the
+  block sums in order. The blocks do not depend on the number of threads, and <code>par_map</code> returns their
+  sums in order, so the result is the same bits on one thread or four. A C programmer can get the same guarantee by
+  writing the loop that way. In Lumen 2, a parallel map cannot be written any other way.</p>
+  <p>What is missing is mostly a library: there are no <code>exp</code>, <code>log</code>, power or trigonometric
+  functions yet, and the refinement checker proves nothing about floats except that a literal other than
+  <code>0.0</code> is not zero, so <code>x / 2.0</code> is pure while <code>x / y</code> keeps
+  <code>fail</code>.</p>
 </section>
 
 <div class="part">
@@ -2654,7 +2754,7 @@ error: `transform` can use randomness, but a transform may only compute (and fai
 </div>
 
 <section class="chapter" id="caught">
-  <p class="chapter-label">24 · Part six</p>
+  <p class="chapter-label">25 · Part six</p>
   <h2>What the checks caught, including my mistakes</h2>
   <ul class="plain">
     <li><b>A real bug in the reference interpreter.</b> A random program grew a string eightfold per step.
@@ -2761,6 +2861,16 @@ error: `transform` can use randomness, but a transform may only compute (and fai
     with tasks of one line found it.</li>
     <li><b>A test expectation I got wrong.</b> I expected <code>split(" aAbabZ, b ", "ab")</code> to give three
     parts. <code>"ab"</code> occurs once in that string, so it gives two, as the library did.</li>
+    <li><b>An old proof that ran out of memory, found by the new fuzzer.</b> A product of a difference by a
+    constant made the refinement checker build two adders that the SAT solver had to find equal; the compiler from
+    before floats failed the same way (chapter 24).</li>
+    <li><b>A planted bug the fuzzer could not see.</b> The fast path for multiplying two integers that fit in 32
+    bits came with a planted bug that allows 33. The fuzzer missed it in 300 programs: its large numbers were
+    constants, which take another path, and two of them in the window between 2<sup>31</sup> and 2<sup>33</sup>
+    whose product overflows never met. It now multiplies values read from an array, and catches the bug.</li>
+    <li><b>A test that knew which counterexample to expect.</b> After the change to how terms become circuits,
+    the solver found <code>j = -1</code> where the test expected an index past the end. Both break the contract;
+    the test now accepts either.</li>
     <li><b>A benchmark in C that disagreed with itself.</b> The edit-distance program printed one answer natively
     and another compiled to WebAssembly. <code>long</code> is 32 bits there, and the random number generator
     overflowed. The benchmark runner compares every version's output, so the mistake never reached a timing.</li>
@@ -2788,6 +2898,7 @@ error: `transform` can use randomness, but a transform may only compute (and fai
     <li><span class="when">every core</span>“let's test the parallelism part as well?” <code>par_map</code>, threads that share one memory and count references atomically while they run, and three parallel benchmarks against C with OpenMP.</li>
     <li><span class="when">the theorem in parallel</span>“Yes go ahead with proof.” S(4) = 44 by cube and conquer: 256 cubes refuted with <code>par_map</code>, one checked refutation, 22 seconds instead of 8 minutes.</li>
     <li><span class="when">other people's code</span>“Anything else which is easier/faster in this language and is more practical as well”. <code>lumen2 transform</code>, which runs a user's function over a file on every core after checking that it can only compute, against the same function in C, JavaScript and Python; and reference counting inlined. <a href="https://github.com/igniting/the-ai-frontier/tree/main/lumen2/transform">lumen2/transform/</a></li>
+    <li><span class="when">floats</span>“What next in this project?” Floats that are always finite, literals rounded exactly by the compiler, n-body and spectral norm against C, and a parallel sum that is the same bits on any number of threads. <a href="https://github.com/igniting/the-ai-frontier/tree/main/lumen2/bench">lumen2/bench/</a></li>
   </ol>
   <p class="aside">The conversation outgrew my working memory and had to be summarized partway through, more than
   once, and the machine I ran on restarted once during a five-minute check. What made it safe to pick up the
@@ -2796,7 +2907,7 @@ error: `transform` can use randomness, but a transform may only compute (and fai
 </section>
 
 <section class="chapter" id="limits">
-  <p class="chapter-label">25 · Part six</p>
+  <p class="chapter-label">26 · Part six</p>
   <h2>What this shows, and what it doesn't</h2>
   <p>It shows one long session of sustained engineering in which each layer was checked by the one below it. The
   work is a compiler, an independent re-implementation of it, a prover with a proof checker, an optimizer gated by
@@ -2811,11 +2922,11 @@ error: `transform` can use randomness, but a transform may only compute (and fai
   <a href="https://github.com/igniting/the-ai-frontier/blob/main/CHALLENGE.md">CHALLENGE.md</a> turns the original
   task into a benchmark with an automatic scorer. S(4) = 44 has been known since 1965; what is new here is that a
   language built in this session produced the proof, not the result itself. Lumen is also small by design: no
-  floating point, no modules, 31-bit integers, and arrays as its only mutable values. Lumen 2 has no floating
-  point or modules either. Its refinements are limited to linear arithmetic over integers and array lengths, plus one fact
+  floating point, no modules, 31-bit integers, and arrays as its only mutable values. Lumen 2 has no modules
+  either, and its floats have no exponential, logarithm or trigonometric functions yet. Its refinements are limited to linear arithmetic over integers and array lengths, plus one fact
   about every element of an array, and it
   reuses memory only where the size of a cell is known when compiling. Its S(4) proof rests on the same symmetry
-  argument as Lumen's. Its comparison with C covers four small programs, three of them also on four cores, and
+  argument as Lumen's. Its comparison with C covers six small programs, four of them also on four cores, and
   one data transformation, which is also compared with JavaScript and Python. And
   every timing here comes from one JavaScript engine on one machine.</p>
   <h3>Reproduce it</h3>
@@ -2830,7 +2941,7 @@ node superopt/verify.js                     <span class="c"># re-prove the 40 ru
 node bench/gate.js                          <span class="c"># the whole gate, about 7 minutes</span>
 node proofs/prove-schur.js 4 44             <span class="c"># prove S(4) = 44, about 6 minutes</span>
 
-cd lumen2 &amp;&amp; npm test &amp;&amp; cd ..              <span class="c"># Lumen 2: 68 tests</span>
+cd lumen2 &amp;&amp; npm test &amp;&amp; cd ..              <span class="c"># Lumen 2: 78 tests</span>
 node lumen2/test/fuzz.js 1000               <span class="c"># Lumen 2: differential fuzzing, four ways</span>
 node lumen2/test/fuzz.js --mutants          <span class="c"># all 24 planted bugs must be caught</span>
 node lumen2/superopt/verify.js              <span class="c"># re-prove the 19 rewrite rules</span>

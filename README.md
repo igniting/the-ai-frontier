@@ -57,7 +57,9 @@ sorts a million numbers in place with 106 allocations, and is proved unable
 to fail. The S(4) proof is also checked by a DRUP checker written in Lumen 2
 whose every array access is proved in bounds, so it cannot crash. On four
 [benchmark programs](lumen2/README.md#how-fast-it-is), the same algorithm
-takes 1.1 to 2.9 times as long in Lumen 2 as in C compiled natively, and
+takes 1.1 to 3.5 times as long in Lumen 2 as in C compiled natively
+(the slowest two are on floats, which are never infinite or NaN, so a
+parallel float sum is the same bits on any number of threads), and
 `par_map`, whose function the types keep free of input and output, runs on
 every core: on four, faster than C on one. The same guarantee makes
 [`lumen2 transform`](lumen2/README.md#user-defined-functions-lumen2-transform)

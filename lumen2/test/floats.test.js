@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { checkSource, interpretSource, compileSource, runSource, testSource, makeHost, runWasm } from '../src/api.js';
 import { floatToString, parseFloatText } from '../src/floats.js';
+import { readFileSync } from 'node:fs';
 
 // Runs src compiled (normally and in paranoid mode) and interpreted; all must agree.
 function agree(src) {
@@ -162,4 +163,12 @@ test('text: floatToString and parseFloatText', () => {
   assert.equal(floatToString(-2.5), '-2.5');
   for (const [s, v] of [['1.5', 1.5], ['-2e3', -2000], ['.5', 0.5], ['5.', 5], ['+7', 7], ['1e-400', 0]]) assert.equal(parseFloatText(s), v, s);
   for (const s of ['1e999', 'x', '', '1.2.3', ' 1', '0x10', 'Infinity', 'NaN', '1_000', '.', 'e5']) assert.ok(Number.isNaN(parseFloatText(s)), s);
+});
+
+test('a parallel sum of floats is the same, bit for bit, on any number of threads', () => {
+  // bench/sum-par.lm: par_map adds up fixed blocks, whose sums come back in order.
+  const bytes = compileSource(readFileSync(new URL('../bench/sum-par.lm', import.meta.url), 'utf8'), { grants: ['input', 'output'] }).bytes;
+  const outs = [1, 2, 3, 4].map((threads) => runWasm(bytes, { input: '200000', threads }).output);
+  for (const o of outs) assert.equal(o, outs[0]);
+  assert.match(outs[0], /^0\.6931\d+\n$/);
 });

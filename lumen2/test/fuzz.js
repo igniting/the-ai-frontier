@@ -114,7 +114,7 @@ export function generate(seed) {
   };
 
   const SMALL = ['0', '1', '2', '3', '7', '-1', '-5', '10', '100'];
-  const BIG = ['9223372036854775807', '-9223372036854775808', '4611686018427387904', '3037000499'];
+  const BIG = ['9223372036854775807', '-9223372036854775808', '4611686018427387904', '3037000499', '4294967295', '-3037000500'];
   const intLit = () => (chance(0.1) ? pick(BIG) : pick(SMALL));
   const STRS = ['""', '"a"', '"b"', '"ab"', '"hello"', '"Zz"', '"0"', '"mid dle"'];
 
@@ -289,6 +289,11 @@ export function generate(seed) {
   // Arithmetic with a constant, on the exact edge of overflowing (or just past it).
   function edge() {
     const MAX = (1n << 63n) - 1n, MIN = -(1n << 63n);
+    // Two values the compiler cannot see, around the 32-bit and overflow boundaries.
+    if (chance(0.3)) {
+      const vals = ['4294967295', '3037000500', '-3037000500', '3037000499', '2147483647', '2147483648', '-2147483648', '-2147483649', '65536', '-7'];
+      return `{ let ea = array_from_list([${pick(vals)}, ${pick(vals)}]); array_get(ea, 0) * array_get(ea, 1) }`;
+    }
     const c = BigInt(pick(['2', '3', '-3', '10', '-1', '7']));
     if (chance(0.5)) {
       const lo = MIN / c < MAX / c ? MIN / c : MAX / c, hi = MIN / c < MAX / c ? MAX / c : MIN / c;
@@ -409,11 +414,14 @@ export function generate(seed) {
     } else stmts.push(`println(${show(t, gen(t, 4, env))});`);
     // Now and then, a partial operation main is sure to reach.
     if (chance(0.3)) stmts.push(`println(int_to_string(${refined(3, env)}));`);
+    // ... or integer arithmetic at the edge of overflowing.
+    if (chance(0.12)) stmts.push(`println(int_to_string(${edge()}));`);
     // ... or float arithmetic at the edge of what a Float can hold.
     if (floats && chance(0.15)) stmts.push(`println(float_to_string(${pick([
       `(${pick(['1e308', '-1e308', '1.7976931348623157e308'])} ${pick(['*', '+', '-'])} ${pick(['1.0', '2.0', '1e-300', '0.5', '1.7976931348623157e308', '-1e308'])})`,
       `(${pick(['1.0', '0.0', '-2.5'])} / ${pick(['0.0', '-0.0', '1e-310', '3.0'])})`,
       `sqrt(${pick(['-1.0', '-0.0', '0.0', '2.0', '-5e-324'])})`,
+      `(${pick(['1.0', '-3.5'])} / (${pick(['1e308', '-1e300', '2.0'])} * ${pick(['10.0', '1e10', '0.5'])}))`,
       `int_to_float(float_to_int(${pick(['9.2e18', '9.3e18', '-9.223372036854775808e18', '-9.3e18', '1e300'])}))`,
     ])}));`);
     // ... and an update that must leave the original value as it was.
@@ -479,6 +487,9 @@ export const MUTANTS = [
   'peek-source-early', // release a value while a borrowed projection of it is about to be read
   'unpack-always-unique', // move the fields out of a cell even when it is shared
   'mul-const-bound', // an off-by-one in the overflow bound for multiplying by a constant
+  'mul-fast-bound', // multiply without the overflow test when both operands fit in 33 bits, not 32
+  'float-no-overflow', // add, subtract and multiply floats without testing that the result is finite
+  'float-defer-div', // leave a float's test to a division of it, which can turn an infinity into 0
   'superopt-ignore-when', // apply the superoptimizer's rewrite rules without checking their side conditions
   'refine-div-range', // a remainder range one too narrow in the checker's model of division by a constant
   'refine-push-forgets', // forget the element array_push adds when tracking what an array's elements are

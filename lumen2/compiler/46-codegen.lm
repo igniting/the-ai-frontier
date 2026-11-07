@@ -991,6 +991,26 @@ fn field_local(v, k) { v ++ "$" ++ int_to_string(k) }
 // (array_get, array_length), since a call that borrows it could keep a
 // reference. The set is only ever smaller than the truth: any other use, or a
 // new binding of the name, takes the name out.
+fn is_farith(o) { o == "fadd" || o == "fsub" || o == "fmul" || o == "fdiv" }
+// Whether the float result v, defined just before b, needs no test that it
+// is finite: its one use is the next float + - or * on the path (whose
+// result is tested, or passes the test on in the same way), with only float
+// + - * and negations of other values in between. An infinity or NaN stays
+// one through + - * (inf - inf and 0 * inf are NaN), so the later test fails
+// exactly when this one would have, with the same message, and nothing
+// between can print or fail any other way. A division is not such a use: it
+// can turn an infinity into 0. (Mutant float-defer-div: it is.)
+fn f_deferrable(v, b, mutant) {
+  let uses = |args| any(args, |x| match x { QVar(w) -> w == v, _ -> false });
+  match b {
+    ILet(_, RPrim(o, args, _), rest) ->
+      if o == "fadd" || o == "fsub" || o == "fmul" || (mutant == "float-defer-div" && o == "fdiv") {
+        if uses(args) { !contains_str(ir_vars(rest, []), v) } else { f_deferrable(v, rest, mutant) }
+      } else if o == "fneg" && !uses(args) { f_deferrable(v, rest, mutant) }
+      else { false },
+    _ -> false,
+  }
+}
 fn ir_vars(e, acc) {
   match e {
     ILet(v, RExpr(x), b) -> ir_vars(b, ir_vars(x, [v, ..acc])),
@@ -1204,7 +1224,14 @@ fn gen_fn(gx, cg, f) {
       } else if o == "mul" {
         let xc = match cb { Some(k) -> Some((a, k)), None -> match ca { Some(k) -> Some((b, k)), None -> None } };
         match xc {
-          None -> None,
+          // Two Ints that both fit in 32 bits have a product that fits in 63:
+          // test that with an unsigned comparison each (x + 2^31 < 2^32), and
+          // only otherwise call int_mul, whose test needs a 64-bit division.
+          // (Mutant mul-fast-bound: 33 bits, whose products can overflow unnoticed.)
+          None -> {
+            let fits = |x| CL([at_code(x), wi64(2147483648), wop("i64.add"), wi64(if mutant == "mul-fast-bound" { 8589934592 } else { 4294967296 }), wop("i64.lt_u")]);
+            Some(CL([fits(a), fits(b), wop("i32.and"), wif_r("i64"), at_code(a), at_code(b), wop("i64.mul"), wop("else"), at_code(a), at_code(b), wcall("int_mul"), wend()]))
+          },
           Some((x, c)) -> if c == 0 { Some(wi64(0)) } else if c == 1 { Some(at_code(x)) } else if c == 0 - 1 { None } else {
             // x * c fits exactly when x lies between MIN / c and MAX / c (rounded inwards).
             let lo = if c > 0 { int_min() / c } else { int_max() / c };
@@ -1316,18 +1343,24 @@ fn gen_fn(gx, cg, f) {
       }
       else { internal("codegen: builtin " ++ name) }
     };
-    let rhs = |cg, r| match r {
-      RAtom(a) -> atom(cg, a),
-      RPrim(o, args, ty) -> if o == "fadd" || o == "fsub" || o == "fmul" {
-        let (ac, cg) = atoms(cg, args);
-        (CL([ac, wop(if o == "fadd" { "f64.add" } else if o == "fsub" { "f64.sub" } else { "f64.mul" }), wset("$f"), wfinite("$f"), wget("$f")]), cg)
-      } else if o == "fdiv" {
-        let (ac, cg) = atoms(cg, args);
+    // Float + - * /, with the test that the result is finite unless `tested`
+    // is false (see f_deferrable).
+    let farith = |cg, o, args, tested| {
+      let (ac, cg) = atoms(cg, args);
+      // (Mutant float-no-overflow: no test, so an infinity goes on silently.)
+      let check = if !tested || (mutant == "float-no-overflow" && o != "fdiv") { wnone() } else { wfinite("$f") };
+      if o == "fdiv" {
         let b = list_get(args, 1);
         // A constant divisor other than 0.0 and -0.0 needs no test.
         let zero_test = match b { QFloat(n) -> if n == 0 || n == int_min() { CL([wi32(1), wtrap(k_divzero())]) } else { wnone() }, _ -> CL([at_code(b), wf64(0), wop("f64.eq"), wtrap(k_divzero())]) };
-        (CL([zero_test, ac, wop("f64.div"), wset("$f"), wfinite("$f"), wget("$f")]), cg)
-      } else if o == "fneg" {
+        (CL([zero_test, ac, wop("f64.div"), wset("$f"), check, wget("$f")]), cg)
+      } else {
+        (CL([ac, wop(if o == "fadd" { "f64.add" } else if o == "fsub" { "f64.sub" } else { "f64.mul" }), wset("$f"), check, wget("$f")]), cg)
+      }
+    };
+    let rhs = |cg, r| match r {
+      RAtom(a) -> atom(cg, a),
+      RPrim(o, args, ty) -> if is_farith(o) { farith(cg, o, args, true) } else if o == "fneg" {
         let (c, cg) = atom(cg, list_get(args, 0));
         (CL([c, wop("f64.neg")]), cg)
       } else {
@@ -1450,7 +1483,13 @@ fn gen_fn(gx, cg, f) {
           let free = match reuse { Some(tok) -> CL([wget(tok), wif(), wget(tok), wi32(8 + 8 * n), wcall("rt_free"), wend()]), None -> wnone() };
           expr(([CL(map(reverse(range(0, n)), |k| wset(field_local(v, k)))), ac, free, ..out], cg, nl), b, label, uq_after(gx_uniq(gx), uq, v, RTuple(ty, args, reuse)))
         } else { let (c, cg) = rhs(cg, RTuple(ty, args, reuse)); expr(([wset(v), c, ..out], cg, nl), b, label, uq_after(gx_uniq(gx), uq, v, RTuple(ty, args, reuse))) },
-        ILet(v, r, b) -> { let (c, cg) = rhs_uq(cg, r, uq); expr(([wset(v), c, ..out], cg, nl), b, label, uq_after(gx_uniq(gx), uq, v, r)) },
+        ILet(v, r, b) -> {
+          let (c, cg) = match r {
+            RPrim(o, args, _) -> if is_farith(o) && !gx_paranoid(gx) && f_deferrable(v, b, mutant) { farith(cg, o, args, false) } else { rhs_uq(cg, r, uq) },
+            _ -> rhs_uq(cg, r, uq),
+          };
+          expr(([wset(v), c, ..out], cg, nl), b, label, uq_after(gx_uniq(gx), uq, v, r))
+        },
         IRet(r) -> match (label, r, ret_es) {
           // Returning unboxed: fields go out as the results.
           (None, RCall(g, args), Some(es)) -> {

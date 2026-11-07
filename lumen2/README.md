@@ -40,16 +40,22 @@ no garbage collector.** Lumen 2 is a fresh design, not an extension of
   JavaScript compiler was deleted.
 - **64-bit integers that never wrap silently.** Overflow is a runtime error,
   not a wrong answer.
-- **Within 1.1 to 2.9 times of C.** On four benchmark programs, the same
-  algorithm takes 1.1 to 2.9 times as long in Lumen 2 as in C compiled
-  natively, with no mutation in the source and, where the program's types
-  say so, every array access proved in bounds
-  ([how fast it is](#how-fast-it-is)).
+- **Floats that are always numbers.** A `Float` is a double that is never
+  infinite and never NaN: an operation whose result would be stops the
+  program, as integer overflow does. So equality and order on floats
+  behave, and a sum computed with `par_map` is the same, bit for bit, on
+  any number of threads, where C with OpenMP gives a different answer for
+  each ([floats](#floats)).
+- **Within 1.1 to 3.5 times of C.** On six benchmark programs, four on
+  integers and two on floats, the same algorithm takes 1.1 to 3.5 times as
+  long in Lumen 2 as in C compiled natively, with no mutation in the source
+  and, where the program's types say so, every array access proved in
+  bounds ([how fast it is](#how-fast-it-is)).
 - **Every core, safely.** `par_map` runs a function on every core. The
   types guarantee that the function does no input or output and uses
   neither the clock nor randomness, so the parallel result is the
-  sequential one. On four cores, three benchmarks run 2.8 to 3.4 times
-  faster than on one, and faster than C on one core
+  sequential one. On four cores, four benchmarks run 2.4 to 3.5 times
+  faster than on one, and three of them faster than C on one core
   ([on every core](#on-every-core)).
 - **Users' code on your data, safely and on every core.** `lumen2
   transform` runs a user's function over every line of a file. A function
@@ -77,7 +83,7 @@ counting, property tests and certificates, all in the browser) ·
 
 ```sh
 cd lumen2
-npm test                                         # 68 tests, about 4 minutes
+npm test                                         # 78 tests, about 3 minutes
 node bin/lumen2.js check examples/refine.lm      # inferred types, effects, refinements
 node bin/lumen2.js run examples/tour.lm          # compile to wasm and run
 node bin/lumen2.js test examples/properties.lm   # check the properties
@@ -92,7 +98,8 @@ node proofs/check-drup.js s4/schur-4-45.cnf s4/schur-4-45.drup   # check it agai
 node superopt/search.js                          # search for rewrite rules (about 30 s)
 node superopt/verify.js                          # re-prove every rule the compiler applies
 node selfhost/bootstrap.js                       # the self-hosting fixed point (about 3 s)
-node bench/run.js                                # Lumen 2 against C, on one core and on all (about 3 minutes)
+node bench/run.js                                # Lumen 2 against C, on one core and on all (about 4 minutes)
+LUMEN2_THREADS=3 node bin/lumen2.js run bench/sum-par.lm --allow input --input FILE   # a parallel float sum: the same bits on any number of threads
 node bin/lumen2.js transform transform/examples/orders.lm --input FILE   # a user's function on every line, on every core
 node transform/bench/run.js                      # the same function in Lumen 2, C, JavaScript and Python (about 2 minutes)
 LUMEN2_THREADS=2 node bin/lumen2.js run bench/nqueens-par.lm --allow input --input FILE   # par_map on 2 threads
@@ -316,6 +323,69 @@ annotation means all four. `run` grants `output`. The clock and random
 numbers come from a host that the interpreter and the compiled code share,
 so a seeded run is reproducible.
 
+## Floats
+
+```
+fn mean(xs: List<Float>) -> Float { fold(xs, 0.0, |acc, x| acc + x) / int_to_float(length(xs)) }
+fn main() {
+  println(float_to_string(mean([1.5, 2.5, 3.0])));   // 2.3333333333333335
+  println(float_to_string(0.1 + 0.2));                // 0.30000000000000004
+  println(float_to_string(1e308 * 10.0))              // runtime error: float overflow
+}
+```
+
+A `Float` is an IEEE 754 double, and arithmetic rounds as IEEE 754 says.
+What is different is that a `Float` is always a number. An operation whose
+result would be infinite stops the program with `float overflow`, as an
+`Int` that overflows does, and `x / 0.0` stops with `division by zero`.
+With finite operands, `+ - *` and `/` can only make a NaN by going through
+an infinity or a division by zero, so there is no NaN either. Comparisons,
+equality and sorting then work as on any other type (`-0.0` equals `0.0`).
+And results are the same bits on every machine and every thread.
+
+- **Arithmetic** takes two `Int`s or two `Float`s, never one of each
+  (`int_to_float` and `float_to_int` convert). Inference settles which,
+  even through a lambda, as in `fold(xs, 0.0, |acc, x| acc + x)`; an
+  operand type still unknown at the end of a top-level function is `Int`,
+  so programs written before floats keep their types.
+- **Builtins:** `sqrt`, `float_abs`, `floor`, `ceil`, `trunc`, `round`
+  (halves away from zero), `float_to_string` (the shortest decimal that
+  reads back as the same double, `1.0`, `0.1`, `1e+21`), `float_to_fixed`
+  and `parse_float`, which gives `None` for text that is not a number.
+  There are no `exp`, `log` or trigonometric functions yet.
+- **Effects.** The checker proves nothing about floats, except that a
+  literal other than `0.0` is not zero. So `x / 2.0` is pure, while
+  `x / y` and `sqrt(x)` have `fail` in their types. `float overflow` is not
+  tracked, like `integer overflow`.
+- **Literals** are rounded by the compiler itself, which is written in
+  Lumen 2 and does not use floats: it does the exact arithmetic on
+  bignums. A test compares the result, bit for bit, with JavaScript's
+  `Number`, on 600 literals that include exact ties between two doubles
+  and subnormals. Formatting and parsing are the host's (JavaScript's),
+  and the interpreter uses the same functions, so the two print every
+  float alike.
+
+**The same sum on any number of threads.** [`bench/sum-par.c`](bench/sum-par.c)
+adds up the 10 million terms of `1 - 1/2 + 1/3 - ...` with OpenMP's
+`reduction`: each thread sums its share, and the shares are added up.
+Floating-point addition does not associate, and the shares depend on the
+number of threads, so the answer does too:
+
+| Threads | C (OpenMP `reduction`) | Lumen 2 (`par_map`) |
+| --- | --- | --- |
+| 1 | 0.69314713056010635 | 0.6931471305599604 |
+| 2 | 0.69314713056006005 | 0.6931471305599604 |
+| 3 | 0.69314713056002475 | 0.6931471305599604 |
+| 4 | 0.69314713056005628 | 0.6931471305599604 |
+
+[`bench/sum-par.lm`](bench/sum-par.lm) splits the terms into 1,000 blocks,
+which `par_map` sums, and adds up the block sums in order. The blocks are
+the same however many threads there are, and `par_map` returns their sums
+in order, so the result is the same bits on any number. C can do this too,
+if it is written that way; in Lumen 2, a parallel map cannot be written any
+other way. (The two columns differ from each other because they add in
+different orders, and neither is the exact sum.)
+
 ## A theorem: S(4) = 44
 
 The Schur number S(4) is the largest n for which 1..n can be split into
@@ -524,8 +594,10 @@ is not used again allocates nothing.
 
 ## How fast it is
 
-[`bench/`](bench/) holds four programs, each written twice, in Lumen 2 and
-in C, with the same algorithm in both. `node bench/run.js` compiles every
+[`bench/`](bench/) holds six programs, each written twice, in Lumen 2 and
+in C, with the same algorithm in both, and for the two on floats the same
+floating-point operations in the same order, so that they print the same
+digits. `node bench/run.js` compiles every
 version, runs it, checks that all of them print the same thing, and prints
 the table. The C is compiled natively (`cc -O2`) and also to WebAssembly
 (clang, `wasm32-wasi`), which runs in the same Node as Lumen 2. That column
@@ -536,10 +608,12 @@ compare within a table):
 
 | Program | n | C | C, WebAssembly | Lumen 2 | Lumen 2 / C |
 | --- | --- | --- | --- | --- | --- |
-| [fannkuch-redux](bench/fannkuch.lm): permutations, arrays updated in place | 11 | 3.87 s | 3.62 s | 4.66 s | 1.2× |
-| [binary trees](bench/binarytrees.lm): allocating and freeing trees | 18 | 1.56 s | 1.61 s | 1.74 s | 1.1× |
-| [N-queens](bench/nqueens.lm): backtracking search | 13 | 0.78 s | 0.90 s | 1.50 s | 1.9× |
-| [edit distance](bench/editdist.lm): dynamic programming over arrays | 30,000 | 1.02 s | 1.37 s | 2.97 s | 2.9× |
+| [fannkuch-redux](bench/fannkuch.lm): permutations, arrays updated in place | 11 | 3.07 s | 3.14 s | 3.89 s | 1.3× |
+| [binary trees](bench/binarytrees.lm): allocating and freeing trees | 18 | 1.20 s | 1.32 s | 1.33 s | 1.1× |
+| [N-queens](bench/nqueens.lm): backtracking search | 13 | 0.65 s | 0.70 s | 1.20 s | 1.8× |
+| [edit distance](bench/editdist.lm): dynamic programming over arrays | 30,000 | 1.05 s | 1.15 s | 2.63 s | 2.5× |
+| [n-body](bench/nbody.lm): the planets, in floating point | 5,000,000 | 0.25 s | 0.31 s | 0.70 s | 2.8× |
+| [spectral norm](bench/spectralnorm.lm): matrix-vector products in floating point | 3,000 | 0.47 s | 0.47 s | 1.63 s | 3.5× |
 
 The Lumen 2 programs are ordinary Lumen 2. Nothing in them mutates
 anything: every array update returns a new array, and every loop is a
@@ -562,6 +636,14 @@ Where the rest of the time goes:
   free list and given back as `check` walks the tree. That now costs about
   as much as C's `malloc` and `free`, though the allocator also keeps the
   counts that the leak check reads.
+- **n-body and spectral norm.** A float's result is tested to be finite
+  after every `+ - *` and `/` whose result goes anywhere but into another
+  of them. Leaving all the tests out (a planted bug, which the fuzzer
+  catches) makes n-body 14% faster than it is. The index arithmetic, such
+  as `7 * i + 3` in n-body's array of bodies, is tested for overflow too,
+  though the refinements prove its bounds. And in spectral norm, the matrix
+  element `1.0 / ((i + j) * (i + j + 1) / 2 + i + 1)` costs a division per
+  step, and its integer arithmetic is tested for overflow at every step.
 
 V8 compiles WebAssembly first with a baseline compiler and swaps in
 optimized code only when a function is called again. A C program spends its
@@ -604,6 +686,19 @@ before this work (measured on another day than the table above):
   time.
 - **Common subexpressions.** An arithmetic operation already done on the
   same path, on the same operands, is not done again.
+- **Multiplying small integers.** The test that `a * b` does not overflow
+  divided the product by `b`, a 64-bit division, in a call. When both
+  operands fit in 32 bits the product cannot overflow, and two comparisons
+  show it, so that case is now inline and needs no division. Spectral norm
+  went from 2.18 s to 1.59 s.
+- **Fewer float tests.** An infinity or NaN stays one through `+ - *`, so a
+  float result whose only use is the next such operation needs no test of
+  its own: the test of the result it flows into fails exactly when its
+  would have, with the same message. In `dx * dx + dy * dy + dz * dz` only
+  the last addition is tested. n-body went from 0.75 s to 0.55 s. A
+  division does not pass the test on, since `1 / inf` is 0; paranoid mode
+  keeps every test, and two planted bugs (no tests, and tests left to a
+  division) must be caught.
 - **Reference counting inline.** V8 does not inline a call from one
   WebAssembly function to another, and a call costs more than the few
   instructions that add or remove a reference. So the code generator inlines
@@ -638,17 +733,18 @@ parallel versions that split the same work into tasks
 ([`fannkuch-par.lm`](bench/fannkuch-par.lm),
 [`binarytrees-par.lm`](bench/binarytrees-par.lm),
 [`nqueens-par.lm`](bench/nqueens-par.lm)), and so do the C programs, with
-OpenMP. On the same 4-core machine, best of three, on the same day as the
+OpenMP. On the same 4-core machine, best of three, in the same run as the
 first table:
 
 | Program (split into) | n | C, 1 thread | C, 4 threads | Lumen 2, 1 thread | Lumen 2, 4 threads | Lumen 2's speedup |
 | --- | --- | --- | --- | --- | --- | --- |
-| fannkuch-redux (990 blocks of permutations) | 11 | 3.34 s | 0.86 s | 4.50 s | 1.31 s | 3.4× |
-| binary trees (the 8 depths) | 18 | 1.55 s | 1.14 s | 1.83 s | 0.66 s | 2.8× |
-| N-queens (the 132 placements of two queens) | 13 | 0.77 s | 0.22 s | 1.56 s | 0.49 s | 3.2× |
+| fannkuch-redux (990 blocks of permutations) | 11 | 2.57 s | 0.67 s | 3.78 s | 1.09 s | 3.5× |
+| binary trees (the 8 depths) | 18 | 1.13 s | 0.79 s | 1.53 s | 0.52 s | 3.0× |
+| N-queens (the 132 placements of two queens) | 13 | 0.60 s | 0.16 s | 1.31 s | 0.43 s | 3.1× |
+| spectral norm (the rows of each product) | 3,000 | 0.41 s | 0.17 s | 1.45 s | 0.60 s | 2.4× |
 
-On four cores, Lumen 2 is faster than C on one in all three. It is faster
-than C on four in binary trees, where every thread allocates millions of
+On four cores, Lumen 2 is faster than C on one in the first three, and not
+in spectral norm. It is faster than C on four in binary trees, where every thread allocates millions of
 nodes: each Lumen 2 thread allocates from memory of its own, while the C
 threads share `malloc`. The Lumen 2 times on threads include starting them.
 
@@ -742,6 +838,9 @@ exact decimals such as money, in hundredths), text (`split`, `trim`,
 `lower`, `upper`, `starts_with`, `ends_with`, `index_of`, `includes`,
 `replace_all`, `pad_left`) and a `hash` that is the same on every machine.
 [`logs.lm`](transform/examples/logs.lm) reads web server logs with them.
+Floats come from the language's `parse_float` and `float_to_fixed`:
+[`sensors.lm`](transform/examples/sensors.lm) converts temperature
+readings and marks the high ones.
 A compiled transform is kept in `~/.cache/lumen2/transforms` under the hash
 of everything it was compiled from, so running it again skips checking and
 compiling.
@@ -782,9 +881,8 @@ the whole command, best of three, on the same 4-core machine:
   1.8 times as fast, not 4, because the main thread reads the lines and
   writes the output while the others wait.
 
-**Limitations.** There is no floating point, so measurements such as
-temperatures cannot be parsed, though money can (as exact decimals). A
-quoted CSV field cannot hold a line break, since lines are split first.
+**Limitations.** A quoted CSV field cannot hold a line break, since lines
+are split first.
 Strings are bytes: `lower` and `upper` change only ASCII letters. Nothing
 limits a transform's time, so one that loops forever runs forever; its
 memory is limited to the WebAssembly memory's 1 GB.
@@ -1063,7 +1161,9 @@ Problems the checks found during development:
 
 ## Limitations
 
-There is no floating point, no modules and no mutation. Strings are bytes.
+There are no modules and no mutation. Strings are bytes. Floats have no
+`exp`, `log`, power or trigonometric functions yet, and the checker proves
+nothing about them except that a literal other than `0.0` is not zero.
 Local functions and lambdas are monomorphic. A local function can call
 itself and earlier local functions, but local functions cannot be mutually
 recursive.
@@ -1109,7 +1209,8 @@ proofs/     a SAT solver, a Schur encoder and a DRUP checker proved free of
             run-time errors, all written in Lumen 2; cube and conquer on
             every core (cubes.lm); S(4) = 44
 superopt/   the superoptimizer: corpus, synthesis, proofs, RULES.md
-bench/      four benchmark programs in Lumen 2 and in C, and run.js
+bench/      six benchmark programs in Lumen 2 and in C (two on floats), their
+            parallel versions, a parallel float sum, and run.js
 transform/  lumen2 transform: its library (lib.lm) and harness (harness.lm),
             examples, and a benchmark against C, JavaScript and Python
 selfhost/   the first self-hosted compiler, and its bootstrap
