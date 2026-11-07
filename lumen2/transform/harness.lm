@@ -1,7 +1,8 @@
 // The transform harness, which src/transform.js puts after a transform and
-// the library, with four constants: tf_first() (the first line's number),
-// tf_batch(), tf_chunk() and tf_budget() (the steps a line may take, when
-// the program is compiled to count them). It reads tf_batch() lines at a time, transforms
+// the library, with five constants: tf_first() (the first line's number),
+// tf_batch(), tf_chunk(), tf_budget() (the steps a line may take, when
+// the program is compiled to count them) and tf_chunked() (see tf_run_chunks).
+// It reads tf_batch() lines at a time, transforms
 // a batch on every core with par_map, tf_chunk() lines to a task, and prints
 // the results in order. Its names start with `tf_`, which transforms cannot use.
 
@@ -51,4 +52,52 @@ fn tf_run(n: Int) -> () ! {input, output, fail} {
   }
 }
 
-fn main() { tf_run(tf_first()) }
+// Chunked, for lumen2 transform --incremental (src/incremental.js), which
+// transforms only the lines of a file it has not transformed before: the
+// input is chunks of lines, each after a header line "FIRST COUNT" (the
+// number of its first line in the file, and how many lines it has), and the
+// output is, for each chunk in order, the length in bytes of each of its
+// lines' output (0 for a line dropped) separated by spaces, a line break,
+// and its output. A batch is at least tf_batch() lines of whole chunks, and
+// a chunk is one task.
+fn tf_chunks(chunks: Array<(Int, Array<String>)>, total: Int) -> Array<(Int, Array<String>)> ! {input, fail} {
+  if total >= tf_batch() { chunks }
+  else {
+    let header = read_line();
+    if string_length(header) == 0 { chunks }
+    else {
+      let parts = split(chomp(header), " ");
+      match (parse_int(field(parts, 0)), parse_int(field(parts, 1))) {
+        (Some(first), Some(count)) -> tf_chunks(array_push(chunks, (first, tf_read(array_empty(), count))), total + count),
+        _ -> panic("not a chunk header: " ++ header),
+      }
+    }
+  }
+}
+
+// The outputs of rows i to the end of a chunk whose row 0 is line n, each
+// with its line break, and their lengths, newest first.
+fn tf_each(rows: Array<String>, n: Int, i: {i: Int | 0 <= i}, outs: List<String>, lens: List<String>) -> (List<String>, List<String>) ! fail {
+  if i >= array_length(rows) { (outs, lens) }
+  else {
+    match tf_line(n + i, array_get(rows, i)) {
+      Some(out) -> tf_each(rows, n, i + 1, ["\n", out, ..outs], [int_to_string(string_length(out) + 1), ..lens]),
+      None -> tf_each(rows, n, i + 1, outs, ["0", ..lens]),
+    }
+  }
+}
+
+fn tf_run_chunks() -> () ! {input, output, fail} {
+  let chunks = tf_chunks(array_empty(), 0);
+  if array_length(chunks) > 0 {
+    let texts = par_map(chunks, |c| match c {
+      (first, rows) -> match tf_each(rows, first, 0, [], []) {
+        (outs, lens) -> join(reverse(lens), " ") ++ "\n" ++ concat_strings(reverse(outs))
+      }
+    });
+    print(concat_strings(array_to_list(texts)));
+    tf_run_chunks()
+  }
+}
+
+fn main() { if tf_chunked() { tf_run_chunks() } else { tf_run(tf_first()) } }

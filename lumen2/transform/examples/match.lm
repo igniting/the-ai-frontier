@@ -1,0 +1,76 @@
+// Each company's name matched to the closest of 64 known names, by edit
+// distance ignoring case: the usual first step in cleaning such data, and
+// far more work per line than the orders example. Input: id,company,country,
+// amount (transform/bench/gen-companies.js). Output: id,match,distance,
+// with no match when the closest name is more than 3 edits away.
+
+fn known() -> List<String> {
+  [
+    "north field supply", "north harbor foods", "north line logistics", "north peak software",
+    "north river energy", "north gate textiles", "north ridge pharma", "north brook media",
+    "blue field supply", "blue harbor foods", "blue line logistics", "blue peak software",
+    "blue river energy", "blue gate textiles", "blue ridge pharma", "blue brook media",
+    "silver field supply", "silver harbor foods", "silver line logistics", "silver peak software",
+    "silver river energy", "silver gate textiles", "silver ridge pharma", "silver brook media",
+    "red field supply", "red harbor foods", "red line logistics", "red peak software",
+    "red river energy", "red gate textiles", "red ridge pharma", "red brook media",
+    "green field supply", "green harbor foods", "green line logistics", "green peak software",
+    "green river energy", "green gate textiles", "green ridge pharma", "green brook media",
+    "iron field supply", "iron harbor foods", "iron line logistics", "iron peak software",
+    "iron river energy", "iron gate textiles", "iron ridge pharma", "iron brook media",
+    "oak field supply", "oak harbor foods", "oak line logistics", "oak peak software",
+    "oak river energy", "oak gate textiles", "oak ridge pharma", "oak brook media",
+    "stone field supply", "stone harbor foods", "stone line logistics", "stone peak software",
+    "stone river energy", "stone gate textiles", "stone ridge pharma", "stone brook media"
+  ]
+}
+
+fn transform(n: Int, line: String) -> Option<String> {
+  if n == 1 { Some("id,match,distance") }
+  else {
+    let row = fields(line);
+    match closest(lower(field(row, 1)), known(), "", 1000000) {
+      (name, d) -> Some(csv(if d <= 3 { [field(row, 0), name, int_to_string(d)] } else { [field(row, 0), "", ""] }))
+    }
+  }
+}
+
+// The first of names at the smallest distance from s (best so far: m, at d).
+fn closest(s: String, names: List<String>, m: String, d: Int) -> (String, Int) {
+  match names {
+    [] -> (m, d),
+    [x, ..rest] -> {
+      let e = distance(s, x);
+      if e < d { closest(s, rest, x, e) } else { closest(s, rest, m, d) }
+    }
+  }
+}
+
+// The edit distance (Levenshtein) between s and t, by dynamic programming
+// over two rows; every byte and array access is proved in bounds.
+fn distance(s: String, t: String) -> Int {
+  let m = string_length(t) + 1;
+  rows(s, t, 1, first(array_make(m, 0), 0), array_make(m, 0))
+}
+fn min3(a: Int, b: Int, c: Int) -> Int { if a < b { if a < c { a } else { c } } else if b < c { b } else { c } }
+fn first(r: Array<Int>, j: {j: Int | 0 <= j}) -> {q: Array<Int> | array_length(q) == array_length(r)} {
+  if j >= array_length(r) { r } else { first(array_set(r, j, j), j + 1) }
+}
+fn rows(s: String, t: String, i: {i: Int | 1 <= i},
+    prev: {p: Array<Int> | array_length(p) == string_length(t) + 1},
+    cur: {c: Array<Int> | array_length(c) == string_length(t) + 1}) -> Int {
+  if i > string_length(s) { array_get(prev, string_length(t)) } else {
+    let cur = fill(s, t, i, prev, array_set(cur, 0, i), 1);
+    rows(s, t, i + 1, cur, prev)
+  }
+}
+fn fill(s: String, t: String, i: {i: Int | 1 <= i && i <= string_length(s)},
+    prev: {p: Array<Int> | array_length(p) == string_length(t) + 1},
+    cur: {c: Array<Int> | array_length(c) == string_length(t) + 1},
+    j: {j: Int | 1 <= j}) -> {c: Array<Int> | array_length(c) == string_length(t) + 1} {
+  if j > string_length(t) { cur } else {
+    let cost = if char_code_at(s, i - 1) == char_code_at(t, j - 1) { 0 } else { 1 };
+    let v = min3(array_get(prev, j) + 1, array_get(cur, j - 1) + 1, array_get(prev, j - 1) + cost);
+    fill(s, t, i, prev, array_set(cur, j, v), j + 1)
+  }
+}

@@ -64,6 +64,13 @@ no garbage collector.** Lumen 2 is a fresh design, not an extension of
   million CSV rows it is 6 times as fast as Python running the same
   function with `exec`, and 4 times as fast as JavaScript in a `node:vm`
   context ([user-defined functions](#user-defined-functions-lumen2-transform)).
+- **Run again, and only the changed lines run.** Because a transform is
+  proved to depend on nothing but its line, `lumen2 transform --incremental`
+  can reuse the last run's output for every line that did not change, and
+  its output is still exactly a full run's. After 500 of 500,000 rows
+  change, matching each company name to the closest of 64 known names takes
+  0.38 seconds again, where C takes 5.1 seconds on four cores and 19 on one,
+  and Python about 20 minutes ([running it again](#running-it-again---incremental)).
 - **A theorem, proved in it.** A SAT solver written in Lumen 2 proves the
   Schur number S(4) = 44. It prints the same 255,663-step refutation, byte
   for byte, as the original Lumen's imperative solver, at about the same
@@ -83,7 +90,7 @@ counting, property tests and certificates, all in the browser) ·
 
 ```sh
 cd lumen2
-npm test                                         # 79 tests, about 3 minutes
+npm test                                         # 91 tests, about 3 minutes
 node bin/lumen2.js check examples/refine.lm      # inferred types, effects, refinements
 node bin/lumen2.js run examples/tour.lm          # compile to wasm and run
 node bin/lumen2.js test examples/properties.lm   # check the properties
@@ -101,7 +108,9 @@ node selfhost/bootstrap.js                       # the self-hosting fixed point 
 node bench/run.js                                # Lumen 2 against C, on one core and on all (about 4 minutes)
 LUMEN2_THREADS=3 node bin/lumen2.js run bench/sum-par.lm --allow input --input FILE   # a parallel float sum: the same bits on any number of threads
 node bin/lumen2.js transform transform/examples/orders.lm --input FILE   # a user's function on every line, on every core
+node bin/lumen2.js transform transform/examples/match.lm --input FILE --incremental   # again after FILE changes: only the changed lines run
 node transform/bench/run.js                      # the same function in Lumen 2, C, JavaScript and Python (about 2 minutes)
+node transform/bench/incremental.js --sample 20000   # --incremental after six kinds of change, against full runs (about 10 minutes)
 LUMEN2_THREADS=2 node bin/lumen2.js run bench/nqueens-par.lm --allow input --input FILE   # par_map on 2 threads
 ```
 
@@ -898,6 +907,100 @@ transform's memory is limited to the WebAssembly memory's 1 GB, and its
 time per line by the step budget. A step's cost is not fixed: a builtin
 such as `concat_strings` is one call however long its strings, so the
 budget bounds a line's time in proportion to its data, not absolutely.
+
+### Running it again: `--incremental`
+
+A file that a transform has run over often changes a little and needs the
+transform again: a log that grew, a table with a few rows corrected. With
+`--incremental`, the run transforms only the lines that changed:
+
+```sh
+node bin/lumen2.js transform transform/examples/match.lm --input companies.csv --incremental > matched.csv
+# ...companies.csv changes...
+node bin/lumen2.js transform transform/examples/match.lm --input companies.csv --incremental --stats > matched.csv
+transformed 500 of 500,001 lines; reused the rest
+```
+
+The output is the same as a full run's, byte for byte. A run keeps its
+input, its output and the length of each line's output in a state
+directory (under `~/.cache/lumen2/transforms/runs`, or `--state DIR`). The
+next run:
+
+1. compares the new file with the last input from both ends, byte for byte:
+   the lines in common there keep their output;
+2. cuts what lies between into chunks of whole lines, at points that depend
+   only on the bytes nearby, and looks each chunk's SHA-256 hash up among
+   the last run's: a chunk seen before keeps its output, even if it moved;
+3. matches the lines of the chunks left against the lines of the last input
+   they replace, with Myers' diff (a longest common subsequence): matched
+   lines keep their output;
+4. transforms the lines left, on every core, and writes the new state.
+
+Reusing an output is only right if the transform would compute it again,
+and that is what the checker proves. A transform can only compute and fail,
+so a line's output depends on the line, its number, and nothing else: not
+the clock, randomness, input, or anything kept from line to line. It is the
+same bits on every machine: integers are checked for overflow, floats are
+always finite, and the step budget counts steps, not time. For the number,
+the tool proves from the transform's code a number T such that a line
+above T computes the same thing whatever its number: every use of the
+number must be a comparison with a constant, and T is the largest. The
+examples compare it with 1, for the header, so T is 1, and a line keeps
+its output when lines are inserted above it. A transform that uses its
+number in any other way keeps a line's output only at the same number. The
+hash is a cryptographic one because the lines may come from anyone: with a
+weak hash, a line written to collide with another would get the other's
+output. A run that fails is done again in full, without the state, so its
+error and the output printed before it are a full run's; only a run that
+succeeds changes the state.
+
+`node transform/bench/incremental.js` runs a transform over a file, changes
+the file in six ways, and runs it again with `--incremental` (on 4 threads,
+from the original file's state) and in full in every other way. Every
+output must be exactly C's for the same file. With
+[`match.lm`](transform/examples/match.lm), which matches each company name
+in 500,000 rows (20 MB) to the closest of 64 known names by edit distance,
+about 40 microseconds of C a row:
+
+| Change | Lines transformed | `--incremental` | vs C, 4 threads (5.1 s) | vs C, 1 thread (19 s) | vs Lumen 2 in full (13 s) | vs JavaScript (about 80 s) | vs Python (about 1,180 s) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| none | 0 | 0.17 s | 30× | 108× | 73× | 467× | 6,800× |
+| 1 row changed | 1 | 0.19 s | 27× | 98× | 66× | 422× | 6,200× |
+| 500 rows changed (0.1%), scattered | 500 | 0.38 s | 13× | 49× | 33× | 209× | 3,100× |
+| 5,000 rows changed (1%), scattered | 5,000 | 0.58 s | 9× | 32× | 22× | 137× | 2,000× |
+| 500 rows appended (0.1%) | 500 | 0.27 s | 19× | 69× | 47× | 297× | 4,400× |
+| 10 rows inserted and 10 deleted, scattered | 10 | 0.32 s | 16× | 58× | 40× | 251× | 3,700× |
+
+Best of three, on the same 4-core machine; JavaScript and Python (and
+JavaScript in a `vm` context, about 1,540 s) were timed on the first 20,000
+rows and scaled (`--sample 20000`). The first run with `--incremental`,
+which transforms every line and writes the state, took 12 s, against 13 s
+without it.
+
+The margin is the work saved, so it depends on the function. For one as
+cheap as [`orders.lm`](transform/examples/orders.lm), C reads, transforms
+and writes 2 million rows (105 MB) in 0.31 s, about as fast as the file can
+be read, and the incremental run, which reads the file and the last input,
+cannot beat it:
+
+| Change | Lines transformed | `--incremental` | vs C, 4 threads (0.32 s) | vs Lumen 2 in full (1.4 s) | vs JavaScript (2.6 s) | vs Python (8.1 s) |
+| --- | --- | --- | --- | --- | --- | --- |
+| none | 0 | 0.47 s | 0.7× | 3.0× | 5.5× | 17× |
+| 1 row changed | 1 | 0.56 s | 0.6× | 2.5× | 4.6× | 15× |
+| 2,000 rows changed (0.1%), scattered | 2,000 | 1.1 s | 0.3× | 1.3× | 2.4× | 7.5× |
+| 2,000 rows appended (0.1%) | 2,000 | 0.59 s | 0.5× | 2.4× | 4.4× | 14× |
+
+Its first run took 2.5 s, against 1.4 s without `--incremental`: for a
+cheap function, recording each line's output length costs more than the
+function. Edits scattered through the file cost more than edits at its
+ends, which need no hashing.
+
+**Limitations.** The file is read into memory, and the state holds a copy
+of the last input and output, so a run needs room for both. A change to
+the transform, the library, the compiler or the step budget starts again
+from nothing. The state is trusted as the compiled transforms beside it
+are: its copy of the input is not checked against a hash when it is read
+back.
 
 ## A superoptimizer
 

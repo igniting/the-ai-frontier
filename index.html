@@ -295,9 +295,10 @@ table.t.trace td code { white-space: nowrap; }
     <li><a href="#lumen2-transform"><span class="n">23</span>Other people's code, on every core</a></li>
     <li><a href="#lumen2-floats"><span class="n">24</span>Numbers that are always numbers</a></li>
     <li><a href="#lumen2-budget"><span class="n">25</span>A budget for every line</a></li>
+    <li><a href="#lumen2-incremental"><span class="n">26</span>Running only what changed</a></li>
     <li class="toc-part">Part six · Mistakes and limits</li>
-    <li><a href="#caught"><span class="n">26</span>What the checks caught, including my mistakes</a></li>
-    <li><a href="#limits"><span class="n">27</span>What this shows, and what it doesn't</a></li>
+    <li><a href="#caught"><span class="n">27</span>What the checks caught, including my mistakes</a></li>
+    <li><a href="#limits"><span class="n">28</span>What this shows, and what it doesn't</a></li>
   </ol>
 </header>
 
@@ -323,7 +324,7 @@ table.t.trace td code { white-space: nowrap; }
   again: a second language, designed with what the first one taught me, that proves its own array accesses safe,
   needs no garbage collector, proves the same theorem, ends up with its whole compiler written in itself, runs
   within 1.1 to 3.5 times of C, runs on every core, runs other people's code there safely, gives that code a budget that stops it at the same
-  line on every run, and has floats that are always numbers. <b>Part six</b> lists what went wrong and what this does
+  line on every run, runs it again on only the lines that changed, and has floats that are always numbers. <b>Part six</b> lists what went wrong and what this does
   and doesn't show.</p>
 </section>
 
@@ -2790,6 +2791,89 @@ runtime error: line 1235: out of steps (each line may take 10,000,000 steps)</pr
   and every run.</p>
 </section>
 
+<section class="chapter" id="lumen2-incremental">
+  <p class="chapter-label">26 · Part five</p>
+  <h2>Running only what changed</h2>
+  <p>Asked “Do we have now a novel language which is useful and faster than other languages in production for
+  some use cases?”, I said not yet. Lumen 2 was 1.1 to 3.5 times slower than C, and its clear wins were against
+  Python and a JavaScript sandbox that isolated nothing. The reply was “I want it to be better than what's out
+  there by a huge margin - even if for one niche use case.”</p>
+  <p>Raw speed could not do it. C or Rust compiled to WebAssembly, in a sandbox that counts steps, is as safe as a
+  transform and faster. A huge margin had to come from something only Lumen 2 knows about a program, and the
+  strongest such fact is that a transform's output for a line depends on nothing but the line. So when a file
+  changes a little and the transform runs again, every line that did not change can keep its last output, and
+  the result is still exactly a full run's. A function in C, JavaScript or Python could be cached the same way
+  only by trusting whoever wrote it, because nothing checks that it does not read the clock, keep a counter from
+  one line to the next, or draw a random number. Of the three niches I offered, that was the one chosen.</p>
+
+  <h3>Finding what changed</h3>
+  <p>A run with <code>--incremental</code> keeps its input, its output and the length of each line's output. The
+  next run compares the new file with the old one from both ends, byte for byte, so an append or a single edit
+  costs little more than reading the two. What lies between is cut into chunks of whole lines, at points chosen
+  by a hash of each line, so an edit moves only the cuts near it. A chunk whose SHA-256 hash the last run saw
+  keeps its output, wherever it moved to. The lines of the remaining chunks are matched against the old lines
+  they replace, by Myers' diff, and only the lines left without a match are transformed, on every core.</p>
+  <p>Two details decide whether a reuse is sound. The first is the line number, which a transform is given and
+  which the orders example compares with 1 to print its header. The tool proves from the code a number T: every
+  use of the number is a comparison with a constant, and T is the largest. For a line above T the number cannot
+  matter, so such a line keeps its output when lines are inserted above it. A transform that uses its number in
+  any other way keeps an output only at the same number. The second is the hash. The lines of a log come from
+  anyone, and with a fast hash that is not cryptographic, an attacker could write a chunk that collides with one
+  already seen and be handed its output. So the chunks are hashed with SHA-256, and lines are compared byte for
+  byte.</p>
+
+  <h3>Against running it again</h3>
+  <p>The benchmark matches each company name in 500,000 rows (20 MB), typed with mistakes and in any case, to the
+  closest of 64 known names by edit distance: a usual first step in cleaning data, and about 40 microseconds of C
+  a row. In full, C takes 5.1 seconds on four cores and 19 on one, Lumen 2 13, JavaScript about 80 and Python
+  about 1,180.</p>
+  <div class="table-wrap">
+    <table class="t">
+      <thead><tr><th>change</th><th style="text-align:right">lines transformed</th><th style="text-align:right">time</th><th style="text-align:right">vs C, 4 threads</th><th style="text-align:right">vs C, 1 thread</th><th style="text-align:right">vs Python</th></tr></thead>
+      <tbody>
+        <tr><td>nothing</td><td class="num">0</td><td class="num">0.17 s</td><td class="num">30×</td><td class="num">108×</td><td class="num">6,800×</td></tr>
+        <tr><td>1 row changed</td><td class="num">1</td><td class="num">0.19 s</td><td class="num">27×</td><td class="num">98×</td><td class="num">6,200×</td></tr>
+        <tr><td>500 rows changed, scattered</td><td class="num">500</td><td class="num">0.38 s</td><td class="num">13×</td><td class="num">49×</td><td class="num">3,100×</td></tr>
+        <tr><td>5,000 rows changed, scattered</td><td class="num">5,000</td><td class="num">0.58 s</td><td class="num">9×</td><td class="num">32×</td><td class="num">2,000×</td></tr>
+        <tr><td>500 rows appended</td><td class="num">500</td><td class="num">0.27 s</td><td class="num">19×</td><td class="num">69×</td><td class="num">4,400×</td></tr>
+        <tr><td>10 rows inserted, 10 deleted</td><td class="num">10</td><td class="num">0.32 s</td><td class="num">16×</td><td class="num">58×</td><td class="num">3,700×</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="caption"><code>lumen2 transform --incremental</code> on four threads, starting from the original
+  file's state, against the same function run again in full; best of three on the same 4-core machine. Python
+  was timed on 20,000 rows and scaled. Every output is checked against C's, byte for byte, by
+  <code>lumen2/transform/bench/incremental.js</code>.</p>
+  <p>The first run, which transforms every line and writes the state, took 12 seconds, against 13 without
+  <code>--incremental</code>. The margin is the work saved, so it depends on the function. The orders example
+  costs a fraction of a microsecond a row, and C reads, transforms and writes its 105 MB in 0.31 seconds, about as
+  fast as the file can be read. Reading the file and the old one costs the incremental run more than that: 0.47
+  seconds when nothing changed and 1.1 seconds for 2,000 scattered edits. That is still faster than running the
+  function again in Lumen 2, JavaScript or Python, but it loses to C. For a function that does real work on each
+  line, it is faster than any full run by more than an order of magnitude, and the margin grows with the
+  file.</p>
+
+  <h3>How it was checked</h3>
+  <p>A test makes random edits to files and compares every incremental run with a full run, byte for byte. It
+  changes, inserts, deletes, appends, duplicates and moves lines, drops the last line break, and adds CRLF and
+  empty lines, for five transforms: ones that ignore the number, compare it with constants or print it, the
+  orders example, and one whose outputs hold line breaks. To see whether the tests could catch an unsound proof
+  about line numbers, I made the proof claim that no transform depends on its number, then that the number did
+  not matter above 3, then above 24. Each time, two of the five tests failed. A run that fails is run again in
+  full, so its error and the output printed before it are exactly a full run's, and damaged or foreign state is
+  ignored.</p>
+  <p>Two things went wrong on the way, and numbers that did not add up caught both. The first version read the
+  state's tables with Node's <code>Buffer.slice</code>, which, unlike the <code>slice</code> of other typed
+  arrays, does not copy. Every state looked broken, so every run transformed every line: the output was correct,
+  but there was no speedup, which is the way the design allows it to fail. And the benchmark reported that 5,000
+  changed rows made 4,354 lines to transform. The tool was right: the benchmark's random number generator had
+  picked some rows twice, and it now changes exactly the number of rows it names.</p>
+  <p>What it does not do: the file is read into memory, and the state holds a copy of the last input and output,
+  so a run needs room for both. A change to the transform, the library, the compiler or the budget starts again
+  from nothing. And the state is trusted as the compiled transforms beside it in the cache are; its copy of the
+  input is not hashed again when it is read back.</p>
+</section>
+
 <div class="part">
   <p class="part-n">Part six · <a href="#top">contents</a></p>
   <p class="part-title">Mistakes and limits</p>
@@ -2798,7 +2882,7 @@ runtime error: line 1235: out of steps (each line may take 10,000,000 steps)</pr
 </div>
 
 <section class="chapter" id="caught">
-  <p class="chapter-label">26 · Part six</p>
+  <p class="chapter-label">27 · Part six</p>
   <h2>What the checks caught, including my mistakes</h2>
   <ul class="plain">
     <li><b>A real bug in the reference interpreter.</b> A random program grew a string eightfold per step.
@@ -2944,6 +3028,7 @@ runtime error: line 1235: out of steps (each line may take 10,000,000 steps)</pr
     <li><span class="when">other people's code</span>“Anything else which is easier/faster in this language and is more practical as well”. <code>lumen2 transform</code>, which runs a user's function over a file on every core after checking that it can only compute, against the same function in C, JavaScript and Python; and reference counting inlined. <a href="https://github.com/igniting/the-ai-frontier/tree/main/lumen2/transform">lumen2/transform/</a></li>
     <li><span class="when">floats</span>“What next in this project?” Floats that are always finite, literals rounded exactly by the compiler, n-body and spectral norm against C, and a parallel sum that is the same bits on any number of threads. <a href="https://github.com/igniting/the-ai-frontier/tree/main/lumen2/bench">lumen2/bench/</a></li>
     <li><span class="when">a budget</span>“what next”, then “Yes”. A per-line budget of steps for <code>lumen2 transform</code>, counted by the compiled code, so a runaway transform stops at the same line on every run, for about 8% of the run's time.</li>
+    <li><span class="when">a margin</span>“I want it to be better than what's out there by a huge margin - even if for one niche use case.” <code>lumen2 transform --incremental</code>, which reuses the last run's output for every line that did not change, because the transform is proved to depend on nothing but its line: 9 to 30 times as fast as running a fuzzy-matching function again in C on four cores. <a href="https://github.com/igniting/the-ai-frontier/tree/main/lumen2/transform">lumen2/transform/</a></li>
   </ol>
   <p class="aside">The conversation outgrew my working memory and had to be summarized partway through, more than
   once, and the machine I ran on restarted once during a five-minute check. What made it safe to pick up the
@@ -2952,7 +3037,7 @@ runtime error: line 1235: out of steps (each line may take 10,000,000 steps)</pr
 </section>
 
 <section class="chapter" id="limits">
-  <p class="chapter-label">27 · Part six</p>
+  <p class="chapter-label">28 · Part six</p>
   <h2>What this shows, and what it doesn't</h2>
   <p>It shows one long session of sustained engineering in which each layer was checked by the one below it. The
   work is a compiler, an independent re-implementation of it, a prover with a proof checker, an optimizer gated by
@@ -2972,7 +3057,8 @@ runtime error: line 1235: out of steps (each line may take 10,000,000 steps)</pr
   about every element of an array, and it
   reuses memory only where the size of a cell is known when compiling. Its S(4) proof rests on the same symmetry
   argument as Lumen's. Its comparison with C covers six small programs, four of them also on four cores, and
-  one data transformation, which is also compared with JavaScript and Python. And
+  one data transformation, which is also compared with JavaScript and Python, as are two transformations run
+  again after their files change. And
   every timing here comes from one JavaScript engine on one machine.</p>
   <h3>Reproduce it</h3>
   <p>Everything needs only Node 22 and a clone of the repository. There is nothing to install.</p>
@@ -2986,7 +3072,7 @@ node superopt/verify.js                     <span class="c"># re-prove the 40 ru
 node bench/gate.js                          <span class="c"># the whole gate, about 7 minutes</span>
 node proofs/prove-schur.js 4 44             <span class="c"># prove S(4) = 44, about 6 minutes</span>
 
-cd lumen2 &amp;&amp; npm test &amp;&amp; cd ..              <span class="c"># Lumen 2: 79 tests</span>
+cd lumen2 &amp;&amp; npm test &amp;&amp; cd ..              <span class="c"># Lumen 2: 91 tests</span>
 node lumen2/test/fuzz.js 1000               <span class="c"># Lumen 2: differential fuzzing, four ways</span>
 node lumen2/test/fuzz.js --mutants          <span class="c"># all 24 planted bugs must be caught</span>
 node lumen2/superopt/verify.js              <span class="c"># re-prove the 19 rewrite rules</span>
@@ -2996,7 +3082,8 @@ node lumen2/proofs/prove-schur.js 4 44 --out s4   <span class="c"># S(4) = 44 in
 node lumen2/proofs/compare-lumen.js 4 44    <span class="c"># the same proof as Lumen's, byte for byte</span>
 node lumen2/proofs/check-drup.js s4/schur-4-45.cnf s4/schur-4-45.drup   <span class="c"># check it again, with the checker proved not to crash</span>
 node lumen2/bench/run.js                    <span class="c"># Lumen 2 against C, on one core and on all (C timings need a C compiler)</span>
-node lumen2/transform/bench/run.js          <span class="c"># a user's function on 2 million rows: Lumen 2, C, JavaScript, Python</span></pre>
+node lumen2/transform/bench/run.js          <span class="c"># a user's function on 2 million rows: Lumen 2, C, JavaScript, Python</span>
+node lumen2/transform/bench/incremental.js --sample 20000   <span class="c"># run again after six kinds of change, against full runs</span></pre>
   </figure>
   <div class="callout">
     <p><b>Explore it yourself.</b> The <a href="playground.html">playground</a> has the full editor with types,

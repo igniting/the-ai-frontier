@@ -67,7 +67,12 @@ practical: it runs a user's function over every line of a file on every
 core, after rejecting any function that could do input or output or read
 the clock or randomness, and gives each line a budget of steps that stops a
 runaway at the same line on every run; on 2 million CSV rows it is 6 times as fast
-as Python running the same function with `exec`. It has its own
+as Python running the same function with `exec`. And because the function
+is proved to depend only on its line, a run after the file changes
+[transforms only the changed lines](lumen2/README.md#running-it-again---incremental),
+with output identical to a full run: after 500 of 500,000 rows change, a
+fuzzy-matching function runs again in 0.38 s, where C takes 5.1 s on four
+cores and Python about 20 minutes. It has its own
 [playground](https://igniting.github.io/the-ai-frontier/lumen2/playground.html),
 and [Part five of the story](https://igniting.github.io/the-ai-frontier/#lumen2)
 explains it.

@@ -13,6 +13,11 @@
 // lumen2 transform FILE [--input F]  apply FILE's `transform` to every line of F (or of
 //            [--threads N]          standard input), on N threads (default: one per core)
 //            [--steps N|none]       the steps each line may take (default ten million)
+//            [--incremental]        transform only the chunks of F that the last run
+//                                   with --incremental did not see, and reuse the rest
+//            [--state FILE]         where that run's state is kept (default: under
+//                                   ~/.cache/lumen2/transforms/runs)
+//            [--stats]              say how many lines were transformed
 //            [--check]              only check the transform
 //            [--no-cache]           compile it again (compiled transforms are kept in
 //                                   ~/.cache/lumen2/transforms, under the hash of their source)
@@ -27,6 +32,7 @@ import { join } from 'node:path';
 import { lineCol } from '../src/diagnostics.js';
 import { CAPABILITIES } from '../src/types.js';
 import { compileTransform, runTransform, defaultCache, DEFAULT_STEPS } from '../src/transform.js';
+import { runIncremental, statePath } from '../src/incremental.js';
 import { retrying } from '../src/runtime.js';
 
 const [cmd, file, ...rest] = process.argv.slice(2);
@@ -35,7 +41,7 @@ const flag = (name) => rest.includes(name);
 
 function main() {
   if (!cmd || !file) {
-    console.error('usage: lumen2 check FILE | run FILE [--allow CAPS] [--input FILE] [--seed N] [--interp] [--paranoid] | test FILE [--runs N] [--seed N] | certify FILE [--out DIR] | build FILE [-o OUT] | ir FILE [FN] | transform FILE [--input FILE] [--threads N] [--steps N|none] [--check] [--no-cache]');
+    console.error('usage: lumen2 check FILE | run FILE [--allow CAPS] [--input FILE] [--seed N] [--interp] [--paranoid] | test FILE [--runs N] [--seed N] | certify FILE [--out DIR] | build FILE [-o OUT] | ir FILE [FN] | transform FILE [--input FILE] [--threads N] [--steps N|none] [--incremental [--state FILE] [--stats]] [--check] [--no-cache]');
     return 2;
   }
   const source = readFileSync(file, 'utf8');
@@ -142,7 +148,9 @@ function transform(source) {
   const stepsOpt = opt('--steps');
   if (stepsOpt !== null && stepsOpt !== 'none' && !(Number(stepsOpt) >= 1)) { console.error('--steps: give a number from 1, or none'); return 2; }
   const steps = stepsOpt === null ? DEFAULT_STEPS : stepsOpt === 'none' ? null : Math.floor(Number(stepsOpt));
-  const t = compileTransform(source, { steps, cache: flag('--no-cache') ? null : defaultCache() });
+  const cache = flag('--no-cache') ? null : defaultCache();
+  const incremental = flag('--incremental');
+  const t = compileTransform(source, { steps, cache, chunked: incremental });
   if (!t.ok) { for (const e of t.errors) console.error(e); return 1; }
   if (flag('--check')) { console.log(`transform : ${t.signature}`); return 0; }
   const threads = opt('--threads');
@@ -153,7 +161,16 @@ function transform(source) {
     try { fd = openSync(inputPath, 'r'); } catch (e) { console.error(`cannot read ${inputPath}: ${e.code ?? e.message}`); return 2; }
   }
   const write = (b) => { for (let i = 0; i < b.length;) i += retrying(() => writeSync(1, b, i, b.length - i)); };
-  const r = runTransform(t, { input: { fd }, write, threads: threads === null ? null : Math.floor(Number(threads)) });
+  const nthreads = threads === null ? null : Math.floor(Number(threads));
+  if (incremental) {
+    if (!inputPath) { console.error('--incremental: give the input with --input FILE'); return 2; }
+    const state = opt('--state') ?? statePath(t, inputPath, defaultCache());
+    const r = runIncremental(t, { path: inputPath, state, write, threads: nthreads, normal: () => compileTransform(source, { steps, cache }) });
+    if (flag('--stats')) console.error(r.again ? 'transformed every line again, without the state (the run failed)' : `transformed ${r.transformed.toLocaleString('en')} of ${r.lines.toLocaleString('en')} lines; reused the rest`);
+    if (!r.ok) { console.error(`runtime error: ${r.error}`); return 1; }
+    return 0;
+  }
+  const r = runTransform(t, { input: { fd }, write, threads: nthreads });
   if (!r.ok) { console.error(`runtime error: ${r.error}`); return 1; }
   return 0;
 }

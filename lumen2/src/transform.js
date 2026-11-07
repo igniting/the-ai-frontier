@@ -56,8 +56,9 @@ function report(udf, combined, errors, what) {
 
 // The program that runs a transform: line numbers from first, batch lines read
 // at a time, chunk lines to a task, at most steps steps a line (null: no limit).
-function program(udf, { first, batch, chunk, steps }) {
-  return `${udf}\n${LIBRARY}\nfn tf_first() -> Int { ${first} }\nfn tf_batch() -> Int { ${batch} }\nfn tf_chunk() -> Int { ${chunk} }\nfn tf_budget() -> Int { ${steps ?? 0} }\n${HARNESS}`;
+// chunked: the input is chunks with headers (see tf_run_chunks in the harness).
+function program(udf, { first, batch, chunk, steps, chunked = false }) {
+  return `${udf}\n${LIBRARY}\nfn tf_first() -> Int { ${first} }\nfn tf_batch() -> Int { ${batch} }\nfn tf_chunk() -> Int { ${chunk} }\nfn tf_budget() -> Int { ${steps ?? 0} }\nfn tf_chunked() -> Bool { ${chunked} }\n${HARNESS}`;
 }
 const compileProgram = (src, sizes) => compileSource(src, { grants: ['input', 'output'], fuel: sizes.steps !== null });
 
@@ -74,17 +75,20 @@ const code = (src) => src.replace(/"(?:\\.|[^"\\\n])*"/g, '""').replace(/\/\*[\s
 // batch: how many lines are read at a time; chunk: how many lines a task
 // transforms (par_map maps a batch's chunks). steps: how many steps each
 // line may take, or null for no limit. cache: a directory where compiled
-// transforms are kept (see cacheKey), or null.
-export function compileTransform(udf, { batch = 4096, chunk = 64, steps = DEFAULT_STEPS, cache = null } = {}) {
+// transforms are kept (see cacheKey), or null. chunked: compile the program
+// that src/incremental.js runs, which reads chunks of lines with headers.
+export function compileTransform(udf, { batch = 4096, chunk = 64, steps = DEFAULT_STEPS, cache = null, chunked = false } = {}) {
   const defs = definitions(udf);
   if (defs.has('main')) return fail(`error: a transform does not define \`main\` (the harness does): define \`${CONTRACT}\``);
   // Names starting with tf_ are the harness's, to define or to use (tf_steps would let a transform set its own budget).
   const reserved = /\btf_\w*/.exec(code(udf));
   if (reserved) return fail(`error: \`${reserved[0]}\`: names starting with \`tf_\` are the harness's${defs.has(reserved[0]) ? ` (line ${defs.get(reserved[0])})` : ''}`);
-  const sizes = { first: 1, batch: Math.max(1, Math.floor(batch)), chunk: Math.max(1, Math.floor(chunk)), steps: steps === null ? null : Math.max(1, Math.floor(steps)) };
-  const key = cache ? cacheKey(udf, sizes) : null;
-  const hit = key && fromCache(cache, key);
-  if (hit) return { ok: true, ...hit, udf, ...sizes, cached: true };
+  const sizes = { first: 1, batch: Math.max(1, Math.floor(batch)), chunk: Math.max(1, Math.floor(chunk)), steps: steps === null ? null : Math.max(1, Math.floor(steps)), chunked: Boolean(chunked) };
+  // key: the hash of everything the program is compiled from; it names the
+  // program in the cache, and in the state of an incremental run.
+  const key = cacheKey(udf, sizes);
+  const hit = cache && fromCache(cache, key);
+  if (hit) return { ok: true, ...hit, udf, ...sizes, key, cached: true };
 
   // The whole program. The harness calls transform from a function declared
   // with only `fail`, inside par_map, so if it compiles, transform has the
@@ -92,8 +96,8 @@ export function compileTransform(udf, { batch = 4096, chunk = 64, steps = DEFAUL
   const r = compileProgram(program(udf, sizes), sizes);
   if (!r.ok) return fail(...diagnose(udf, defs, program(udf, sizes), r.errors));
   const signature = r.signatures.find((s) => s.name === 'transform').type;
-  if (key) toCache(cache, key, r.bytes, signature);
-  return { ok: true, bytes: r.bytes, signature, udf, ...sizes };
+  if (cache) toCache(cache, key, r.bytes, signature);
+  return { ok: true, bytes: r.bytes, signature, udf, ...sizes, key };
 }
 
 // Why a transform's program does not compile, in terms of the transform: its
@@ -128,7 +132,7 @@ function diagnose(udf, defs, full, errors) {
 export function defaultCache() {
   return join(process.env.XDG_CACHE_HOME || join(homedir(), '.cache'), 'lumen2', 'transforms');
 }
-function cacheKey(udf, sizes) {
+export function cacheKey(udf, sizes) {
   const h = createHash('sha256').update(readFileSync(new URL('../compiler/lumen2c.wasm', import.meta.url)));
   for (const part of [LIBRARY, HARNESS, udf, JSON.stringify(sizes)]) h.update(`\0${part}`);
   return h.digest('hex');
@@ -180,7 +184,7 @@ function located(t, read, r) {
   const first = t.first + before + lo;
   if (chunk.length === 1) return `line ${first}: ${r.error}`;
   const span = `lines ${first} to ${first + chunk.length - 1}: ${r.error}`;
-  const sizes = { first, batch: t.chunk, chunk: 1, steps: t.steps };
+  const sizes = { first, batch: t.chunk, chunk: 1, steps: t.steps, chunked: false };
   const again = compileProgram(program(t.udf, sizes), sizes);
   if (!again.ok) return span;
   const r2 = runWasm(again.bytes, { input: Buffer.concat(chunk), threads: 1, write: () => {} });
