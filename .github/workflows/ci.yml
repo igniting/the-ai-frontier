@@ -17,7 +17,7 @@ jobs:
         run: npm test
       - name: Re-prove every superoptimizer rule (SAT, independent RUP check, random testing)
         run: node superopt/verify.js --emit superopt-proofs
-      - name: Upload the proofs (DIMACS + DRUP, checkable with drat-trim)
+      - name: Upload the proofs (DIMACS + DRUP, checked again by drat-trim in the drat-trim job)
         uses: actions/upload-artifact@v4
         with:
           name: superopt-proofs
@@ -52,6 +52,11 @@ jobs:
         run: node test/fuzz.js 500 $(( 100000 + GITHUB_RUN_NUMBER * 1000 ))
       - name: Lumen 2 certificates (IR types, ownership, DRUP proofs checked again)
         run: node bin/lumen2.js certify examples/refine.lm --out lumen2-certificates
+      - name: Upload the certificates (their DRUP proofs are checked again by drat-trim in the drat-trim job)
+        uses: actions/upload-artifact@v4
+        with:
+          name: lumen2-certificates
+          path: lumen2/lumen2-certificates/
       - name: The first self-hosted compiler (selfhost/lumen2c.lm) reaches a fixed point
         run: node selfhost/bootstrap.js
       - name: Re-prove every superoptimizer rule
@@ -79,12 +84,17 @@ jobs:
       - name: The Lumen 2 and Lumen solvers print the same proof, byte for byte
         run: node proofs/compare-lumen.js 4 44
       - name: Prove S(4) = 44 on every core (cube and conquer with par_map; the refutation checked by src/rup.js)
-        run: node proofs/prove-schur.js 4 44 --split 3,4,5,6
+        run: node proofs/prove-schur.js 4 44 --split 3,4,5,6 --out lumen2-schur-split-proof
       - name: Upload the formulas and the refutation (DIMACS + DRUP)
         uses: actions/upload-artifact@v4
         with:
           name: lumen2-schur-proof
           path: lumen2/lumen2-schur-proof/
+      - name: Upload the refutation made on every core
+        uses: actions/upload-artifact@v4
+        with:
+          name: lumen2-schur-split-proof
+          path: lumen2/lumen2-schur-split-proof/
 
   lumen2-schur-recheck:
     needs: lumen2-schur
@@ -115,8 +125,43 @@ jobs:
           node-version: 22
       - name: Prove S(4) = 44 with the Lumen SAT solver (checked by the independent RUP checker)
         run: node proofs/prove-schur.js 4 44 --out schur-proof
-      - name: Upload the formulas and the refutation (DIMACS + DRUP, checkable with drat-trim)
+      - name: Upload the formulas and the refutation (DIMACS + DRUP, checked again by drat-trim in the drat-trim job)
         uses: actions/upload-artifact@v4
         with:
           name: schur-proof
           path: schur-proof/
+
+  # Every proof the project writes out, checked by drat-trim, a widely used
+  # checker of SAT refutations by Marijn Heule that shares nothing with this
+  # repository: the three refutations of S(4) = 44 (Lumen's, Lumen 2's, and
+  # Lumen 2's on every core), the superoptimizer's rules and Lumen 2's
+  # refinement certificates.
+  drat-trim:
+    needs: [test, lumen2, schur, lumen2-schur]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: proofs
+      - name: Build drat-trim, at a fixed commit
+        run: |
+          git clone --quiet https://github.com/marijnheule/drat-trim drat-trim-src
+          git -C drat-trim-src checkout --quiet 2e3b2dc0ecf938addbd779d42877b6ed69d9a985
+          gcc -O2 -o drat-trim drat-trim-src/drat-trim.c
+      - name: drat-trim checks every refutation (it must print "s VERIFIED" for each)
+        run: |
+          for d in schur-proof lumen2-schur-proof lumen2-schur-split-proof; do
+            test -f "proofs/$d/schur-4-45.drup" || { echo "missing: $d/schur-4-45.drup"; exit 1; }
+          done
+          n=0
+          for cnf in $(find proofs -name '*.cnf' | sort); do
+            drup="${cnf%.cnf}.drup"
+            test -f "$drup" || continue
+            if ./drat-trim "$cnf" "$drup" | tr '\r' '\n' | grep -qx 's VERIFIED'; then
+              n=$((n + 1)); echo "verified: $cnf"
+            else
+              echo "NOT VERIFIED: $cnf"; exit 1
+            fi
+          done
+          echo "drat-trim verified $n refutations"

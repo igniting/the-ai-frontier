@@ -356,8 +356,8 @@ re-mines code already rewritten by the rules found so far, which also repaired
 one case where greedy rewriting got stuck.
 
 The catalogue is [superopt/RULES.md](superopt/RULES.md). `node superopt/verify.js --emit DIR` writes every
-formula and proof as DIMACS/DRUP, so a third-party checker such as drat-trim
-can confirm them; CI uploads these files.
+formula and proof as DIMACS/DRUP; CI uploads these files and checks every
+one with drat-trim, a third-party checker.
 
 ## The `-O` campaign
 
@@ -409,7 +409,10 @@ node proofs/prove-schur.js 3 13                      # under a second
 
 CI runs the S(4) proof on every push and uploads the two formulas and the
 refutation as the `schur-proof` artifact, in DIMACS and DRUP, the formats that
-standard checkers such as drat-trim read (`drat-trim schur-4-45.cnf schur-4-45.drup`).
+standard checkers read. A CI job then checks the refutation with drat-trim
+(`drat-trim schur-4-45.cnf schur-4-45.drup`), a widely used checker that
+shares nothing with this repository, as it does every other proof the
+project writes out.
 
 The proof needed the language to change. A SAT solver needs arrays it can
 update in place, so Lumen gained `Array`, in both compilers, the interpreter,

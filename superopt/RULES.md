@@ -14,7 +14,8 @@ was checked by the independent RUP checker in `superopt/rup.js`.
 `node superopt/verify.js` re-proves them all from scratch; with `--emit DIR`
 it also writes each formula and proof as `rule-N.cnf` / `rule-N.drup`, so they can be
 checked by a third party's tool, e.g. `drat-trim rule-17.cnf rule-17.drup`
-(CI uploads these files as the `superopt-proofs` artifact).
+(CI uploads these files as the `superopt-proofs` artifact and checks every one
+with drat-trim on every push).
 
 *Stack code* reads left to right; `a` and `b` are values already on the
 stack, `x0` is a local. *Seen* counts occurrences in the corpus (`variant`:

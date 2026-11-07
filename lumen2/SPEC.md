@@ -606,7 +606,8 @@ the compiler checks them, and so does the test suite.
 
   `lumen2 certify` reports these checks and writes the proofs in the
   standard DIMACS and DRUP formats, which external checkers such as
-  drat-trim read.
+  drat-trim read (CI checks the certificates of `examples/refine.lm` with
+  drat-trim on every push).
 
 ## 12. Conformance
 

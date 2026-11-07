@@ -126,8 +126,8 @@ project refutes the formula's negation and writes a DRUP proof. A separate
 RUP checker, which shares no code with the solver, checks the proof before
 the operation is treated as safe. `lumen2 certify --out DIR` writes every
 formula and proof in the standard DIMACS and DRUP formats that external
-checkers such as drat-trim read (this repository's tests use its own
-checker; drat-trim was not run).
+checkers read. CI writes them for `examples/refine.lm` and checks every one
+with drat-trim, a third-party checker, on every push.
 The prelude uses refinements too: `array_to_list` is pure because a
 refinement on its loop index proves every access in bounds.
 

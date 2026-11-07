@@ -1605,9 +1605,10 @@ match array_get(a, 0) {      <span class="c">// read it back as a list of String
   one here.</p>
   <p>The proof is not a one-off either. CI re-runs the entire proof on every push to the repository, on GitHub's
   machines, and keeps the formula and the proof as a download. Both are in the standard DIMACS and DRUP formats,
-  which third-party checkers such as <code>drat-trim</code> read, so you don't have to rely on my checker. I have
-  not run <code>drat-trim</code> on it myself, because this session's sandbox did not allow building outside code;
-  the files are there for anyone who wants that confirmation.</p>
+  which third-party checkers read, so you don't have to rely on my checker. For most of the project I left it at
+  that, without running one. CI now builds <code>drat-trim</code>, Marijn Heule's widely used checker, which shares
+  nothing with this repository, and on every push it checks this refutation (in about 24 seconds, where my checker
+  takes minutes) and every other proof the project writes out.</p>
 </section>
 
 <section class="chapter" id="payoff">
@@ -3023,8 +3024,9 @@ runtime error: line 1235: out of steps (each line may take 10,000,000 steps)</pr
   output on every compile, which reproduced the theorem's proof exactly, and which compiles itself. Every claim on this page can be
   re-run with the commands below, which are also in the
   <a href="https://github.com/igniting/the-ai-frontier#readme">README</a>. CI repeats the checks, including the
-  whole proof of S(4) = 44 in both languages, and a second check of the Lumen 2 proof by a checker proved unable to
-  crash, on every push.</p>
+  whole proof of S(4) = 44 in both languages, a second check of the Lumen 2 proof by a checker proved unable to
+  crash, and a check of every refutation the project writes out by <code>drat-trim</code>, a checker nobody here
+  wrote, on every push.</p>
   <p>It does not show that Lumen 2 is worth adopting. It is 1.1 to 3.5 times slower than C on one core. Its wins
   come from what its checker proves, not from speed: a parallel result that cannot depend on the threads, user code
   that cannot reach anything, failures and budgets that are the same on every run, and outputs that can be reused
