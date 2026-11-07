@@ -60,6 +60,8 @@ jobs:
         run: node transform/bench/run.js 200000 --runs 1
       - name: lumen2 transform --incremental after six kinds of change, against running the function again in full (every output identical)
         run: node transform/bench/incremental.js 20000 --runs 1 --sample 1000 --estimate-over 5
+      - name: A simulated week of a daily pipeline (lumen2 transform --incremental must be right every day)
+        run: node transform/bench/simulate.js 5000 --days 6
 
   lumen2-schur:
     runs-on: ubuntu-latest

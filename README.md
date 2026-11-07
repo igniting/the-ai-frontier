@@ -72,7 +72,9 @@ is proved to depend only on its line, a run after the file changes
 [transforms only the changed lines](lumen2/README.md#running-it-again---incremental),
 with output identical to a full run: after 500 of 500,000 rows change, a
 fuzzy-matching function runs again in 0.38 s, where C takes 5.1 s on four
-cores and Python about 20 minutes. It has its own
+cores and Python about 20 minutes. In a simulated month of a daily
+pipeline, it was right every day and as fast as the usual dbt-style merge
+of rows updated since the last run, which was wrong every day. It has its own
 [playground](https://igniting.github.io/the-ai-frontier/lumen2/playground.html),
 and [Part five of the story](https://igniting.github.io/the-ai-frontier/#lumen2)
 explains it.

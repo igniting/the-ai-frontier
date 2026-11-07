@@ -2853,6 +2853,45 @@ runtime error: line 1235: out of steps (each line may take 10,000,000 steps)</pr
   line, it is faster than any full run by more than an order of magnitude, and the margin grows with the
   file.</p>
 
+  <h3>A month of a pipeline</h3>
+  <p>Asked next “is this use case used by anyone in practice?”, I had to say that the comparison above is not the
+  one that matters most. Recomputing only what changed is everyday practice, but a pipeline that runs every day
+  rarely runs the function over everything again. It transforms the rows updated since its last run, by an
+  <code>updated_at</code> column, as dbt's incremental models do, or a warehouse refreshes incrementally if its
+  functions are declared <code>IMMUTABLE</code>. Against those, the speed margin mostly goes. What they lack is a
+  check: the timestamps, and the declarations, are trusted. The answer was “can we create more realistic end user
+  simulation for this”.</p>
+  <p>The simulation is a month of a vendor file of 500,000 rows, exported again in full every day, with the changes
+  such files get: rows appended, corrected (mostly recent ones), deleted, and a few arriving late with yesterday's
+  timestamp. A new supplier starts appearing on day 10 and is added to the known names on day 15, and on day 22 a
+  correction touches 5% of the rows. Five ways keep the output up to date, each run as its own process every day,
+  and every day's output is compared, row by row, with the function run over the whole file. The others run the
+  function in C, which reads the known names from a file, as C and Python programs usually keep such data.</p>
+  <div class="table-wrap">
+    <table class="t">
+      <thead><tr><th>way</th><th style="text-align:right">days wrong</th><th style="text-align:right">usual day</th><th style="text-align:right">day 15</th><th style="text-align:right">30 days</th></tr></thead>
+      <tbody>
+        <tr><td>run it over the whole file again, in C</td><td class="num">0</td><td class="num">5.7 s</td><td class="num">6.3 s</td><td class="num">3 min</td></tr>
+        <tr><td>rows updated since the last run, merged by id</td><td class="num">30</td><td class="num">0.71 s</td><td class="num">0.74 s</td><td class="num">22 s</td></tr>
+        <tr><td>cache by row and the code's version</td><td class="num">16</td><td class="num">1.95 s</td><td class="num">1.82 s</td><td class="num">58 s</td></tr>
+        <tr><td>the same cache, keyed by the names too</td><td class="num">0</td><td class="num">1.91 s</td><td class="num">7.3 s</td><td class="num">62 s</td></tr>
+        <tr><td><code>lumen2 transform --incremental</code></td><td class="num">0</td><td class="num">0.68 s</td><td class="num">17 s</td><td class="num">38 s</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="caption">Days 1 to 30, on 4 threads; <code>lumen2/transform/bench/simulate.js</code>. The merge and the
+  caches are Node scripts with the function in C.</p>
+  <p>The merge by timestamp is the fastest, and it is wrong from the first day. It never sees a row that arrives with
+  an older timestamp, it keeps deleted rows, and it gives the new name only to rows updated after the change. By day
+  30, 6,239 rows are wrong. The cache keyed by the code is right until the names change, and then about 400 rows are
+  wrong for the rest of the month, because the names are in a file the code reads. Keyed by that file too, it is
+  right every day, as right as its author's list of what the function reads, which nothing checks. Lumen 2 is right
+  every day with nothing listed: the names are part of the transform, the only place a transform can get them from,
+  so changing them changes the program, and the state starts again. On a usual day it is as fast as the merge. Over
+  the month it took 38 seconds, against 3 minutes for running the function again in C, a factor of 4.5 rather than
+  the 10 to 30 of the single changes above. Most of those 38 seconds are its two full runs, on day 0 and day 15,
+  where Lumen 2 is three times as slow as C.</p>
+
   <h3>How it was checked</h3>
   <p>A test makes random edits to files and compares every incremental run with a full run, byte for byte. It
   changes, inserts, deletes, appends, duplicates and moves lines, drops the last line break, and adds CRLF and
@@ -3029,6 +3068,7 @@ runtime error: line 1235: out of steps (each line may take 10,000,000 steps)</pr
     <li><span class="when">floats</span>“What next in this project?” Floats that are always finite, literals rounded exactly by the compiler, n-body and spectral norm against C, and a parallel sum that is the same bits on any number of threads. <a href="https://github.com/igniting/the-ai-frontier/tree/main/lumen2/bench">lumen2/bench/</a></li>
     <li><span class="when">a budget</span>“what next”, then “Yes”. A per-line budget of steps for <code>lumen2 transform</code>, counted by the compiled code, so a runaway transform stops at the same line on every run, for about 8% of the run's time.</li>
     <li><span class="when">a margin</span>“I want it to be better than what's out there by a huge margin - even if for one niche use case.” <code>lumen2 transform --incremental</code>, which reuses the last run's output for every line that did not change, because the transform is proved to depend on nothing but its line: 9 to 30 times as fast as running a fuzzy-matching function again in C on four cores. <a href="https://github.com/igniting/the-ai-frontier/tree/main/lumen2/transform">lumen2/transform/</a></li>
+    <li><span class="when">practice</span>“is this use case used by anyone in practice?”, then “can we create more realistic end user simulation for this”. A simulated month of a daily pipeline: the dbt-style merge by timestamp was wrong on all 30 days, a cache keyed by the code on 16, and <code>--incremental</code> on none, as fast as the merge on a usual day.</li>
   </ol>
   <p class="aside">The conversation outgrew my working memory and had to be summarized partway through, more than
   once, and the machine I ran on restarted once during a five-minute check. What made it safe to pick up the

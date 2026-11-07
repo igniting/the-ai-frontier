@@ -70,7 +70,11 @@ no garbage collector.** Lumen 2 is a fresh design, not an extension of
   its output is still exactly a full run's. After 500 of 500,000 rows
   change, matching each company name to the closest of 64 known names takes
   0.38 seconds again, where C takes 5.1 seconds on four cores and 19 on one,
-  and Python about 20 minutes ([running it again](#running-it-again---incremental)).
+  and Python about 20 minutes. In a simulated month of a daily pipeline, it
+  is as fast as the dbt-style pattern of transforming only the rows updated
+  since the last run, which was wrong on every one of the 30 days, while
+  `--incremental` was right on all of them
+  ([running it again](#running-it-again---incremental)).
 - **A theorem, proved in it.** A SAT solver written in Lumen 2 proves the
   Schur number S(4) = 44. It prints the same 255,663-step refutation, byte
   for byte, as the original Lumen's imperative solver, at about the same
@@ -111,6 +115,7 @@ node bin/lumen2.js transform transform/examples/orders.lm --input FILE   # a use
 node bin/lumen2.js transform transform/examples/match.lm --input FILE --incremental   # again after FILE changes: only the changed lines run
 node transform/bench/run.js                      # the same function in Lumen 2, C, JavaScript and Python (about 2 minutes)
 node transform/bench/incremental.js --sample 20000   # --incremental after six kinds of change, against full runs (about 10 minutes)
+node transform/bench/simulate.js                 # a month of a daily pipeline: full runs, a dbt-style merge, caches, --incremental (about 10 minutes)
 LUMEN2_THREADS=2 node bin/lumen2.js run bench/nqueens-par.lm --allow input --input FILE   # par_map on 2 threads
 ```
 
@@ -994,6 +999,55 @@ Its first run took 2.5 s, against 1.4 s without `--incremental`: for a
 cheap function, recording each line's output length costs more than the
 function. Edits scattered through the file cost more than edits at its
 ends, which need no hashing.
+
+**A month of a pipeline.** The tables above compare with running the
+function again in full, but a pipeline that runs every day usually does
+not: it transforms only the rows updated since its last run, as dbt's
+incremental models do, or it caches outputs by row.
+`node transform/bench/simulate.js` simulates a month of such a pipeline. A
+vendor file of 500,000 rows is exported again in full every day, with the
+changes such files get: rows appended (0.4% a day), corrected (0.1%,
+mostly recent ones), deleted (0.02%), and arriving late, with yesterday's
+timestamp (0.02%). A new supplier starts appearing on day 10 and is added
+to the known names on day 15, and on day 22 a correction updates 5% of the
+rows. Five ways keep the output up to date, each run as its own process
+every day, and each day's output is compared, row by row, with the
+function run over the whole file. The first four run the function in C,
+which reads the known names from a file, as C and Python programs usually
+keep such data; the cache and the dbt-style merge are Node scripts
+([`sim-memo.js`](transform/bench/sim-memo.js),
+[`sim-watermark.js`](transform/bench/sim-watermark.js)).
+
+| Way | Days with a wrong output | Usual day | Day 15: names changed | Day 22: 5% updated | Days 1 to 30 |
+| --- | --- | --- | --- | --- | --- |
+| run the function over the whole file again, in C | 0 of 30 | 5.7 s | 6.3 s | 5.6 s | 3 min |
+| transform the rows updated since the last run, merge by id (dbt-style) | **30 of 30** | 0.71 s | 0.74 s | 0.97 s | 22 s |
+| cache outputs by row and the code's version | **16 of 30** | 1.95 s | 1.82 s | 2.24 s | 58 s |
+| the same cache, keyed by the file of names too | 0 of 30 | 1.91 s | 7.3 s | 2.14 s | 62 s |
+| `lumen2 transform --incremental` | 0 of 30 | 0.68 s | 17 s | 1.76 s | 38 s |
+| run it again in Python (estimated from 2,000 rows) | 0 of 30 | 18 min | 18 min | 19 min | 9 hours |
+
+On 4 threads; on day 0 every way runs in full (5.5 to 6 s in C, 16 s for
+Lumen 2, which also compiles the transform then).
+
+- The dbt-style merge is the fastest, and wrong from the first day: it
+  never sees a row that arrives with an older timestamp, keeps deleted
+  rows, and gives the new name only to rows updated after it. By day 30,
+  6,239 of 563,616 rows are wrong (2,672 missing, 3,174 deleted but still
+  there, 393 wrong). Pipelines that use it run it again in full now and
+  then.
+- The cache keyed by the code is right until day 15, when the names
+  change, and then about 400 rows are wrong for the rest of the month: the
+  names are in a file the code reads, and the key did not include it.
+  Keyed by that file too, it is right every day. It is as right as its
+  author's list of what the function reads, and nothing checks the list.
+- `lumen2 transform --incremental` is right every day with nothing listed:
+  the names are part of the transform, the only place a transform can get
+  them from, so changing them changes the program, and the state starts
+  again. On a usual day it takes 0.68 s, as long as the dbt-style merge,
+  and over the month 38 s, against 3 minutes for running the function
+  again in C. Most of the 38 s is its two full runs, on day 0 and day 15,
+  where Lumen 2 takes about three times as long as C.
 
 **Limitations.** The file is read into memory, and the state holds a copy
 of the last input and output, so a run needs room for both. A change to
