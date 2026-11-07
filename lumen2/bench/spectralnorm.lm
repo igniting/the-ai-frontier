@@ -1,0 +1,43 @@
+// spectral-norm: the largest singular value of the infinite matrix
+// A(i, j) = 1 / ((i + j)(i + j + 1)/2 + i + 1), by the power method on its
+// n by n corner: ten steps of u = AtA v, v = AtA u. Vectors are arrays of
+// floats; every access is proved in bounds.
+
+fn a(i: Int, j: Int) -> Float { 1.0 / int_to_float((i + j) * (i + j + 1) / 2 + i + 1) }
+
+// Row i of A (or of At, with t) times v.
+fn dot(v: Array<Float>, i: Int, t: Bool, j: {j: Int | 0 <= j}, acc: Float) -> Float {
+  if j >= array_length(v) { acc }
+  else { dot(v, i, t, j + 1, acc + (if t { a(j, i) } else { a(i, j) }) * array_get(v, j)) }
+}
+// A v (or At v): out's elements from i on.
+fn times(v: Array<Float>, t: Bool, out: {o: Array<Float> | array_length(o) == array_length(v)}, i: {i: Int | 0 <= i}) -> Array<Float> {
+  if i >= array_length(out) { out } else { times(v, t, array_set(out, i, dot(v, i, t, 0, 0.0)), i + 1) }
+}
+fn ata(v: Array<Float>) -> Array<Float> {
+  let n = array_length(v);
+  let w = times(v, false, array_make(n, 0.0), 0);
+  if array_length(w) == n { times(w, true, array_make(n, 0.0), 0) } else { w }
+}
+fn steps(u: Array<Float>, k: Int) -> (Array<Float>, Array<Float>) {
+  let v = ata(u);
+  let u2 = ata(v);
+  if k <= 1 { (u2, v) } else { steps(u2, k - 1) }
+}
+// The sum of x[i] * y[i].
+fn inner(x: Array<Float>, y: Array<Float>, i: {i: Int | 0 <= i}, acc: Float) -> Float {
+  if i >= array_length(x) || i >= array_length(y) { acc } else { inner(x, y, i + 1, acc + array_get(x, i) * array_get(y, i)) }
+}
+
+fn digits(s: String, i: {i: Int | 0 <= i}, acc: Int) -> Int {
+  if i >= string_length(s) { acc } else {
+    let c = char_code_at(s, i);
+    if c >= 48 && c <= 57 { digits(s, i + 1, acc * 10 + c - 48) } else { acc }
+  }
+}
+
+fn main() {
+  let n = digits(read_input(), 0, 0);
+  let (u, v) = steps(array_make(n, 1.0), 10);
+  println(float_to_fixed(sqrt(inner(u, v, 0, 0.0) / inner(v, v, 0, 0.0)), 9))
+}

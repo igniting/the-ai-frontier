@@ -12,6 +12,7 @@ type Store { Store(Array<Option<Ty>>, Array<Int>, Array<List<String>>, Array<Opt
 
 fn generic() { 1000000000 }
 fn t_int() { TC("Int", []) }
+fn t_float() { TC("Float", []) }
 fn t_bool() { TC("Bool", []) }
 fn t_string() { TC("String", []) }
 fn t_unit() { TC("Unit", []) }

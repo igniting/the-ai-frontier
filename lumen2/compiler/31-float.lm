@@ -89,3 +89,75 @@ fn f_mul(a, b) {
     },
   }
 }
+
+// ======================================================= float literals
+// A decimal literal (digits, an optional fraction and exponent, no sign) as
+// the bits of the nearest IEEE 754 double, ties to even: the program's
+// floats are computed by the machine, but its literals are rounded here,
+// exactly, with bignums. The interpreter reads the same literals with
+// JavaScript's Number, and the two must agree bit for bit.
+type FLitRes { FLit(Int), FTooLarge, FTooSmall }
+
+fn float_bits(text: String) -> FLitRes {
+  let n = string_length(text);
+  let epos = match find(range(0, n), |i| char_code_at(text, i) == 101 || char_code_at(text, i) == 69) { Some(i) -> i, None -> n };
+  let mant = substring(text, 0, epos);
+  let dot = match find(range(0, string_length(mant)), |i| char_code_at(mant, i) == 46) { Some(i) -> i, None -> string_length(mant) };
+  let frac = substring(mant, dot + 1, string_length(mant));
+  let digits = strip_zeros(substring(mant, 0, dot) ++ frac, 0);
+  let etext = substring(text, epos + 1, n);
+  let eneg = substring(etext, 0, 1) == "-";
+  let edigits = strip_zeros(if eneg || substring(etext, 0, 1) == "+" { substring(etext, 1, string_length(etext)) } else { etext }, 0);
+  if string_length(digits) == 0 { FLit(0) }
+  else if string_length(edigits) > 6 { if eneg { FTooSmall } else { FTooLarge } }
+  else {
+    let e10 = (if eneg { 0 - 1 } else { 1 }) * dec_value(edigits, 0, 0) - string_length(frac);
+    let nd = string_length(digits);
+    // The value lies in [10^(nd - 1 + e10), 10^(nd + e10)).
+    if nd - 1 + e10 > 308 { FTooLarge }
+    else if nd + e10 < 0 - 324 { FTooSmall }
+    else {
+      let d = b_from_dec(digits);
+      let ten = |k| b_from_dec("1" ++ repeat_string("0", k));
+      let (num, den) = if e10 >= 0 { (b_mul(d, ten(e10)), BS(1)) } else { (d, ten(0 - e10)) };
+      fl_round(num, den)
+    }
+  }
+}
+fn strip_zeros(s, i) { if i < string_length(s) && char_code_at(s, i) == 48 { strip_zeros(s, i + 1) } else { substring(s, i, string_length(s)) } }
+fn dec_value(s, i, acc) { if i >= string_length(s) { acc } else { dec_value(s, i + 1, acc * 10 + (char_code_at(s, i) - 48)) } }
+fn b_small(x) { match x { BS(v) -> v, _ -> internal("float literal: a large mantissa") } }
+
+// floor(num * 2^s / den), and whether there is a remainder.
+fn fl_scaled(num, den, s) {
+  let (a, b) = if s >= 0 { (b_mul(num, b_pow2(s)), den) } else { (num, b_mul(den, b_pow2(0 - s))) };
+  (b_quot(a, b), !b_is_zero(b_rem(a, b)))
+}
+// q in [2^53, 2^54) with q * 2^-s about num / den: q's last bit is the rounding bit.
+fn fl_window(num, den, s) {
+  let (q, rest) = fl_scaled(num, den, s);
+  if b_le(b_pow2(54), q) { fl_window(num, den, s - 1) }
+  else if b_lt(q, b_pow2(53)) { fl_window(num, den, s + 1) }
+  else { (b_small(q), rest, s) }
+}
+// q / 2 rounded to nearest, ties to even, given q's last bit and whether anything is below it.
+fn fl_half_even(q, rest) {
+  let m = q / 2;
+  if q % 2 == 1 && (rest || m % 2 == 1) { m + 1 } else { m }
+}
+fn fl_round(num, den) {
+  let (q, rest, s) = fl_window(num, den, 54 - (b_bit_length(num) - b_bit_length(den)));
+  let e = 53 - s;   // num / den lies in [2^e, 2^(e+1))
+  if e > 1023 { FTooLarge }
+  else if e >= 0 - 1022 {
+    let m = fl_half_even(q, rest);
+    let (m, e) = if m == 9007199254740992 { (4503599627370496, e + 1) } else { (m, e) };
+    if e > 1023 { FTooLarge } else { FLit((e + 1023) * 4503599627370496 + (m - 4503599627370496)) }
+  } else {
+    // Subnormal: a multiple of 2^-1074 (rounding up to 2^-1022 gives the
+    // smallest normal's bits, 2^52, as it should).
+    let (q, rest) = fl_scaled(num, den, 1075);
+    let m = fl_half_even(b_small(q), rest);
+    if m == 0 { FTooSmall } else { FLit(m) }
+  }
+}

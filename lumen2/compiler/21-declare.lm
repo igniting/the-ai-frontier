@@ -41,7 +41,7 @@ fn where_of(w, p) { match find(w, |e| match e { (q, _) -> q == p }) { Some((_, c
 fn method_trait(m) { match m { MethodInfo(_, t, _, _) -> t } }
 
 fn refine_where() { "refinement types can annotate the parameters and results of named functions, and let bindings" }
-fn builtin_types() { [("Int", 0), ("Bool", 0), ("String", 0), ("Unit", 0), ("Array", 1)] }
+fn builtin_types() { [("Int", 0), ("Float", 0), ("Bool", 0), ("String", 0), ("Unit", 0), ("Array", 1)] }
 fn builtin_type_arity(n) { match find(builtin_types(), |e| match e { (k, _) -> k == n }) { Some((_, a)) -> Some(a), None -> None } }
 
 // Declarations, accumulated: types (in order), constructors by scope,
@@ -357,7 +357,8 @@ fn derive_shows(d, next_id, user_ast) {
 fn builtin_names() {
   ["print", "println", "read_input", "read_line", "clock_ms", "random_int", "int_to_string", "concat_strings", "string_length",
    "substring", "char_code_at", "char_from_code", "panic", "array_make", "array_empty", "array_get", "array_set", "array_length", "array_push",
-   "par_map"]
+   "par_map", "int_to_float", "float_to_int", "sqrt", "float_abs", "floor", "ceil", "trunc", "round", "float_to_string", "float_to_fixed",
+   "parse_float"]
 }
 // Names a JavaScript object has without being given them (`name in builtins`
 // is true for these in the reference, which affects function keys).
@@ -388,7 +389,11 @@ fn builtin_table(st) {
   let (pa, st) = new_var(st, generic(), []);
   let (pb, st) = new_var(st, generic(), []);
   let (pe, st) = new_rvar(st, generic());
-  let t3 = append(t2, [("par_map", TF([arr(pa), TF([pa], pb, Row([], Some(pe)))], arr(pb), Row([], Some(pe))))]);
+  let fl = t_float();
+  let t3 = append(t2, [("par_map", TF([arr(pa), TF([pa], pb, Row([], Some(pe)))], arr(pb), Row([], Some(pe)))),
+    ("int_to_float", f([i], fl, [])), ("float_to_int", f([fl], i, [])), ("sqrt", f([fl], fl, ["fail"])), ("float_abs", f([fl], fl, [])),
+    ("floor", f([fl], fl, [])), ("ceil", f([fl], fl, [])), ("trunc", f([fl], fl, [])), ("round", f([fl], fl, [])),
+    ("float_to_string", f([fl], s, [])), ("float_to_fixed", f([fl, i], s, [])), ("parse_float", f([s], TC("Option", [fl]), []))]);
   (fold(t3, MEmpty, |m, kv| match kv { (k, v) -> m_set(m, k, v) }), st)
 }
 fn partial_builtin(n) { n == "array_get" || n == "array_set" || n == "char_code_at" || n == "array_make" }

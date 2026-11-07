@@ -16,6 +16,7 @@ trait Ord { fn compare(a: Self, b: Self) -> Int }
 trait Show { fn show(x: Self) -> String }
 
 impl Show for Int { fn show(n) { int_to_string(n) } }
+impl Show for Float { fn show(x) { float_to_string(x) } }
 impl Show for String { fn show(s) { "\\"" ++ s ++ "\\"" } }
 impl Show for Bool { fn show(b) { if b { "true" } else { "false" } } }
 impl Show for () { fn show(u) { "()" } }

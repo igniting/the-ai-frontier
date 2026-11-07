@@ -45,9 +45,15 @@ export function lex(src) {
     const start = i;
     if (/[0-9]/.test(ch)) {
       while (i < src.length && /[0-9_]/.test(src[i])) i++;
+      const intEnd = i;
+      // A float: a fraction (a point and a digit), an exponent, or both.
+      if (src[i] === '.' && /[0-9]/.test(src[i + 1] ?? '')) { i++; while (i < src.length && /[0-9_]/.test(src[i])) i++; }
+      const sign = src[i + 1] === '+' || src[i + 1] === '-' ? 1 : 0;
+      if ((src[i] === 'e' || src[i] === 'E') && /[0-9]/.test(src[i + 1 + sign] ?? '')) { i += 1 + sign; while (i < src.length && /[0-9_]/.test(src[i])) i++; }
       const text = src.slice(start, i).replace(/_/g, '');
       if (/[A-Za-z]/.test(src[i] ?? '')) err('invalid number literal', start, i + 1);
-      tokens.push({ k: 'int', v: BigInt(text), s: start, e: i });
+      if (i > intEnd) tokens.push({ k: 'float', v: Number(text), s: start, e: i });
+      else tokens.push({ k: 'int', v: BigInt(text), s: start, e: i });
       continue;
     }
     if (/[A-Za-z_]/.test(ch)) {

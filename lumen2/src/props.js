@@ -8,6 +8,7 @@
 // run again as one compiled program, which must agree; a counterexample is
 // also replayed compiled. So properties double as tests of the compiler.
 
+import { floatToString } from './floats.js';
 import { interpret, INT_MIN, INT_MAX } from './interp.js';
 import { prune, substParams } from './types.js';
 import { makeHost } from './host.js';
@@ -25,6 +26,7 @@ function rng(seed) {
 }
 
 const EDGE_INTS = [0n, 1n, -1n, 2n, 10n, -10n, 255n, 256n, (1n << 31n) - 1n, -(1n << 31n), 1n << 32n, INT_MAX, INT_MIN, INT_MAX - 1n, INT_MIN + 1n];
+const EDGE_FLOATS = [0, -0, 1, -1, 0.5, 0.1, -0.1, 1 / 3, 2 ** 53, 2 ** 53 + 2, 1e300, -1e300, 1.7976931348623157e308, -1.7976931348623157e308, 5e-324, 2.2250738585072014e-308, 1e-300];
 const CHARS = 'ab xyz01-\n';
 
 export function makeGenerator(program, seed) {
@@ -60,6 +62,19 @@ export function makeGenerator(program, seed) {
         if (r < 0.85) return pick(EDGE_INTS);
         return BigInt.asIntN(64, (BigInt(int(2 ** 32)) << 32n) | BigInt(int(2 ** 32)));
       }
+      case 'Float': {
+        const r = rand();
+        if (r < 0.4) return (int(8 * size + 1) - 4 * size) / 4;
+        if (r < 0.6) return (int(2000001) - 1000000) / 1000;
+        if (r < 0.75) return pick(EDGE_FLOATS);
+        // Any finite double, from random bits.
+        for (;;) {
+          const view = new DataView(new ArrayBuffer(8));
+          view.setUint32(0, int(2 ** 32)); view.setUint32(4, int(2 ** 32));
+          const x = view.getFloat64(0);
+          if (Number.isFinite(x)) return x;
+        }
+      }
       case 'Bool': return rand() < 0.5;
       case 'Unit': return null;
       case 'String': {
@@ -89,6 +104,16 @@ export function makeGenerator(program, seed) {
       return;
     }
     switch (t.name) {
+      case 'Float': {
+        if (v === 0) return;
+        const seen = new Set();
+        for (const c of [0, Math.trunc(v), v / 2, Math.abs(v), Number(v.toPrecision(3))]) {
+          if (c === v || Object.is(c, -0) || !Number.isFinite(c) || seen.has(c)) continue;
+          seen.add(c);
+          yield c;
+        }
+        return;
+      }
       case 'Int': {
         if (v === 0n) return;
         const seen = new Set();
@@ -146,6 +171,7 @@ export function makeGenerator(program, seed) {
 export function literal(v) {
   switch (typeof v) {
     case 'bigint': return v.toString();
+    case 'number': return floatToString(v);
     case 'boolean': return String(v);
     case 'string': {
       let s = '"';

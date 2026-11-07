@@ -27,6 +27,13 @@ that it succeeds.
   `1_000_000`. The value must fit in a signed 64-bit integer.
   `-9223372036854775808` is a single literal: a `-` directly before an
   integer literal is folded into it.
+- **Float literals.** Digits, a `.` and digits, with an optional exponent
+  (`1.5`, `0.25`, `6.02e23`, `1.0e-9`), or digits with an exponent (`1e6`).
+  Digit runs may have `_` separators. The value is the decimal number
+  rounded to the nearest `Float` (ties to even). A literal whose value is
+  too large for a `Float`, or not zero but too small to be anything but 0,
+  is an error. A `-` directly before a float literal is folded into it, as
+  for integers.
 - **String literals.** Between `"` quotes, on one line. The escapes are
   `\n \t \r \\ \" \' \0` and `\xHH`. A string is a sequence of bytes: other
   characters stand for their UTF-8 encoding, and `\xHH` is the single byte
@@ -39,11 +46,12 @@ that it succeeds.
 | Type | Values |
 | --- | --- |
 | `Int` | 64-bit two's-complement integers |
+| `Float` | finite IEEE 754 double-precision numbers (§9): never infinite, never NaN |
 | `Bool` | `true`, `false` |
 | `String` | immutable byte strings, at most 2^24 - 1 bytes |
 | `()` | the unit value `()` |
 | `(T1, T2, ...)` | tuples of two or more values |
-| `Array<T>` | arrays with value semantics (§10.3), at most 2^24 - 1 elements |
+| `Array<T>` | arrays with value semantics (§10.4), at most 2^24 - 1 elements |
 | `fn(T1, ...) -> R ! E` | functions, with effect row `E` |
 | `Name<T1, ...>` | user-declared algebraic data types |
 | `{v: T \| p}` | a refinement of `T` (§6), only in some annotations |
@@ -132,8 +140,9 @@ An annotated `main` may not claim a capability it was not granted. `fail`
 is not a capability; it is always allowed in `main`.
 
 **Untracked failures.** Three runtime errors can happen in pure code and are
-deliberately not tracked: `integer overflow`, `out of memory` and
-`string too long`. Tracking them would put `fail` on nearly every function.
+deliberately not tracked: `integer overflow`, `float overflow`, `out of
+memory` and `string too long`. Tracking them would put `fail` on nearly
+every function.
 They are the analogue of running out of stack in other languages.
 
 ## 4. Declarations and expressions
@@ -375,6 +384,15 @@ constraints.
   do not count towards coverage. An arm that can never match is a warning.
 - **Refutable lets.** The pattern of a `let` must be irrefutable, by the
   same check.
+- **Arithmetic.** `+`, `-`, `*`, `/` and unary `-` take two `Int`s or two
+  `Float`s and give the same type; there is no implicit conversion
+  (`int_to_float` and `float_to_int` convert). `%` takes `Int`s only. When
+  the operands' type is still unknown at the end of a top-level function's
+  inference, it is `Int`: `fn double(x) { x + x }` has type
+  `fn(Int) -> Int`, and a function on floats needs one of them to be known,
+  such as `fn half(x: Float) -> Float { x / 2.0 }`. A lambda's operands may
+  be settled by its use later in the same function, as in
+  `fold(xs, 0.0, |acc, x| acc + x)`.
 - **Comparisons** need `Ord` (§5), which every type without functions has.
 - **Partial operations and refinements** are proved as described in §6.
   Checking runs in three passes: types first, treating every partial
@@ -396,8 +414,16 @@ constraints.
   zero. `%` takes the sign of its left operand. Both stop with
   `division by zero` when the divisor is 0. `-9223372036854775808 / -1`
   stops with `integer overflow`.
+- **Floats.** A `Float` is a finite double. `+ - *` and `/` round the
+  exact result to the nearest double (ties to even), as IEEE 754 does, and
+  stop with `float overflow` when that is too large to be finite. `x / 0.0`
+  stops with `division by zero`. `-0.0` exists, compares equal to `0.0`
+  and prints as `0.0`. So every `Float` is a number: there is no NaN to
+  compare unequal to itself or to propagate silently, and the order on
+  floats is total. Results are the same bits on every machine and every
+  thread.
 - **Ordering** follows `Ord`. A type with an `impl Ord` is compared by its
-  `compare`. Every other type is compared structurally: integers
+  `compare`. Every other type is compared structurally: integers and floats
   numerically, `false < true`, and strings by bytes (lexicographic, with a
   proper prefix first). Tuples and constructor fields compare left to
   right. Constructors of different kinds compare by their order in the type
@@ -407,7 +433,8 @@ constraints.
 - **Trait methods** run the impl selected by the type of their first
   argument.
 - **Runtime errors.** A runtime error stops the program; the output printed
-  so far is kept. The messages are `integer overflow`, `division by zero`,
+  so far is kept. The messages are `integer overflow`, `float overflow`,
+  `division by zero`, `square root of a negative number`,
   `index out of bounds`, `panic: <message>`, `out of memory`,
   `string too long` and `stack overflow`. How deep non-tail recursion can
   go before `stack overflow` is up to the implementation: the interpreter
@@ -455,7 +482,26 @@ simulated clock advances by one millisecond per reading.
 | `char_from_code(n)` | `fn(Int) -> String` | the one-byte string holding `n` mod 256 |
 | `concat_strings(xs)` | `fn(List<String>) -> String` | the strings joined, in linear time; `string too long` past 2^24 - 1 bytes |
 
-### 10.3 Arrays
+### 10.3 Floats
+
+| Builtin | Type | Behaviour |
+| --- | --- | --- |
+| `int_to_float(n)` | `fn(Int) -> Float` | `n`, rounded to the nearest double |
+| `float_to_int(x)` | `fn(Float) -> Int` | `x` without its fraction (rounded towards zero); `integer overflow` outside the `Int` range |
+| `sqrt(x)` | `fn(Float) -> Float ! fail` | the square root, correctly rounded; `square root of a negative number` below 0 |
+| `float_abs(x)` | `fn(Float) -> Float` | the absolute value |
+| `floor(x)`, `ceil(x)`, `trunc(x)` | `fn(Float) -> Float` | rounded down, up, or towards zero, to an integer |
+| `round(x)` | `fn(Float) -> Float` | rounded to the nearest integer, halves away from zero |
+| `float_to_string(x)` | `fn(Float) -> String` | the shortest decimal that reads back as `x`, as JavaScript's `Number.prototype.toString` writes it, with `.0` added when it has neither `.` nor an exponent: `1.0`, `0.1`, `1.5e-7`, `1e+21` |
+| `float_to_fixed(x, d)` | `fn(Float, Int) -> String` | `x` with `d` digits after the point (`d` clamped to 0..20), as `Number.prototype.toFixed` writes it: the exact value rounded, halves away from zero; `1e+21` and above in exponent form |
+| `parse_float(s)` | `fn(String) -> Option<Float>` | the number `s` writes, rounded to the nearest double: an optional sign, digits with an optional `.` (or `.` and digits), and an optional exponent; `None` for anything else, or for a number too large to be finite |
+
+`/` on floats is a partial operation like `/` on integers. The checker
+proves nothing about floats except that a literal other than `0.0` is not
+zero, so `x / 2.0` is pure, while `x / y` keeps `fail`; so does `sqrt`.
+`float overflow`, like `integer overflow`, is not tracked.
+
+### 10.4 Arrays
 
 Arrays are values. `array_set` and `array_push` return a new array and never
 change the one they are given. The implementation updates the array in place
@@ -494,11 +540,11 @@ order would stop with. (If a call for a later element does not terminate,
 `par_map` may not either.) The checker knows that the result has the length
 of `a`.
 
-### 10.4 The prelude
+### 10.5 The prelude
 
 The prelude is ordinary Lumen 2 source (`src/prelude.js`, which the
 compiler is built with), checked with the program. It declares the traits `Ord` and `Show` and the `Show` impls for
-built-in types. Its functions are `fold rev_append reverse append map
+built-in types (`Float`'s is `float_to_string`). Its functions are `fold rev_append reverse append map
 filter flat_map concat each length sum is_empty range any all contains find
 head nth take drop zip min max abs unwrap_or map_option sort_by sort
 intersperse join show_list repeat_string array_from_list array_to_list`.

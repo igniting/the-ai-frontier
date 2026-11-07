@@ -36,7 +36,7 @@ fn check_types(adts, fns) {
     let pre = "IR types in " ++ fname ++ ": ";
     let vm = var_map(irf_vars(f));
     let var_ty = |v| match m_get(vm, v) { Some(t) -> t, None -> cert_fail(pre ++ "unknown variable " ++ v) };
-    let atom_ty = |a| match a { QVar(v) -> var_ty(v), QInt(_) -> t_int(), QBool(_) -> t_bool(), QUnit -> t_unit(), QStr(_) -> t_string() };
+    let atom_ty = |a| match a { QVar(v) -> var_ty(v), QInt(_) -> t_int(), QFloat(_) -> t_float(), QBool(_) -> t_bool(), QUnit -> t_unit(), QStr(_) -> t_string() };
     let expect = |a, t, what| { let at = atom_ty(a); if !same_ty(at, t) { cert_fail(pre ++ what ++ ": expected " ++ tkey(t) ++ ", found " ++ tkey(at)) } else { () } };
     let reaches = |x, path, ty, obj| {
       expect(x, obj, "projected value");
@@ -53,6 +53,12 @@ fn check_types(adts, fns) {
         else if name == "clock_ms" { Some(([], t_int())) }
         else if name == "random_int" { Some(([t_int(), t_int()], t_int())) }
         else if name == "int_to_string" { Some(([t_int()], t_string())) }
+        else if name == "int_to_float" { Some(([t_int()], t_float())) }
+        else if name == "float_to_int" { Some(([t_float()], t_int())) }
+        else if name == "sqrt" || name == "float_abs" || name == "floor" || name == "ceil" || name == "trunc" || name == "round" { Some(([t_float()], t_float())) }
+        else if name == "float_to_string" { Some(([t_float()], t_string())) }
+        else if name == "float_to_fixed" { Some(([t_float(), t_int()], t_string())) }
+        else if name == "parse_float" { Some(([t_string()], TC("Option", [t_float()]))) }
         else if name == "string_length" { Some(([t_string()], t_int())) }
         else if name == "substring" { Some(([t_string(), t_int(), t_int()], t_string())) }
         else if name == "char_code_at" { Some(([t_string(), t_int()], t_int())) }
@@ -91,7 +97,9 @@ fn check_types(adts, fns) {
       let t = match r {
         RAtom(a) -> atom_ty(a),
         RPrim(op, args, ty) -> if op == "add" || op == "sub" || op == "mul" || op == "div" || op == "rem" { each(args, |a| expect(a, t_int(), op)); t_int() }
+          else if op == "fadd" || op == "fsub" || op == "fmul" || op == "fdiv" { each(args, |a| expect(a, t_float(), op)); t_float() }
           else if op == "neg" { expect(list_get(args, 0), t_int(), "neg"); t_int() }
+          else if op == "fneg" { expect(list_get(args, 0), t_float(), "fneg"); t_float() }
           else if op == "not" { expect(list_get(args, 0), t_bool(), "not"); t_bool() }
           else { match ty { Some(t) -> each(args, |a| expect(a, t, op)), None -> cert_fail(pre ++ op ++ " without an operand type") }; t_bool() },
         RCmp(op, ty, args) -> { each(args, |a| expect(a, ty, "comparison")); if op == "three" { t_int() } else { t_bool() } },

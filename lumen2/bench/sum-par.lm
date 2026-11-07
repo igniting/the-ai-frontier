@@ -1,0 +1,23 @@
+// The sum of (-1)^(i+1) / i for i = 1 to n (about ln 2), on every core:
+// par_map adds up 1,000 blocks of the terms, and the blocks' sums are added
+// in order. The blocks are the same however many threads there are, and
+// par_map returns their sums in order, so the result is the same, bit for
+// bit, on one thread or on many.
+
+fn term(i: Int) -> Float { (if i % 2 == 1 { 1.0 } else { -1.0 }) / int_to_float(i) }
+fn block(lo: Int, hi: Int, acc: Float) -> Float { if lo > hi { acc } else { block(lo + 1, hi, acc + term(lo)) } }
+fn starts(a: Array<Int>, k: Int, blocks: Int) -> Array<Int> { if k >= blocks { a } else { starts(array_push(a, k), k + 1, blocks) } }
+
+fn digits(s: String, i: {i: Int | 0 <= i}, acc: Int) -> Int {
+  if i >= string_length(s) { acc } else {
+    let c = char_code_at(s, i);
+    if c >= 48 && c <= 57 { digits(s, i + 1, acc * 10 + c - 48) } else { acc }
+  }
+}
+
+fn main() {
+  let n = digits(read_input(), 0, 0);
+  let size = n / 1000 + 1;
+  let sums = par_map(starts(array_empty(), 0, 1000), |k| block(k * size + 1, min(n, (k + 1) * size), 0.0));
+  println(float_to_string(fold(array_to_list(sums), 0.0, |s, x| s + x)))
+}

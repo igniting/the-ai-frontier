@@ -1,0 +1,14 @@
+// Sensor readings: sensor,time,celsius. Prints each reading in Fahrenheit,
+// to one decimal, and marks those above 30 degrees Celsius. A reading that
+// is not a number is dropped.
+
+fn transform(n: Int, line: String) -> Option<String> {
+  if n == 1 { Some("sensor,time,fahrenheit,alert") }
+  else {
+    let row = fields(line);
+    match parse_float(field(row, 2)) {
+      Some(c) -> Some(csv([field(row, 0), field(row, 1), float_to_fixed(c * 9.0 / 5.0 + 32.0, 1), if c > 30.0 { "high" } else { "" }])),
+      None -> None,
+    }
+  }
+}

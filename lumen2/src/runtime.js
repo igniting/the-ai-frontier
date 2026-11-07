@@ -5,8 +5,9 @@
 
 import { makeHost } from './host.js';
 import { makePool, threadCount, minPages } from './par.js';
+import { floatHost } from './floats.js';
 
-export const FAILURES = ['', 'integer overflow', 'division by zero', 'index out of bounds', 'out of memory', 'string too long', 'use after free'];
+export const FAILURES = ['', 'integer overflow', 'division by zero', 'index out of bounds', 'out of memory', 'string too long', 'use after free', 'float overflow', 'square root of a negative number'];
 
 export class LumenTrap extends Error {}
 
@@ -60,6 +61,7 @@ export function runWasm(bytes, { input = '', host = makeHost(), talk = null, thr
     panic: (ptr, len) => { throw new LumenTrap(`panic: ${asString(bytesAt(ptr, len))}`); },
     clock: () => host.clock(),
     random: (lo, hi) => host.random(lo, hi),
+    ...floatHost((ptr, len) => bytesAt(ptr, len)),
   };
   const module = bytes instanceof WebAssembly.Module ? bytes : new WebAssembly.Module(bytes);
   // Threads mode: the module imports a shared memory, and par_map asks the

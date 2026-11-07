@@ -36,6 +36,7 @@ export const row = (labels, tail = null) => ({ k: 'row', labels: [...new Set(lab
 export const PURE = () => row([]);
 
 export const INT = tcon('Int');
+export const FLOAT = tcon('Float');
 export const BOOL = tcon('Bool');
 export const STRING = tcon('String');
 export const UNIT = tcon('Unit');

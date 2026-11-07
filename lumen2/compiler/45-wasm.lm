@@ -9,7 +9,7 @@ type Ins {
   OGlobal(String, String),                          // global.get / set
   OCall(String, String),                            // call / return_call
   OCallInd(String, List<String>, List<String>),     // call_indirect / return_call_indirect, with its type
-  OI32(Int), OI64(Int),
+  OI32(Int), OI64(Int), OF64(Int),                  // OF64: f64.const, with the bits of the double
   OMem(String, Int),                                // a load or store, with its offset
   OBlock(String, Option<String>, Option<String>),   // block / loop / if, its label and result type
   OBr(String, String)                               // br / br_if, to a label
@@ -17,7 +17,7 @@ type Ins {
 fn ins_op(i) {
   match i {
     Op(o) -> o, OLocal(o, _) -> o, OGlobal(o, _) -> o, OCall(o, _) -> o, OCallInd(o, _, _) -> o,
-    OI32(_) -> "i32.const", OI64(_) -> "i64.const", OMem(o, _) -> o, OBlock(o, _, _) -> o, OBr(o, _) -> o,
+    OI32(_) -> "i32.const", OI64(_) -> "i64.const", OF64(_) -> "f64.const", OMem(o, _) -> o, OBlock(o, _, _) -> o, OBr(o, _) -> o,
   }
 }
 // Code under construction: instructions nested in lists, flattened at the end.
@@ -34,6 +34,7 @@ fn wgget(n) { C1(OGlobal("global.get", n)) }
 fn wgset(n) { C1(OGlobal("global.set", n)) }
 fn wi32(v) { C1(OI32(v)) }
 fn wi64(v) { C1(OI64(v)) }
+fn wf64(bits) { C1(OF64(bits)) }
 fn wcall(f) { C1(OCall("call", f)) }
 fn wmem(o, off) { C1(OMem(o, off)) }
 fn wif() { C1(OBlock("if", None, None)) }
@@ -71,7 +72,12 @@ fn push_str(out, s) {
   fn go(out, i) { if i >= string_length(s) { out } else { go(array_push(out, char_code_at(s, i)), i + 1) } }
   go(push_uleb(out, string_length(s)), 0)
 }
-fn valtype_byte(t) { if t == "i64" { 126 } else { 127 } }
+fn valtype_byte(t) { if t == "i64" { 126 } else if t == "f64" { 124 } else { 127 } }
+// The 8 bytes of a 64-bit value, least significant first (two's complement).
+fn push_u64le(out, v) {
+  fn go(out, v, k) { if k == 0 { out } else { let b = ((v % 256) + 256) % 256; go(array_push(out, b), (v - b) / 256, k - 1) } }
+  go(out, v, 8)
+}
 fn push_section(out, id, body) { push_bytes(push_uleb(array_push(out, id), array_length(body)), body) }
 
 fn op_code(o) {
@@ -80,17 +86,21 @@ fn op_code(o) {
   else if o == "call" { 16 } else if o == "call_indirect" { 17 } else if o == "return_call" { 18 } else if o == "return_call_indirect" { 19 }
   else if o == "drop" { 26 } else if o == "select" { 27 }
   else if o == "local.get" { 32 } else if o == "local.set" { 33 } else if o == "local.tee" { 34 } else if o == "global.get" { 35 } else if o == "global.set" { 36 }
-  else if o == "i32.load" { 40 } else if o == "i64.load" { 41 } else if o == "i32.load8_u" { 45 } else if o == "i32.store" { 54 } else if o == "i64.store" { 55 } else if o == "i32.store8" { 58 }
-  else if o == "memory.size" { 63 } else if o == "memory.grow" { 64 } else if o == "i32.const" { 65 } else if o == "i64.const" { 66 }
+  else if o == "i32.load" { 40 } else if o == "i64.load" { 41 } else if o == "f64.load" { 43 } else if o == "i32.load8_u" { 45 } else if o == "i32.store" { 54 } else if o == "i64.store" { 55 } else if o == "f64.store" { 57 } else if o == "i32.store8" { 58 }
+  else if o == "memory.size" { 63 } else if o == "memory.grow" { 64 } else if o == "i32.const" { 65 } else if o == "i64.const" { 66 } else if o == "f64.const" { 68 }
   else if o == "i32.eqz" { 69 } else if o == "i32.eq" { 70 } else if o == "i32.ne" { 71 } else if o == "i32.lt_s" { 72 } else if o == "i32.lt_u" { 73 } else if o == "i32.gt_s" { 74 } else if o == "i32.gt_u" { 75 }
   else if o == "i32.le_s" { 76 } else if o == "i32.le_u" { 77 } else if o == "i32.ge_s" { 78 } else if o == "i32.ge_u" { 79 }
   else if o == "i64.eqz" { 80 } else if o == "i64.eq" { 81 } else if o == "i64.ne" { 82 } else if o == "i64.lt_s" { 83 } else if o == "i64.lt_u" { 84 } else if o == "i64.gt_s" { 85 } else if o == "i64.gt_u" { 86 }
   else if o == "i64.le_s" { 87 } else if o == "i64.le_u" { 88 } else if o == "i64.ge_s" { 89 } else if o == "i64.ge_u" { 90 }
+  else if o == "f64.eq" { 97 } else if o == "f64.ne" { 98 } else if o == "f64.lt" { 99 } else if o == "f64.gt" { 100 } else if o == "f64.le" { 101 } else if o == "f64.ge" { 102 }
   else if o == "i32.clz" { 103 } else if o == "i32.add" { 106 } else if o == "i32.sub" { 107 } else if o == "i32.mul" { 108 } else if o == "i32.div_s" { 109 } else if o == "i32.div_u" { 110 } else if o == "i32.rem_s" { 111 } else if o == "i32.rem_u" { 112 }
   else if o == "i32.and" { 113 } else if o == "i32.or" { 114 } else if o == "i32.xor" { 115 } else if o == "i32.shl" { 116 } else if o == "i32.shr_s" { 117 } else if o == "i32.shr_u" { 118 } else if o == "i32.rotl" { 119 } else if o == "i32.rotr" { 120 }
   else if o == "i64.add" { 124 } else if o == "i64.sub" { 125 } else if o == "i64.mul" { 126 } else if o == "i64.div_s" { 127 } else if o == "i64.div_u" { 128 } else if o == "i64.rem_s" { 129 } else if o == "i64.rem_u" { 130 }
   else if o == "i64.and" { 131 } else if o == "i64.or" { 132 } else if o == "i64.xor" { 133 } else if o == "i64.shl" { 134 } else if o == "i64.shr_s" { 135 } else if o == "i64.shr_u" { 136 } else if o == "i64.rotl" { 137 } else if o == "i64.rotr" { 138 }
+  else if o == "f64.abs" { 153 } else if o == "f64.neg" { 154 } else if o == "f64.ceil" { 155 } else if o == "f64.floor" { 156 } else if o == "f64.trunc" { 157 } else if o == "f64.nearest" { 158 } else if o == "f64.sqrt" { 159 }
+  else if o == "f64.add" { 160 } else if o == "f64.sub" { 161 } else if o == "f64.mul" { 162 } else if o == "f64.div" { 163 } else if o == "f64.copysign" { 166 }
   else if o == "i32.wrap_i64" { 167 } else if o == "i64.extend_i32_s" { 172 } else if o == "i64.extend_i32_u" { 173 }
+  else if o == "i64.trunc_f64_s" { 176 } else if o == "f64.convert_i64_s" { 185 } else if o == "i64.reinterpret_f64" { 189 } else if o == "f64.reinterpret_i64" { 191 }
   else if o == "memory.copy" || o == "memory.fill" { 252 }
   else if is_atomic(o) { 254 }
   else { internal("wasm: unknown instruction " ++ o) }
@@ -98,7 +108,7 @@ fn op_code(o) {
 // Atomic instructions (the threads proposal): prefix 0xFE, then their own code.
 fn is_atomic(o) { o == "i32.atomic.rmw.add" || o == "i32.atomic.rmw.sub" }
 fn atomic_code(o) { if o == "i32.atomic.rmw.add" { 30 } else { 37 } }
-fn mem_align(o) { if o == "i64.load" || o == "i64.store" { 3 } else if o == "i32.load8_u" || o == "i32.store8" { 0 } else { 2 } }
+fn mem_align(o) { if o == "i64.load" || o == "i64.store" || o == "f64.load" || o == "f64.store" { 3 } else if o == "i32.load8_u" || o == "i32.store8" { 0 } else { 2 } }
 
 // The module: types are registered in the order the reference registers
 // them (imports, then each function's own type and its indirect calls).
@@ -107,7 +117,10 @@ fn imports(threads) {
   append([Imp("env", "write", "host_write", ["i32", "i32"], []), Imp("env", "input_len", "host_input_len", [], ["i32"]), Imp("env", "input_read", "host_input_read", ["i32"], []),
    Imp("env", "line_len", "host_line_len", [], ["i32"]), Imp("env", "line_read", "host_line_read", ["i32"], []),
    Imp("env", "fail", "host_fail", ["i32"], []), Imp("env", "panic", "host_panic", ["i32", "i32"], []), Imp("env", "clock", "host_clock", [], ["i64"]),
-   Imp("env", "random", "host_random", ["i64", "i64"], ["i64"])],
+   Imp("env", "random", "host_random", ["i64", "i64"], ["i64"]),
+   // Floats as text (formatting is the host's: JavaScript's, which the interpreter uses too).
+   Imp("env", "float_fmt", "host_float_fmt", ["f64", "i32"], ["i32"]), Imp("env", "float_take", "host_float_take", ["i32"], []),
+   Imp("env", "float_parse", "host_float_parse", ["i32", "i32"], ["f64"])],
    if threads { [Imp("env", "par", "host_par", ["i32"], [])] } else { [] })
 }
 fn sig_key(ps, rs) { join(ps, ",") ++ "->" ++ join(rs, ",") }
@@ -208,6 +221,7 @@ fn enc_code(f, fi, gidx, ti) {
         OCallInd(_, ps, rs) -> (array_push(push_uleb(o, ti(ps, rs)), 0), labels),
         OI32(v) -> (push_sleb(o, wrap32(v)), labels),
         OI64(v) -> (push_sleb(o, v), labels),
+        OF64(v) -> (push_u64le(o, v), labels),
         OMem(x, off) -> if is_atomic(x) { (push_uleb(push_uleb(push_uleb(o, atomic_code(x)), 2), off), labels) } else { (push_uleb(push_uleb(o, mem_align(x)), off), labels) },
         OBlock(_, l, t) -> (array_push(o, match t { Some(v) -> valtype_byte(v), None -> 64 }), [l, ..labels]),
         OBr(_, l) -> {

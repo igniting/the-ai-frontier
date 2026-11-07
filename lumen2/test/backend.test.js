@@ -332,9 +332,17 @@ test('the benchmark programs: right answers, and every access proved where claim
     binarytrees: ['8', 'stretch tree of depth 9\t check: 1023\n256\t trees of depth 4\t check: 7936\n64\t trees of depth 6\t check: 8128\n16\t trees of depth 8\t check: 8176\nlong lived tree of depth 8\t check: 511\n'],
     nqueens: ['6', '4 solutions for 6 queens\n'],
     editdist: ['300', 'edit distance 161\n'],
+    nbody: ['1000', '-0.169075164\n-0.169087605\n'],
+    spectralnorm: ['100', '1.274219991\n'],
   };
   // The parallel versions print what the sequential ones print.
-  for (const name of ['fannkuch', 'binarytrees', 'nqueens']) expected[`${name}-par`] = expected[name];
+  for (const name of ['fannkuch', 'binarytrees', 'nqueens', 'spectralnorm']) expected[`${name}-par`] = expected[name];
+  // Float division by a variable, and sqrt, keep `fail`: the checker proves nothing about floats.
+  const floatFailing = {
+    nbody: ['offset', 'kinetic', 'potential', 'energy', 'pull', 'advance'],
+    spectralnorm: ['a', 'dot', 'times', 'ata', 'steps'],
+    'spectralnorm-par': ['a', 'dot', 'ata', 'steps'],
+  };
   for (const [name, [input, out]] of Object.entries(expected)) {
     const src = readFileSync(new URL(`../bench/${name}.lm`, import.meta.url), 'utf8');
     const grants = ['input', 'output'];
@@ -343,7 +351,7 @@ test('the benchmark programs: right answers, and every access proved where claim
     assert.equal(r.live, 0, `${name} frees everything`);
     // Only main, which is always allowed to fail, can stop with an error.
     const failing = checkSource(src, { grants }).signatures.filter(s => /fail/.test(s.type) && s.name !== 'main');
-    assert.deepEqual(failing.map(s => s.name), [], `${name}: functions that can fail`);
+    assert.deepEqual(failing.map(s => s.name), floatFailing[name] ?? [], `${name}: functions that can fail`);
   }
 });
 

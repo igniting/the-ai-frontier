@@ -157,9 +157,9 @@ test('refinements: contracts are proved at every call, with counterexamples', ()
   sigs(get + 'fn main() { let a = array_make(3, 7); println(int_to_string(get(a, 2))) }');
   rejects(get + 'fn main() { let a = array_make(3, 7); println(int_to_string(get(a, 3))) }', /cannot prove that argument `i` of `get` satisfies `0 <= i && i < array_length\(a\)`/);
   const c = checkSource(get + 'fn f(a: Array<Int>, j: Int) -> Int { if j <= array_length(a) { get(a, j) } else { 0 } }\nfn main() { () }');
-  assert.match(c.errors[0].note, /for example when array_length\(a\) = \d+, j = \d+/);
-  const [len, j] = c.errors[0].note.match(/\d+/g).map(Number);
-  assert.ok(j >= len && len <= 16, 'the counterexample is a real one, and small');
+  assert.match(c.errors[0].note, /for example when array_length\(a\) = \d+, j = -?\d+/);
+  const [len, j] = c.errors[0].note.match(/-?\d+/g).map(Number);
+  assert.ok(j <= len && (j < 0 || j >= len) && len <= 16, 'the counterexample is a real one, and small');
   rejects('fn clamp(x: Int, n: Int) -> {r: Int | 0 <= r && r <= n} { if x < 0 { 0 } else if x > n { n } else { x } }\nfn main() { () }', /cannot prove that the result of `clamp` satisfies/);
   sigs('fn clamp(x: Int, n: {n: Int | n >= 0}) -> {r: Int | 0 <= r && r <= n} { if x < 0 { 0 } else if x > n { n } else { x } }\nfn main() { () }');
   sigs('fn main() { let n: {n: Int | n > 0} = 4; println(int_to_string(10 / n)) }');
@@ -238,6 +238,27 @@ test('refinements: an if\'s condition proves the access it guards, without a sea
   const o = c.verification.obligations.find((x) => x.scope === 'user' && x.what === 'the index is in bounds');
   assert.equal(o.status, 'proved');
   assert.ok(o.lemmas < 10, `${o.lemmas} conflicts`);
+});
+
+test('refinements: a multiple of a difference shares the difference\'s circuit', () => {
+  // Found by the fuzzer: (c1 - c2) * 7 between 0 and 6, halved, indexes an
+  // array of 3. As circuits, 7*c1 - 7*c2 and c1 - c2 were two 64-bit adders
+  // that the solver had to find equal, and the compiler ran out of memory.
+  // A term is now its coefficients' gcd times a shared sum, and a comparison
+  // is divided by that gcd.
+  for (const k of ['7', '9223372036854775807']) {
+    const src = `fn f(x: Int, y: Int) -> Int {
+      let a = array_make(3, 1);
+      let r = (x - y) * ${k};
+      if r >= 0 && r < 6 { array_get(a, r / 2) } else { 0 }
+    }
+    fn main() { println(int_to_string(f(4, 4))) }`;
+    const c = checkSource(src);
+    assert.equal(c.signatures.find((s) => s.name === 'f').type, 'fn(Int, Int) -> Int', k);
+    const o = c.verification.obligations.find((x) => x.scope === 'user' && x.what === 'the index is in bounds');
+    assert.equal(o.status, 'proved');
+    assert.ok(o.lemmas < 50, `${o.lemmas} conflicts`);
+  }
 });
 
 test('read_line streams standard input a line at a time', () => {

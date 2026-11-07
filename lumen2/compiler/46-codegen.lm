@@ -17,6 +17,14 @@ fn k_bounds() { 3 }
 fn k_oom() { 4 }
 fn k_strlong() { 5 }
 fn k_uaf() { 6 }
+fn k_float_overflow() { 7 }
+fn k_sqrt_negative() { 8 }
+// Doubles used by the generated code, as bits.
+fn f64_inf() { 9218868437227405312 }
+fn f64_half() { 4602678819172646912 }
+fn f64_one() { 4607182418800017408 }
+fn f64_two63() { 4890909195324358656 }
+fn f64_neg_two63() { 0 - 4332462841530417152 }
 fn k_imm() { 1024 }
 fn k_free_lists() { 64 }
 fn k_scratch() { 256 }
@@ -94,8 +102,11 @@ fn mkfn(cg, name, params, results, locals, body) { cg_add(cg, WFn(name, params, 
 
 fn wfail(code) { CL([wi32(code), wcall("rt_fail"), wop("unreachable")]) }
 fn wtrap(code) { CL([wif(), wfail(code), wend()]) }
-fn wload(t, off) { wmem(if valtype(t) == "i64" { "i64.load" } else { "i32.load" }, off) }
-fn wstore(t, off) { wmem(if valtype(t) == "i64" { "i64.store" } else { "i32.store" }, off) }
+fn wload(t, off) { wmem(valtype(t) ++ ".load", off) }
+fn wstore(t, off) { wmem(valtype(t) ++ ".store", off) }
+// Stops with `float overflow` unless the double in local x is finite (a NaN
+// fails the test too, though no float operation here can make one).
+fn wfinite(x) { CL([wget(x), wop("f64.abs"), wf64(f64_inf()), wop("f64.lt"), wop("i32.eqz"), wtrap(k_float_overflow())]) }
 fn wchk(gx) { if gx_paranoid(gx) { wcall("rt_chk") } else { wnone() } }
 fn wlen(gx, p) { CL([wget(p), wchk(gx), wmem("i32.load", 4)]) }
 fn wslot(a, i) { CL([wget(a), wget(i), wi32(3), wop("i32.shl"), wop("i32.add")]) }
@@ -141,6 +152,7 @@ fn runtime(gx, cg) {
   let cg = rt_str_sub(gx, cg);
   let cg = rt_str_code_at(gx, cg);
   let cg = rt_str_from_code(gx, cg);
+  let cg = rt_float_text(gx, cg);
   let (newline, cg) = cg_string(cg, "\n");
   let cg = rt_str_print(gx, cg);
   let cg = rt_str_println(gx, cg, newline);
@@ -535,6 +547,24 @@ fn rt_str_cmp(gx, cg) {
     wget("la"), wget("lb"), wop("i32.gt_u"), wget("la"), wget("lb"), wop("i32.lt_u"), wop("i32.sub"),
   ]))
 }
+// Floats as text, by the host: float_str(x, d) is x's shortest form (d < 0)
+// or x with d digits after the point; float_parse_str(s) is the number s
+// writes, or NaN for anything else.
+fn rt_float_text(gx, cg) {
+  let cg = mkfn(cg, "float_str", [("x", "f64"), i32p("d")], ["i32"], [i32p("n"), i32p("p")], CL([
+    wget("x"), wget("d"), wcall("host_float_fmt"), wset("n"),
+    wget("n"), wcall("str_new"), wset("p"),
+    wget("p"), wi32(8), wop("i32.add"), wcall("host_float_take"),
+    wget("p"),
+  ]));
+  let cg = mkfn(cg, "float_fixed", [("x", "f64"), i64p("d")], ["i32"], [], CL([
+    wget("x"),
+    wget("d"), wi64(0), wop("i64.lt_s"), wif_r("i32"), wi32(0), wop("else"),
+    wget("d"), wi64(20), wop("i64.gt_s"), wif_r("i32"), wi32(20), wop("else"), wget("d"), wop("i32.wrap_i64"), wend(), wend(),
+    wcall("float_str"),
+  ]));
+  mkfn(cg, "float_parse_str", [i32p("s")], ["f64"], [], CL([wget("s"), wi32(8), wop("i32.add"), wget("s"), wmem("i32.load", 4), wcall("host_float_parse")]))
+}
 fn rt_int_to_string(gx, cg) {
   let paranoid = gx_paranoid(gx);
   let mutant = gx_mutant(gx);
@@ -753,6 +783,7 @@ fn cmp_fn(gx, cg, t) {
       },
       None -> match t {
         TC("Int", _) -> (CL([wget("a"), wget("b"), wop("i64.gt_s"), wget("a"), wget("b"), wop("i64.lt_s"), wop("i32.sub")]), [i32p("c")], cg),
+        TC("Float", _) -> (CL([wget("a"), wget("b"), wop("f64.gt"), wget("a"), wget("b"), wop("f64.lt"), wop("i32.sub")]), [i32p("c")], cg),
         TT(es) -> { let (fc, cg) = fields(cg, es); (CL([fc, wi32(0)]), [i32p("c")], cg) },
         TC("String", _) -> (CL([wget("a"), wget("b"), wcall("str_cmp")]), [i32p("c")], cg),
         TC("Array", [et]) -> {
@@ -1081,13 +1112,14 @@ fn gen_fn(gx, cg, f) {
     let ret_es = gx_unboxed(gx, fname);
     let ub = fold(ub_calls(gx, body, []), MEmpty, |m, ve| match ve { (v, es) -> if ub_ok(v, body, is_some(ret_es)) { m_set(m, v, es) } else { m } });
     let ub_locals = flat_map(m_entries(ub), |ve| match ve { (v, es) -> map(enumerate(es), |kt| match kt { (k, t) -> (field_local(v, k), valtype(t)) }) });
-    let box_locals = flat_map(range(0, ub_arity(gx, body)), |k| [(box_temp(k, t_int()), "i64"), (box_temp(k, t_unit()), "i32")]);
-    let locals = concat([flat_map(vars, |vt| match vt { (v, t) -> if contains_str(pnames, v) { [] } else { [(v, valtype(t))] } }), [i32p("$p"), i64p("$r")], ub_locals, box_locals]);
+    let box_locals = flat_map(range(0, ub_arity(gx, body)), |k| [(box_temp(k, t_int()), "i64"), (box_temp(k, t_unit()), "i32"), (box_temp(k, t_float()), "f64")]);
+    let locals = concat([flat_map(vars, |vt| match vt { (v, t) -> if contains_str(pnames, v) { [] } else { [(v, valtype(t))] } }), [i32p("$p"), i64p("$r"), ("$f", "f64"), ("$g", "f64")], ub_locals, box_locals]);
     let mutant = gx_mutant(gx);
     let chk = wchk(gx);
     let atom = |cg, a| match a {
       QVar(v) -> (wget(v), cg),
       QInt(n) -> (wi64(n), cg),
+      QFloat(n) -> (wf64(n), cg),
       QBool(b) -> (wi32(if b { 1 } else { 0 }), cg),
       QUnit -> (wi32(0), cg),
       QStr(s) -> { let (addr, cg) = cg_string(cg, s); (wi32(addr), cg) },
@@ -1142,7 +1174,7 @@ fn gen_fn(gx, cg, f) {
     // A tail call of the function to itself is a jump back to its start: the
     // arguments, all on the stack, become the parameters (the last one first).
     let self_jump = CL([CL(map(reverse(params), |p| match p { (v, _) -> wset(v) })), wbr("$self")]);
-    let at_code = |a| match a { QVar(v) -> wget(v), QInt(n) -> wi64(n), QBool(b) -> wi32(if b { 1 } else { 0 }), QUnit -> wi32(0), QStr(_) -> internal("codegen: string operand") };
+    let at_code = |a| match a { QVar(v) -> wget(v), QInt(n) -> wi64(n), QFloat(n) -> wf64(n), QBool(b) -> wi32(if b { 1 } else { 0 }), QUnit -> wi32(0), QStr(_) -> internal("codegen: string operand") };
     // Checked arithmetic, inline. Operands are atoms, so they can be read twice.
     let arith = |o, a, b| {
       let ca = konst(a);
@@ -1255,6 +1287,30 @@ fn gen_fn(gx, cg, f) {
       }
       else if name == "array_push" { let (k, cg) = array_fns(gx, cg, elem_of(list_get(ats, 0))); (CL([ac, wcall(array_name("push", k))]), cg) }
       else if name == "par_map" { let (pm, cg) = par_fns(gx, cg, ats); (CL([ac, wcall(pm)]), cg) }
+      else if name == "int_to_float" { (CL([ac, wop("f64.convert_i64_s")]), cg) }
+      else if name == "float_to_int" {
+        // In range when -2^63 <= x < 2^63; then truncation cannot trap.
+        (CL([ac, wset("$f"), wget("$f"), wf64(f64_neg_two63()), wop("f64.ge"), wget("$f"), wf64(f64_two63()), wop("f64.lt"), wop("i32.and"), wop("i32.eqz"), wtrap(k_overflow()),
+          wget("$f"), wop("i64.trunc_f64_s")]), cg)
+      }
+      else if name == "sqrt" { (CL([ac, wset("$f"), wget("$f"), wf64(0), wop("f64.lt"), wtrap(k_sqrt_negative()), wget("$f"), wop("f64.sqrt")]), cg) }
+      else if name == "float_abs" { (CL([ac, wop("f64.abs")]), cg) }
+      else if name == "floor" { (CL([ac, wop("f64.floor")]), cg) }
+      else if name == "ceil" { (CL([ac, wop("f64.ceil")]), cg) }
+      else if name == "trunc" { (CL([ac, wop("f64.trunc")]), cg) }
+      else if name == "round" {
+        // Halves away from zero: x - trunc(x) is exact, so this never rounds wrongly near a half.
+        (CL([ac, wset("$f"), wget("$f"), wop("f64.trunc"), wset("$g"),
+          wget("$f"), wget("$g"), wop("f64.sub"), wop("f64.abs"), wf64(f64_half()), wop("f64.ge"), wif_r("f64"),
+          wget("$g"), wf64(f64_one()), wget("$f"), wop("f64.copysign"), wop("f64.add"), wop("else"), wget("$g"), wend()]), cg)
+      }
+      else if name == "float_to_string" { (CL([ac, wi32(0 - 1), wcall("float_str")]), cg) }
+      else if name == "float_to_fixed" { (CL([ac, wcall("float_fixed")]), cg) }
+      else if name == "parse_float" {
+        // None (constructor 0) for NaN, else Some(x) (constructor 1).
+        (CL([ac, wcall("float_parse_str"), wset("$f"), wget("$f"), wget("$f"), wop("f64.ne"), wif_r("i32"), wi32(0), wop("else"),
+          new_object(16, 1, [(wget("$f"), t_float(), 8)], None), wend()]), cg)
+      }
       else if name == "array_length" {
         if gx_noinline(gx) { (CL([ac, wcall("arr_length")]), cg) } else { (CL([at_code(list_get(args, 0)), chk, wmem("i32.load", 4), wop("i64.extend_i32_u")]), cg) }
       }
@@ -1262,7 +1318,19 @@ fn gen_fn(gx, cg, f) {
     };
     let rhs = |cg, r| match r {
       RAtom(a) -> atom(cg, a),
-      RPrim(o, args, ty) -> {
+      RPrim(o, args, ty) -> if o == "fadd" || o == "fsub" || o == "fmul" {
+        let (ac, cg) = atoms(cg, args);
+        (CL([ac, wop(if o == "fadd" { "f64.add" } else if o == "fsub" { "f64.sub" } else { "f64.mul" }), wset("$f"), wfinite("$f"), wget("$f")]), cg)
+      } else if o == "fdiv" {
+        let (ac, cg) = atoms(cg, args);
+        let b = list_get(args, 1);
+        // A constant divisor other than 0.0 and -0.0 needs no test.
+        let zero_test = match b { QFloat(n) -> if n == 0 || n == int_min() { CL([wi32(1), wtrap(k_divzero())]) } else { wnone() }, _ -> CL([at_code(b), wf64(0), wop("f64.eq"), wtrap(k_divzero())]) };
+        (CL([zero_test, ac, wop("f64.div"), wset("$f"), wfinite("$f"), wget("$f")]), cg)
+      } else if o == "fneg" {
+        let (c, cg) = atom(cg, list_get(args, 0));
+        (CL([c, wop("f64.neg")]), cg)
+      } else {
         let inl = match prim_fn(o) { Some(_) -> if !gx_noinline(gx) { arith(o, list_get(args, 0), list_get(args, 1)) } else { None }, None -> None };
         match inl {
           Some(c) -> (c, cg),
@@ -1271,9 +1339,10 @@ fn gen_fn(gx, cg, f) {
             None -> if o == "neg" { let (c, cg) = atom(cg, list_get(args, 0)); (CL([c, wcall("int_neg")]), cg) }
               else if o == "not" { let (c, cg) = atom(cg, list_get(args, 0)); (CL([c, wop("i32.eqz")]), cg) }
               else {
+                let is_f = match ty { Some(t) -> is_float_ty(t), None -> false };
                 let w = match ty { Some(t) -> if is_int_ty(t) { "i64" } else { "i32" }, None -> "i32" };
                 let (ac, cg) = atoms(cg, args);
-                (CL([ac, wop(w ++ "." ++ cmp_op(o))]), cg)
+                (CL([ac, wop(if is_f { "f64." ++ o } else { w ++ "." ++ cmp_op(o) })]), cg)
               },
           },
         }

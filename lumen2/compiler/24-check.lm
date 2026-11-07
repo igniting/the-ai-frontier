@@ -167,6 +167,7 @@ fn check_once(src, opts) {
       let fty = match cs_ty(cs, fn_id(f)) { Some(t) -> t, None -> internal("fn ty") };
       unify_at(env, cs, fty, ty, fn_ns(f), fn_ne(f), None)
     });
+    let cs = settle_numeric(env, cs);
     fold(fs, cs, |cs, f| {
       let fty = match cs_ty(cs, fn_id(f)) { Some(t) -> t, None -> internal("fn ty") };
       let cs = cs_with_st(cs, generalize(cs_st(cs), fty, 0));
@@ -217,6 +218,7 @@ fn check_once(src, opts) {
               fail_at(owner ++ " needs `" ++ pname ++ ": " ++ join(missing, " + ") ++ "`", fn_ns(f), fn_ne(f), Some("add `where " ++ pname ++ ": " ++ join(missing, " + ") ++ "` to the impl"))
             } else { () }
           } });
+          let cs = settle_numeric(env, cs);
           let cs = cs_with_st(cs, generalize(cs_st(cs), ty, 0));
           (cs_set_scheme(cs_set_ty(cs, fn_id(f), ty), fn_id(f), ty), [f, ..fns])
         },
@@ -259,6 +261,7 @@ fn check_once(src, opts) {
       if missing != "" { fail_at("non-exhaustive match: `" ++ missing ++ "` is not covered", s, e, Some("add an arm for it, or a wildcard `_ ->` arm")) } else { () };
       fold(redundant, cs, |cs, i| match list_get(arms, i) { Arm(p, _, _, _, _) -> cs_warn(cs, ("this arm can never match", pat_s(p), pat_e(p))) })
     },
+    DNum(_, _, _, _) -> cs,
   });
 
   let sigs = map(ast_fns(user_ast), |f| (fn_name(f), signature_of(cs, src, f), fn_ns(f), fn_ne(f)));

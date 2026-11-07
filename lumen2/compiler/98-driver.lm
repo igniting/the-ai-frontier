@@ -64,6 +64,7 @@ fn ins_json(i) {
     OCallInd(o, ps, rs) -> "[" ++ jq(o) ++ ",{\"params\":" ++ jarr(map(ps, jq)) ++ ",\"results\":" ++ jarr(map(rs, jq)) ++ "}]",
     OI32(v) -> "[\"i32.const\"," ++ jq(int_to_string(wrap32(v))) ++ "]",
     OI64(v) -> "[\"i64.const\"," ++ jq(int_to_string(v)) ++ "]",
+    OF64(v) -> "[\"f64.const\"," ++ jq(int_to_string(v)) ++ "]",
     OMem(o, off) -> "[" ++ jq(o) ++ "," ++ int_to_string(off) ++ "]",
     OBlock(o, l, t) -> "[" ++ jq(o) ++ "," ++ (match l { Some(x) -> jq(x), None -> "null" }) ++ "," ++ (match t { Some(x) -> jq(x), None -> "null" }) ++ "]",
     OBr(o, l) -> "[" ++ jq(o) ++ "," ++ jq(l) ++ "]",
@@ -93,7 +94,7 @@ fn js_string(s) {
   }
   "\"" ++ concat_strings(map(range(0, string_length(s)), |i| piece(char_code_at(s, i)))) ++ "\""
 }
-fn si_at(a) { match a { QVar(v) -> v, QInt(n) -> int_to_string(n), QBool(b) -> if b { "true" } else { "false" }, QUnit -> "()", QStr(s) -> js_string(s) } }
+fn si_at(a) { match a { QVar(v) -> v, QInt(n) -> int_to_string(n), QFloat(n) -> "f64:" ++ int_to_string(n), QBool(b) -> if b { "true" } else { "false" }, QUnit -> "()", QStr(s) -> js_string(s) } }
 fn si_ats(xs) { join(map(xs, si_at), ", ") }
 fn si_path(x, p) { si_at(x) ++ concat_strings(map(p, |i| "." ++ int_to_string(i))) }
 fn si_ind(n) { concat_strings(map(range(0, n), |_| "  ")) }

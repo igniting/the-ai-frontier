@@ -17,7 +17,7 @@ import { interpret } from '../src/interp.js';
 const T = {
   int: 'Int', bool: 'Bool', str: 'String', ints: 'List<Int>', strs: 'List<String>', opt: 'Option<Int>',
   pair: '(Int, String)', tree: 'Tree', shape: 'Shape', color: 'Color', arr: 'Array<Int>', sarr: 'Array<String>',
-  fn: 'fn(Int) -> Int', nested: 'List<List<Int>>',
+  fn: 'fn(Int) -> Int', nested: 'List<List<Int>>', flt: 'Float', farr: 'Array<Float>',
 };
 const VALUE_TYPES = Object.values(T).filter((t) => t !== T.fn);
 const COMPARABLE = VALUE_TYPES;
@@ -67,11 +67,21 @@ function rng(seed) {
   };
 }
 
+// Whether a generated program uses floats (the first self-hosted compiler, which
+// predates them, skips such programs).
+export const usesFloats = (src) => /\d\.\d|\d[eE]-?\d|float|sqrt\(|floor\(|ceil\(|trunc\(|round\(/.test(src);
+
 export function generate(seed) {
   const rand = rng(seed);
   const int = (n) => Math.floor(rand() * n);
   const pick = (xs) => xs[int(xs.length)];
   const chance = (p) => rand() < p;
+  // Half the programs use floats.
+  const floats = chance(0.5);
+  const noFloat = (t) => floats || (t !== T.flt && t !== T.farr);
+  const valueTypes = VALUE_TYPES.filter(noFloat);
+  const allTypes = Object.values(T).filter(noFloat);
+  const FLOATS = ['0.0', '1.0', '-1.0', '0.5', '0.1', '2.5', '-3.75', '100.0', '1e10', '2.5e-3', '1e300', '-1e300', '1.7976931348623157e308', '5e-324', '3.0e-308', '0.3333333333333333'];
   let names = 0;
   const fresh = (p) => `${p}${names++}`;
   const fns = []; // { name, params: [types], ret }
@@ -81,7 +91,7 @@ export function generate(seed) {
 
   // Text for a value: usually by hand, sometimes with the derived or built-in `show`.
   const show = (t, e) => {
-    if (![T.fn, T.arr, T.sarr].includes(t) && chance(0.3)) return `show(${e})`;
+    if (![T.fn, T.arr, T.sarr, T.farr].includes(t) && chance(0.3)) return `show(${e})`;
     switch (t) {
       case T.int: return `int_to_string(${e})`;
       case T.bool: return `(if ${e} { "T" } else { "F" })`;
@@ -97,6 +107,8 @@ export function generate(seed) {
       case T.sarr: return `show_list(array_to_list(${e}), |s| s)`;
       case T.fn: return `int_to_string((${e})(3))`;
       case T.nested: return `show_list(${e}, |xs| show_list(xs, int_to_string))`;
+      case T.flt: return chance(0.5) ? `float_to_string(${e})` : `float_to_fixed(${e}, ${pick(['0', '2', '6', '-1', '25'])})`;
+      case T.farr: return `show_list(array_to_list(${e}), float_to_string)`;
       default: throw new Error(t);
     }
   };
@@ -129,7 +141,7 @@ export function generate(seed) {
   }
 
   function letStmt(d, env, k) {
-    const lt = pick(VALUE_TYPES);
+    const lt = pick(valueTypes);
     const x = fresh('l');
     return `let ${x} = ${gen(lt, d - 1, env)}; ${k([...env, { name: x, t: lt }])}`;
   }
@@ -143,6 +155,8 @@ export function generate(seed) {
       case T.strs: return pick(['[]', '["x", "y"]', '["b", "a", "b"]']);
       case T.opt: return pick(['None', 'Some(4)', 'Some(-1)']);
       case T.pair: return `(${intLit()}, ${pick(STRS)})`;
+      case T.flt: return pick(FLOATS);
+      case T.farr: return pick(['array_make(2, 1.5)', 'array_from_list([0.5, -2.0, 3.25])', 'array_empty()']);
       case T.tree: return pick(['Leaf', 'Node(Leaf, 5, Leaf)', 'insert(insert(Leaf, 2), 9)']);
       case T.shape: return pick(['Dot', 'Circle(2)', 'Rect(3, 4)']);
       case T.color: return pick(['Red', 'Green', 'Blue']);
@@ -166,7 +180,7 @@ export function generate(seed) {
   }
   // par_map with a function that can only fail: the compiled code runs it on threads.
   function parMap(at, pt, rt, d, env) {
-    if (chance(0.5)) return gen(rt === T.int ? T.arr : T.sarr, d - 1, env);
+    if (chance(0.5)) return gen(rt === T.int ? T.arr : rt === T.flt ? T.farr : T.sarr, d - 1, env);
     pure++;
     const f = lambda1(pt, rt, d, env);
     pure--;
@@ -178,7 +192,7 @@ export function generate(seed) {
     // Indices and sizes: mostly in range, sometimes not.
     const idx = () => (chance(0.75) ? pick(['0', '0', '1', '2']) : chance(0.7) ? `(small(${g(T.int)}) % 3)` : g(T.int));
     const size = () => (chance(0.5) ? `small(${g(T.int)})` : `(small(${g(T.int)}) * ${pick(['3', '5', '8'])})`);
-    const cmpTy = () => pick(COMPARABLE);
+    const cmpTy = () => pick(valueTypes);
     switch (t) {
       case T.int: return pick([
         () => `(${g(T.int)} ${pick(['+', '-', '*', '/', '%'])} ${chance(0.5) ? pick(['2', '3', '-7', '10']) : g(T.int)})`,
@@ -192,6 +206,7 @@ export function generate(seed) {
         () => `length(tree_list(${g(T.tree)}))`,
         ...(pure ? [] : [() => `random_int(${g(T.int)}, ${g(T.int)})`, () => `(clock_ms() - clock_ms())`]),
         () => `size(${g(pick([T.shape, T.tree, T.ints, T.int]))})`,
+        ...(floats ? [() => `float_to_int(${g(T.flt)})`] : []),
         () => refined(d, env), () => refined(d, env), () => edge(),
         () => { const u = cmpTy(); return `compare(${g(u)}, ${g(u)})`; },
       ])();
@@ -205,7 +220,8 @@ export function generate(seed) {
       case T.str: return pick([
         () => `(${g(T.str)} ++ ${g(T.str)})`, () => `int_to_string(${g(T.int)})`,
         () => `substring(${g(T.str)}, ${idx()}, ${idx()})`, () => `char_from_code(${pick(['65', '97', '48', '255', '256', '-1'])} + ${idx()})`,
-        () => `join(${g(T.strs)}, ${g(T.str)})`, () => { const u = pick(VALUE_TYPES); return show(u, g(u)); },
+        () => `join(${g(T.strs)}, ${g(T.str)})`, () => { const u = pick(valueTypes); return show(u, g(u)); },
+        ...(floats ? [() => `float_to_string(${g(T.flt)})`] : []),
         () => persist(d, env),
         () => `repeat_string(${g(T.str)}, small(${g(T.int)}))`, () => `array_get(${g(T.sarr)}, ${idx()})`,
       ])();
@@ -246,6 +262,22 @@ export function generate(seed) {
       case T.fn: return pick([
         () => lambda1(T.int, T.int, d, env),
         () => { const f = fresh('f'), h = fresh('h'); return `{ let ${f} = ${g(T.fn)}; let ${h} = ${g(T.fn)}; |x| ${f}(${h}(x)) }`; },
+      ])();
+      case T.flt: return pick([
+        () => `(${g(T.flt)} ${pick(['+', '-', '*', '/'])} ${g(T.flt)})`,
+        () => `(${g(T.flt)} ${pick(['+', '*'])} ${pick(FLOATS)})`,
+        () => `(-${g(T.flt)})`, () => `int_to_float(${g(T.int)})`,
+        () => `${pick(['sqrt', 'float_abs', 'floor', 'ceil', 'trunc', 'round'])}(${g(T.flt)})`,
+        () => `unwrap_or(parse_float(${pick(['"1.5"', '"-2e3"', '".5"', '"x"', '"1e999"', `float_to_string(${g(T.flt)})`, g(T.str)])}), ${g(T.flt)})`,
+        () => { const a = fresh('acc'), x = fresh('x'); return `fold(${g(T.ints)}, ${g(T.flt)}, |${a}, ${x}| ${a} * 0.5 + int_to_float(${x}))`; },
+        () => `array_get(${g(T.farr)}, ${idx()})`, () => `${pick(['min', 'max'])}(${g(T.flt)}, ${g(T.flt)})`,
+        // Operands whose type only the call settles.
+        () => { const a = fresh('a'), b = fresh('b'); return `(|${a}, ${b}| ${a} ${pick(['+', '-', '*'])} ${b})(${g(T.flt)}, ${g(T.flt)})`; },
+      ])();
+      case T.farr: return pick([
+        () => `array_make(${size()}, ${g(T.flt)})`, () => `array_set(${g(T.farr)}, ${idx()}, ${g(T.flt)})`,
+        () => `array_push(${g(T.farr)}, ${g(T.flt)})`, () => `array_from_list(map(${g(T.ints)}, int_to_float))`,
+        () => parMap(T.farr, T.flt, T.flt, d, env), () => parMap(T.arr, T.int, T.flt, d, env),
       ])();
       case T.nested: return pick([
         () => `[${g(T.ints)}, ${g(T.ints)}]`, () => `map(${g(T.ints)}, |n| range(0, small(n)))`, () => `[${g(T.ints)}, ..${g(T.nested)}]`,
@@ -368,7 +400,7 @@ export function generate(seed) {
   const env = [];
   const nStmts = 2 + int(6);
   for (let i = 0; i < nStmts; i++) {
-    const t = pick(Object.values(T));
+    const t = pick(allTypes);
     if (chance(0.4) && t !== T.fn) {
       const x = fresh('m');
       stmts.push(`let ${x} = ${gen(t, 4, env)};`);
@@ -377,6 +409,13 @@ export function generate(seed) {
     } else stmts.push(`println(${show(t, gen(t, 4, env))});`);
     // Now and then, a partial operation main is sure to reach.
     if (chance(0.3)) stmts.push(`println(int_to_string(${refined(3, env)}));`);
+    // ... or float arithmetic at the edge of what a Float can hold.
+    if (floats && chance(0.15)) stmts.push(`println(float_to_string(${pick([
+      `(${pick(['1e308', '-1e308', '1.7976931348623157e308'])} ${pick(['*', '+', '-'])} ${pick(['1.0', '2.0', '1e-300', '0.5', '1.7976931348623157e308', '-1e308'])})`,
+      `(${pick(['1.0', '0.0', '-2.5'])} / ${pick(['0.0', '-0.0', '1e-310', '3.0'])})`,
+      `sqrt(${pick(['-1.0', '-0.0', '0.0', '2.0', '-5e-324'])})`,
+      `int_to_float(float_to_int(${pick(['9.2e18', '9.3e18', '-9.223372036854775808e18', '-9.3e18', '1e300'])}))`,
+    ])}));`);
     // ... and an update that must leave the original value as it was.
     if (chance(0.15)) stmts.push(`println(${persist(3, env)});`);
     // Now and then, something big enough to exercise long lists, deep trees and in-place updates.

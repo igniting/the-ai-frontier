@@ -68,6 +68,16 @@ test('the logs example', () => {
   assert.equal(r.output, '10:00:01,503,POST,/api/orders\n10:00:02,500,GET,/api/orders\n');
 });
 
+test('the sensors example: floats parsed, converted and printed', () => {
+  const t = compiled(example('sensors.lm'));
+  const text = 'sensor,time,celsius\nA,10:00,21.5\nB,10:00,-40\nC,10:00,n/a\nA,10:05,30.25\nB,10:05,1e1\n';
+  for (const threads of [1, 3]) {
+    const r = runTransform(t, { input: text, threads });
+    assert.ok(r.ok, r.error);
+    assert.equal(r.output, 'sensor,time,fahrenheit,alert\nA,10:00,70.7,\nB,10:00,-40.0,\nA,10:05,86.5,high\nB,10:05,50.0,\n');
+  }
+});
+
 test('a transform that could print, read, read the clock or use randomness is rejected, naming the functions', () => {
   let e = rejected('fn shout(s: String) -> String { println(s); s }\nfn transform(n: Int, line: String) -> Option<String> { Some(shout(line)) }\n');
   assert.match(e, /`transform` can write output, but a transform may only compute/);

@@ -376,6 +376,7 @@ fn sym(ve, vs, x, st, callee) {
   let cs = ve_cs(ve);
   match x {
     EInt(_, v, _, _) -> (Some(SVInt(konst(big(v)))), vs, st),
+    EFloat(_, _, _, _) -> (None, vs, st),
     EBool(_, v, _, _) -> (Some(SVBool(if v { FTrue } else { FFalse })), vs, st),
     EStr(_, v, _, _) -> (Some(SVLen(konst(BS(string_length(v))), None)), vs, st),
     EUnit(_, _, _) -> (None, vs, st),
@@ -499,7 +500,10 @@ fn sym_binop(ve, vs, id, op, l, r, s, e, st) {
     }
     else if op == "/" || op == "%" {
       let d = int_of(rv);
-      let (vs, st) = partial(ve, vs, s, e, match d { Some(dt) -> Some(f_not(compare("==", dt, konst(BS(0))))), None -> None }, st, "the divisor is not zero");
+      // The checker knows nothing about floats, except that a literal other than 0.0 is not zero.
+      let nonzero_float = match r { EFloat(_, bits, _, _) -> bits != 0 && bits != 0 - 9223372036854775807 - 1, _ -> false };
+      let cond = if nonzero_float { Some(FTrue) } else { match d { Some(dt) -> Some(f_not(compare("==", dt, konst(BS(0))))), None -> None } };
+      let (vs, st) = partial(ve, vs, s, e, cond, st, "the divisor is not zero");
       match (int_of(lv), d) {
         (Some(xt), Some(dt)) -> if is_const(dt) && b_le(BS(1), term_c(dt)) {
           let c = term_c(dt);

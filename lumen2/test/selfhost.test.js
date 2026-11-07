@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { interpretSource, makeHost } from '../src/api.js';
 import { runWasm } from '../src/runtime.js';
-import { generate } from './fuzz.js';
+import { generate, usesFloats } from './fuzz.js';
 import { stage1, compileWith, SOURCE } from '../selfhost/bootstrap.js';
 import { referenceEncoding } from '../proofs/prove-schur.js';
 
@@ -47,11 +47,11 @@ test('its modules agree with the interpreter on the examples and the Schur progr
 });
 
 test('its modules agree with the interpreter on generated programs', () => {
-  // This compiler predates par_map, so generated programs that use it are left out.
+  // This compiler predates par_map and floats, so generated programs that use them are left out.
   let ran = 0;
-  for (let seed = 1; seed <= 200 && ran < 55; seed++) {
+  for (let seed = 1; seed <= 400 && ran < 55; seed++) {
     const src = generate(seed);
-    if (!src.includes('par_map(') && agrees(`generated program ${seed}`, src)) ran++;
+    if (!src.includes('par_map(') && !usesFloats(src) && agrees(`generated program ${seed}`, src)) ran++;
   }
   assert.ok(ran >= 55);
 });

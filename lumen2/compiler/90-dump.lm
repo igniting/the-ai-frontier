@@ -35,6 +35,7 @@ fn d_param(p) { match p { Param(_, n, ann, s, e) -> "(param " ++ n ++ " " ++ d_o
 fn d_ex(x) {
   match x {
     EInt(_, v, s, e) -> "(int " ++ int_to_string(v) ++ " " ++ d_sp(s, e) ++ ")",
+    EFloat(_, v, s, e) -> "(float " ++ int_to_string(v) ++ " " ++ d_sp(s, e) ++ ")",
     EStr(_, v, s, e) -> "(str " ++ json_str(v) ++ " " ++ d_sp(s, e) ++ ")",
     EBool(_, v, s, e) -> "(bool " ++ (if v { "true" } else { "false" }) ++ " " ++ d_sp(s, e) ++ ")",
     EVar(_, n, s, e) -> "(var " ++ n ++ " " ++ d_sp(s, e) ++ ")",
@@ -87,7 +88,7 @@ fn d_ast(a) {
 }
 
 // The IR (parity.mjs's dumpIR). Lines are gathered newest first.
-fn di_at(a) { match a { QVar(v) -> "$" ++ v, QInt(n) -> "#" ++ int_to_string(n), QBool(b) -> if b { "true" } else { "false" }, QUnit -> "()", QStr(s) -> json_str(s) } }
+fn di_at(a) { match a { QVar(v) -> "$" ++ v, QInt(n) -> "#" ++ int_to_string(n), QFloat(n) -> "#f" ++ int_to_string(n), QBool(b) -> if b { "true" } else { "false" }, QUnit -> "()", QStr(s) -> json_str(s) } }
 fn di_ats(xs) { "[" ++ join(map(xs, di_at), " ") ++ "]" }
 fn di_tys(xs) { "[" ++ join(map(xs, tkey), " ") ++ "]" }
 fn di_path(p) { "[" ++ join(map(p, int_to_string), " ") ++ "]" }

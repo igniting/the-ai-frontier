@@ -2,8 +2,8 @@
 // Source text (bytes) -> tokens with spans. A string literal's value is its
 // bytes (the source is UTF-8, so a literal's characters arrive encoded).
 
-// A token: kind ("int", "str", "lower", "upper", "eof", a keyword or a
-// punctuation mark), value (a literal's digits or bytes, or a name), span.
+// A token: kind ("int", "float", "str", "lower", "upper", "eof", a keyword or
+// a punctuation mark), value (a literal's digits or bytes, or a name), span.
 type Tok { Tok(String, String, Int, Int) }
 
 fn tok_kind(t) { match t { Tok(k, _, _, _) -> k } }
@@ -93,8 +93,15 @@ fn lex(src) {
       else if starts_at(src, i, "//") { go(skip_line(i), toks) }
       else if starts_at(src, i, "/*") { go(skip_block(i, i, 0), toks) }
       else if digit(c) {
-        let j = scan_while(i, |d| digit(d) || d == 95);
-        if j < n && (upper(code_at(src, j)) || (code_at(src, j) >= 97 && code_at(src, j) <= 122)) { fail_span("invalid number literal", i, j + 1) }
+        let num = |d| digit(d) || d == 95;
+        let j = scan_while(i, num);
+        // A float: a fraction (`.` and a digit, so that `1..5` stays `1`, `..`,
+        // `5`), an exponent (e or E, an optional sign, a digit), or both.
+        let k = if code_at(src, j) == 46 && digit(code_at(src, j + 1)) { scan_while(j + 1, num) } else { j };
+        let sign = if code_at(src, k + 1) == 43 || code_at(src, k + 1) == 45 { 1 } else { 0 };
+        let m = if (code_at(src, k) == 101 || code_at(src, k) == 69) && digit(code_at(src, k + 1 + sign)) { scan_while(k + 1 + sign, num) } else { k };
+        if m < n && (upper(code_at(src, m)) || (code_at(src, m) >= 97 && code_at(src, m) <= 122)) { fail_span("invalid number literal", i, m + 1) }
+        else if m > j { go(m, array_push(toks, Tok("float", no_underscores(substring(src, i, m)), i, m))) }
         else { go(j, array_push(toks, Tok("int", no_underscores(substring(src, i, j)), i, j))) }
       }
       else if alpha(c) {

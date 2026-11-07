@@ -1,0 +1,37 @@
+// spectral-norm on every core: each product's elements, one row of A (or
+// At) times a vector, are independent, so par_map computes them. Each row's
+// sum is added up in the same order as in spectralnorm.lm, so the result
+// is the same, digit for digit, however many threads run it.
+
+fn a(i: Int, j: Int) -> Float { 1.0 / int_to_float((i + j) * (i + j + 1) / 2 + i + 1) }
+
+fn dot(v: Array<Float>, i: Int, t: Bool, j: {j: Int | 0 <= j}, acc: Float) -> Float {
+  if j >= array_length(v) { acc }
+  else { dot(v, i, t, j + 1, acc + (if t { a(j, i) } else { a(i, j) }) * array_get(v, j)) }
+}
+fn indices(out: Array<Int>, i: Int, n: Int) -> Array<Int> { if i >= n { out } else { indices(array_push(out, i), i + 1, n) } }
+fn ata(v: Array<Float>, rows: Array<Int>) -> Array<Float> {
+  let w = par_map(rows, |i| dot(v, i, false, 0, 0.0));
+  par_map(rows, |i| dot(w, i, true, 0, 0.0))
+}
+fn steps(u: Array<Float>, rows: Array<Int>, k: Int) -> (Array<Float>, Array<Float>) {
+  let v = ata(u, rows);
+  let u2 = ata(v, rows);
+  if k <= 1 { (u2, v) } else { steps(u2, rows, k - 1) }
+}
+fn inner(x: Array<Float>, y: Array<Float>, i: {i: Int | 0 <= i}, acc: Float) -> Float {
+  if i >= array_length(x) || i >= array_length(y) { acc } else { inner(x, y, i + 1, acc + array_get(x, i) * array_get(y, i)) }
+}
+
+fn digits(s: String, i: {i: Int | 0 <= i}, acc: Int) -> Int {
+  if i >= string_length(s) { acc } else {
+    let c = char_code_at(s, i);
+    if c >= 48 && c <= 57 { digits(s, i + 1, acc * 10 + c - 48) } else { acc }
+  }
+}
+
+fn main() {
+  let n = digits(read_input(), 0, 0);
+  let (u, v) = steps(array_make(n, 1.0), indices(array_empty(), 0, n), 10);
+  println(float_to_fixed(sqrt(inner(u, v, 0, 0.0) / inner(v, v, 0, 0.0)), 9))
+}

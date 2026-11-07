@@ -5,6 +5,7 @@
 
 import { workerData } from 'node:worker_threads';
 import { CTRL, work, slotOf } from './par.js';
+import { floatHost } from './floats.js';
 
 const { module, memory, ctrl, tid } = workerData;
 
@@ -16,6 +17,8 @@ const env = {
   clock: impossible, random: impossible, par: impossible,
   fail: (code) => { throw new Failure(1, code, 0); },
   panic: (ptr, len) => { throw new Failure(2, ptr, len); },
+  // Floats as text: pure, so a parallel task may use them.
+  ...floatHost((ptr, len) => new Uint8Array(memory.buffer, ptr, len)),
 };
 
 let instance;

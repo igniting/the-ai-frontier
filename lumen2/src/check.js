@@ -48,7 +48,7 @@ export const PARTIAL_BUILTINS = new Set(['array_get', 'array_set', 'char_code_at
 export const siteKey = (scope, span) => `${scope}:${span.s}:${span.e}`;
 import {
   GENERIC, newVar, newRowVar, tcon, tfun, ttuple, row, prune, pruneRow, makeUnifier, UnifyError, EffectError, TraitError,
-  generalize, instantiate, openEffect, substParams, TypePrinter, INT, BOOL, STRING, UNIT, LABELS,
+  generalize, instantiate, openEffect, substParams, TypePrinter, INT, FLOAT, BOOL, STRING, UNIT, LABELS,
 } from './types.js';
 
 // ---------------------------------------------------------------- builtins --
@@ -87,6 +87,13 @@ function builtinTable() {
   // par_map: fn(Array<a>, fn(a) -> b ! e) -> Array<b> ! e, where e may only be fail.
   const H = a(), K = a(), R = newRowVar(GENERIC);
   t.par_map = tfun([tcon('Array', [H]), tfun([H], K, row([], R))], tcon('Array', [K]), row([], R));
+  t.int_to_float = fn([INT], FLOAT);
+  t.float_to_int = fn([FLOAT], INT);
+  t.sqrt = fn([FLOAT], FLOAT, ['fail']);
+  for (const name of ['float_abs', 'floor', 'ceil', 'trunc', 'round']) t[name] = fn([FLOAT], FLOAT);
+  t.float_to_string = fn([FLOAT], STRING);
+  t.float_to_fixed = fn([FLOAT, INT], STRING);
+  t.parse_float = fn([STRING], tcon('Option', [FLOAT]));
   return t;
 }
 export const BUILTIN_NAMES = Object.keys(builtinTable());
@@ -111,7 +118,7 @@ export function checkOnce(source, { grants = null, entry = 'main', assumeSafe = 
 
   const adts = new Map(); // name -> { name, params, ctors: [{ name, key, idx, fieldTypes, adt }] }
   const ctors = { prelude: new Map(), user: new Map() };
-  const BUILTIN_TYPES = new Map([['Int', 0], ['Bool', 0], ['String', 0], ['Unit', 0], ['Array', 1]]);
+  const BUILTIN_TYPES = new Map([['Int', 0], ['Float', 0], ['Bool', 0], ['String', 0], ['Unit', 0], ['Array', 1]]);
   const impls = new Map(); // trait name -> Map(type head -> impl)
   const { unify, unifyRows, requireTrait } = makeUnifier(adts, impls);
   const exhaust = makeExhaustiveness(adts);
@@ -412,6 +419,7 @@ export function checkOnce(source, { grants = null, entry = 'main', assumeSafe = 
   function inferInner(e, ctx) {
     switch (e.k) {
       case 'int': return INT;
+      case 'float': return FLOAT;
       case 'str': return STRING;
       case 'bool': return BOOL;
       case 'unit': return UNIT;
@@ -498,7 +506,7 @@ export function checkOnce(source, { grants = null, entry = 'main', assumeSafe = 
       case 'binop': return inferBinop(e, ctx);
       case 'unop': {
         const t = infer(e.e, ctx);
-        if (e.op === '-') { unifyAt(INT, t, e.e.span, 'operand of `-`'); return INT; }
+        if (e.op === '-') { const nt = numericTarget(t, t); unifyAt(nt, t, e.e.span, 'operand of `-`'); numericDefer(nt, e); return nt; }
         unifyAt(BOOL, t, e.e.span, 'operand of `!`');
         return BOOL;
       }
@@ -571,17 +579,44 @@ export function checkOnce(source, { grants = null, entry = 'main', assumeSafe = 
     }
   }
 
+  // Arithmetic on Int or Float (compiler/22-infer.lm): Float if either
+  // operand is one, still open if both are unknown (Int by the end of the
+  // top-level function, unless something settles it), and otherwise Int.
+  let pendingNumeric = [];
+  function numericTarget(l, r) {
+    const lp = prune(l), rp = prune(r);
+    const isFloat = (t) => t.k === 'con' && t.name === 'Float';
+    if (isFloat(lp) || isFloat(rp)) return FLOAT;
+    if (lp.k === 'var' && rp.k === 'var') return lp;
+    return INT;
+  }
+  function numericDefer(t, e) { if (prune(t).k === 'var') pendingNumeric.push({ t, e }); }
+  function settleNumeric() {
+    for (const { t, e } of pendingNumeric) {
+      const p = prune(t);
+      if (p.k === 'var') unifyAt(INT, t, e.span);
+      else if (!(p.k === 'con' && (p.name === 'Int' || p.name === 'Float'))) throw new LumenError(`\`${e.op}\` works on Int and Float, not ${show(p)}`, e.span);
+    }
+    pendingNumeric = [];
+  }
+
   function inferBinop(e, ctx) {
     const l = infer(e.l, ctx);
     const r = infer(e.r, ctx);
     switch (e.op) {
-      case '+': case '-': case '*':
-        unifyAt(INT, l, e.l.span, `left operand of \`${e.op}\``); unifyAt(INT, r, e.r.span, `right operand of \`${e.op}\``);
-        return INT;
-      case '/': case '%':
-        unifyAt(INT, l, e.l.span, `left operand of \`${e.op}\``); unifyAt(INT, r, e.r.span, `right operand of \`${e.op}\``);
+      case '+': case '-': case '*': {
+        const t = numericTarget(l, r);
+        unifyAt(t, l, e.l.span, `left operand of \`${e.op}\``); unifyAt(t, r, e.r.span, `right operand of \`${e.op}\``);
+        numericDefer(t, e);
+        return t;
+      }
+      case '/': case '%': {
+        const t = e.op === '%' ? INT : numericTarget(l, r);
+        unifyAt(t, l, e.l.span, `left operand of \`${e.op}\``); unifyAt(t, r, e.r.span, `right operand of \`${e.op}\``);
+        numericDefer(t, e);
         if (isSafe(ctx, e.span)) { if (!assumeSafe) e.safe = true; } else perform(['fail'], ctx, e.span, `\`${e.op}\` (division by zero)`, whyUnsafe(ctx, e.span));
-        return INT;
+        return t;
+      }
       case '&&': case '||':
         unifyAt(BOOL, l, e.l.span, `left operand of \`${e.op}\``); unifyAt(BOOL, r, e.r.span, `right operand of \`${e.op}\``);
         return BOOL;
@@ -744,6 +779,7 @@ export function checkOnce(source, { grants = null, entry = 'main', assumeSafe = 
       f.ty = newVar(level);
     }
     for (const f of comp) unifyAt(f.ty, fnType(f, f.ctx, f.ctx.owner), f.nameSpan);
+    settleNumeric();
     for (const f of comp) { generalize(f.ty, 0); f.scheme = f.ty; }
   }
   // Impl methods, checked against their trait's signature with Self = the impl's type.
@@ -770,6 +806,7 @@ export function checkOnce(source, { grants = null, entry = 'main', assumeSafe = 
           const missing = [...p.traits].filter((c) => !declared.includes(c));
           if (missing.length) throw new LumenError(`${owner} needs \`${impl.params[i]}: ${missing.join(' + ')}\``, f.nameSpan, `add \`where ${impl.params[i]}: ${missing.join(' + ')}\` to the impl`);
         });
+        settleNumeric();
         generalize(ty, 0);
         f.ty = ty; f.scheme = ty;
         allFns.push(f);

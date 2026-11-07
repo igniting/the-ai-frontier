@@ -17,7 +17,7 @@ export function parse(src) {
   const at = (k) => peek().k === k;
   const next = () => toks[pos++];
   const fail = (msg, t = peek()) => { throw new LumenError(msg, sp(t.s, t.e)); };
-  const describe = (t) => (t.k === 'eof' ? 'end of input' : t.k === 'lower' || t.k === 'upper' ? `\`${t.v}\`` : t.k === 'int' ? 'a number' : t.k === 'str' ? 'a string' : `\`${t.k}\``);
+  const describe = (t) => (t.k === 'eof' ? 'end of input' : t.k === 'lower' || t.k === 'upper' ? `\`${t.v}\`` : t.k === 'int' || t.k === 'float' ? 'a number' : t.k === 'str' ? 'a string' : `\`${t.k}\``);
   const expect = (k, what = `\`${k}\``) => (at(k) ? next() : fail(`expected ${what}, found ${describe(peek())}`));
   const accept = (k) => (at(k) ? next() : null);
 
@@ -100,6 +100,7 @@ export function parse(src) {
       return t.v === '_' ? { k: 'pwild', span: sp(t.s, t.e) } : { k: 'pvar', name: t.v, span: sp(t.s, t.e) };
     }
     if (at('int')) { next(); return { k: 'pint', v: checkInt(t.v, t), span: sp(t.s, t.e) }; }
+    if (at('float') || (at('-') && peek(1).k === 'float')) err('a float cannot be a pattern', t.s, t.e);
     if (at('-') && peek(1).k === 'int') {
       next();
       const n = next();
@@ -204,6 +205,10 @@ export function parse(src) {
         const n = next();
         return postfix({ k: 'int', v: checkInt(-n.v, n), span: sp(t.s, n.e) });
       }
+      if (at('float')) {
+        const n = next();
+        return postfix({ k: 'float', v: -n.v, span: sp(t.s, n.e) });
+      }
       const e = unary();
       return { k: 'unop', op: '-', e, span: sp(t.s, e.span.e) };
     }
@@ -230,6 +235,7 @@ export function parse(src) {
     const t = peek();
     switch (t.k) {
       case 'int': next(); return { k: 'int', v: checkInt(t.v, t), span: sp(t.s, t.e) };
+      case 'float': next(); return { k: 'float', v: t.v, span: sp(t.s, t.e) };
       case 'str': next(); return { k: 'str', v: t.v, span: sp(t.s, t.e) };
       case 'true': case 'false': next(); return { k: 'bool', v: t.k === 'true', span: sp(t.s, t.e) };
       case 'lower': next(); return { k: 'var', name: t.v, span: sp(t.s, t.e) };

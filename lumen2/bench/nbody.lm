@@ -1,0 +1,119 @@
+// n-body: the Jovian planets around the Sun, advanced in steps of 0.01 days,
+// with the energy of the system before and after. The five bodies are one
+// array of 35 floats (body k's x, y, z, vx, vy, vz and mass at 7k to 7k + 6),
+// updated in place, and refinements prove every access in bounds. Each
+// floating-point operation is the one nbody.c does, in the same order, so
+// the two print the same digits.
+
+fn pi() -> Float { 3.141592653589793 }
+fn solar_mass() -> Float { 4.0 * pi() * pi() }
+fn days_per_year() -> Float { 365.24 }
+
+fn initial() -> Array<Float> {
+  let d = days_per_year();
+  let m = solar_mass();
+  array_from_list([
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, m,
+    4.84143144246472090e+00, -1.16032004402742839e+00, -1.03622044471123109e-01,
+    1.66007664274403694e-03 * d, 7.69901118419740425e-03 * d, -6.90460016972063023e-05 * d, 9.54791938424326609e-04 * m,
+    8.34336671824457987e+00, 4.12479856412430479e+00, -4.03523417114321381e-01,
+    -2.76742510726862411e-03 * d, 4.99852801234917238e-03 * d, 2.30417297573763929e-05 * d, 2.85885980666130812e-04 * m,
+    1.28943695621391310e+01, -1.51111514016986312e+01, -2.23307578892655734e-01,
+    2.96460137564761618e-03 * d, 2.37847173959480950e-03 * d, -2.96589568540237556e-05 * d, 4.36624404335156298e-05 * m,
+    1.53796971148509165e+01, -2.59193146099879641e+01, 1.79258772950371181e-01,
+    2.68067772490389322e-03 * d, 1.62824170038242295e-03 * d, -9.51592254519715870e-05 * d, 5.15138902046611451e-05 * m,
+  ])
+}
+
+// The system's momentum, cancelled by the Sun's velocity.
+fn momentum(b: {b: Array<Float> | array_length(b) == 35}, k: {k: Int | 0 <= k}, px: Float, py: Float, pz: Float) -> (Float, Float, Float) {
+  if k >= 5 { (px, py, pz) }
+  else {
+    let p = 7 * k;
+    let m = array_get(b, p + 6);
+    momentum(b, k + 1, px + array_get(b, p + 3) * m, py + array_get(b, p + 4) * m, pz + array_get(b, p + 5) * m)
+  }
+}
+fn offset(b: {b: Array<Float> | array_length(b) == 35}) -> {r: Array<Float> | array_length(r) == 35} {
+  let (px, py, pz) = momentum(b, 0, 0.0, 0.0, 0.0);
+  let b = array_set(b, 3, -px / solar_mass());
+  let b = array_set(b, 4, -py / solar_mass());
+  array_set(b, 5, -pz / solar_mass())
+}
+
+fn kinetic(b: {b: Array<Float> | array_length(b) == 35}, k: {k: Int | 0 <= k}, e: Float) -> Float {
+  if k >= 5 { e }
+  else {
+    let p = 7 * k;
+    let vx = array_get(b, p + 3);
+    let vy = array_get(b, p + 4);
+    let vz = array_get(b, p + 5);
+    potential(b, k, k + 1, e + 0.5 * array_get(b, p + 6) * (vx * vx + vy * vy + vz * vz))
+  }
+}
+fn potential(b: {b: Array<Float> | array_length(b) == 35}, i: {i: Int | 0 <= i && i < 5}, j: {j: Int | 0 <= j}, e: Float) -> Float {
+  if j >= 5 { kinetic(b, i + 1, e) }
+  else {
+    let p = 7 * i;
+    let q = 7 * j;
+    let dx = array_get(b, p) - array_get(b, q);
+    let dy = array_get(b, p + 1) - array_get(b, q + 1);
+    let dz = array_get(b, p + 2) - array_get(b, q + 2);
+    let d = sqrt(dx * dx + dy * dy + dz * dz);
+    potential(b, i, j + 1, e - array_get(b, p + 6) * array_get(b, q + 6) / d)
+  }
+}
+fn energy(b: {b: Array<Float> | array_length(b) == 35}) -> Float { kinetic(b, 0, 0.0) }
+
+// One step: every pair's pull on each other's velocity, then every position.
+fn pull(b: {b: Array<Float> | array_length(b) == 35}, i: {i: Int | 0 <= i && i < 5}, j: {j: Int | 0 <= j}, dt: Float) -> {r: Array<Float> | array_length(r) == 35} {
+  if j >= 5 { if i >= 3 { b } else { pull(b, i + 1, i + 2, dt) } }
+  else {
+    let p = 7 * i;
+    let q = 7 * j;
+    let dx = array_get(b, p) - array_get(b, q);
+    let dy = array_get(b, p + 1) - array_get(b, q + 1);
+    let dz = array_get(b, p + 2) - array_get(b, q + 2);
+    let d2 = dx * dx + dy * dy + dz * dz;
+    let mag = dt / (d2 * sqrt(d2));
+    let mi = array_get(b, p + 6);
+    let mj = array_get(b, q + 6);
+    let b = array_set(b, p + 3, array_get(b, p + 3) - dx * mj * mag);
+    let b = array_set(b, p + 4, array_get(b, p + 4) - dy * mj * mag);
+    let b = array_set(b, p + 5, array_get(b, p + 5) - dz * mj * mag);
+    let b = array_set(b, q + 3, array_get(b, q + 3) + dx * mi * mag);
+    let b = array_set(b, q + 4, array_get(b, q + 4) + dy * mi * mag);
+    let b = array_set(b, q + 5, array_get(b, q + 5) + dz * mi * mag);
+    pull(b, i, j + 1, dt)
+  }
+}
+fn move(b: {b: Array<Float> | array_length(b) == 35}, k: {k: Int | 0 <= k}, dt: Float) -> {r: Array<Float> | array_length(r) == 35} {
+  if k >= 5 { b }
+  else {
+    let p = 7 * k;
+    let b = array_set(b, p, array_get(b, p) + dt * array_get(b, p + 3));
+    let b = array_set(b, p + 1, array_get(b, p + 1) + dt * array_get(b, p + 4));
+    let b = array_set(b, p + 2, array_get(b, p + 2) + dt * array_get(b, p + 5));
+    move(b, k + 1, dt)
+  }
+}
+fn advance(b: {b: Array<Float> | array_length(b) == 35}, n: Int) -> {r: Array<Float> | array_length(r) == 35} {
+  if n <= 0 { b } else { advance(move(pull(b, 0, 1, 0.01), 0, 0.01), n - 1) }
+}
+
+fn digits(s: String, i: {i: Int | 0 <= i}, acc: Int) -> Int {
+  if i >= string_length(s) { acc } else {
+    let c = char_code_at(s, i);
+    if c >= 48 && c <= 57 { digits(s, i + 1, acc * 10 + c - 48) } else { acc }
+  }
+}
+
+fn main() {
+  let n = digits(read_input(), 0, 0);
+  let b0 = initial();
+  if array_length(b0) == 35 {
+    let b = offset(b0);
+    println(float_to_fixed(energy(b), 9));
+    println(float_to_fixed(energy(advance(b, n)), 9))
+  } else { () }
+}

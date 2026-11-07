@@ -34,11 +34,14 @@ const BENCH = [
   { name: 'binarytrees', n: 18, quick: 8, what: 'allocating and freeing trees' },
   { name: 'nqueens', n: 13, quick: 6, what: 'backtracking search' },
   { name: 'editdist', n: 30000, quick: 300, what: 'dynamic programming over arrays' },
+  { name: 'nbody', n: 5000000, quick: 1000, what: 'floating-point physics' },
+  { name: 'spectralnorm', n: 3000, quick: 100, what: 'floating-point linear algebra' },
 ];
 const PAR = [
   { name: 'fannkuch-par', seq: 'fannkuch', n: 11, quick: 7, what: 'blocks of permutations' },
   { name: 'binarytrees-par', seq: 'binarytrees', n: 18, quick: 8, what: 'the depths' },
   { name: 'nqueens-par', seq: 'nqueens', n: 13, quick: 6, what: 'the first two queens' },
+  { name: 'spectralnorm-par', seq: 'spectralnorm', n: 3000, quick: 100, what: 'the rows of each product' },
 ];
 
 // Child modes: run one module and report the time on stderr.
@@ -120,9 +123,12 @@ try {
 
     const cfile = join(here, `${b.name}.c`);
     const exe = join(tmp, b.name);
-    const cn = ok('cc', ['-O2', '-o', exe, cfile]) ? best(() => native(exe, n)) : null;
+    // -ffp-contract=off: no fused multiply-adds, so that C rounds every
+    // floating-point operation as Lumen 2 and WebAssembly do (on machines
+    // that have them, fused ones would print different digits).
+    const cn = ok('cc', ['-O2', '-ffp-contract=off', '-o', exe, cfile, '-lm']) ? best(() => native(exe, n)) : null;
     const cw = join(tmp, `${b.name}.c.wasm`);
-    const cwasm = ok('clang', ['--target=wasm32-wasi', '-O2', '-o', cw, cfile]) ? best(() => child('--run-wasi', cw, n)) : null;
+    const cwasm = ok('clang', ['--target=wasm32-wasi', '-O2', '-ffp-contract=off', '-o', cw, cfile]) ? best(() => child('--run-wasi', cw, n)) : null;
 
     for (const [label, r] of [['C', cn], ['C (wasm)', cwasm]]) {
       if (r && r.output !== lumen.output) {
@@ -148,7 +154,7 @@ try {
     const l1 = best(() => child('--run-lumen', lw, n, { LUMEN2_THREADS: '1' }));
     const lt = best(() => child('--run-lumen', lw, n, { LUMEN2_THREADS: String(cores) }));
     const exe = join(tmp, b.name);
-    const omp = ok('cc', ['-O2', '-fopenmp', '-o', exe, join(here, `${b.name}.c`)]);
+    const omp = ok('cc', ['-O2', '-ffp-contract=off', '-fopenmp', '-o', exe, join(here, `${b.name}.c`), '-lm']);
     const c1 = omp ? best(() => native(exe, n, { OMP_NUM_THREADS: '1' })) : null;
     const ct = omp ? best(() => native(exe, n, { OMP_NUM_THREADS: String(cores) })) : null;
     for (const [label, r] of [['Lumen 2, 1 thread', l1], [`Lumen 2, ${cores} threads`, lt], ['C, 1 thread', c1], [`C, ${cores} threads`, ct]]) {

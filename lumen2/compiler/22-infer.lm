@@ -8,7 +8,10 @@ type Ref { RNone, RLocal(Int), RMethod(String, String), RGlobal(String), RBuilti
 // the refined value's local id and name, the predicate, the annotation's span, the predicate's span
 type RefineInfo { RefineInfo(Int, String, Ex, Int, Int, Int, Int) }
 type ElemSpec { ElemSpec(Option<RefineInfo>, Option<ElemSpec>) }
-type Defer { DLet(Ty, Pat), DMatch(Ty, List<Arm>, Int, Int) }
+// DNum: an arithmetic operator's operand type, not yet known to be Int or
+// Float, with the operator and its span (Int if it is still unknown when the
+// top-level function is generalized).
+type Defer { DLet(Ty, Pat), DMatch(Ty, List<Arm>, Int, Int), DNum(Ty, String, Int, Int) }
 
 // grants (or none), entry, assume every partial operation safe, safe sites, notes for unproved sites
 type Opts { Opts(Option<List<String>>, String, Bool, Map<Bool>, Map<String>) }
@@ -56,6 +59,23 @@ fn cs_set_preset(cs, id, x) { match cs { CS(st, a, b, c, d, e, f, g, h, i, j, k,
 fn cs_fresh_id(cs) { match cs { CS(st, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q) -> (m, CS(st, a, b, c, d, e, f, g, h, i, j, k, l, m + 1, n, o, p, q)) } }
 fn cs_defer(cs, x) { match cs { CS(st, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q) -> CS(st, a, b, c, d, e, f, g, h, i, j, k, l, m, [x, ..n], o, p, q) } }
 fn cs_deferred(cs) { match cs { CS(_, _, _, _, _, _, _, _, _, _, _, _, _, _, n, _, _, _) -> reverse(n) } }
+// Settles the arithmetic operators of the functions just inferred, before
+// they are generalized: an operand type still unknown is Int.
+fn settle_numeric(env, cs) {
+  match cs { CS(st, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q) -> {
+    let nums = filter(n, |x| match x { DNum(_, _, _, _) -> true, _ -> false });
+    let cs = CS(st, a, b, c, d, e, f, g, h, i, j, k, l, m, filter(n, |x| match x { DNum(_, _, _, _) -> false, _ -> true }), o, p, q);
+    fold(reverse(nums), cs, |cs, x| match x {
+      DNum(t, op, s, e) -> match prune(cs_st(cs), t) {
+        TV(_) -> unify_at(env, cs, t_int(), t, s, e, None),
+        TC("Int", _) -> cs,
+        TC("Float", _) -> cs,
+        other -> fail_at("`" ++ op ++ "` works on Int and Float, not " ++ show_type(cs_st(cs), other), s, e, None),
+      },
+      _ -> cs,
+    })
+  } }
+}
 fn cs_warn(cs, w) { match cs { CS(st, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q) -> CS(st, a, b, c, d, e, f, g, h, i, j, k, l, m, n, [w, ..o], p, q) } }
 fn cs_warnings(cs) { match cs { CS(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, o, _, _) -> reverse(o) } }
 fn cs_sig(cs) { match cs { CS(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, p, q) -> (p, q) } }
@@ -244,6 +264,7 @@ fn infer_inner(env, cs, x, ctx) {
   let level = ctx_level(ctx);
   match x {
     EInt(_, _, _, _) -> (t_int(), cs),
+    EFloat(_, _, _, _) -> (t_float(), cs),
     EStr(_, _, _, _) -> (t_string(), cs),
     EBool(_, _, _, _) -> (t_bool(), cs),
     EUnit(_, _, _) -> (t_unit(), cs),
@@ -329,9 +350,13 @@ fn infer_inner(env, cs, x, ctx) {
       }
     },
     EBinop(id, op, l, r, s, e) -> infer_binop(env, cs, id, op, l, r, s, e, ctx),
-    EUnop(_, op, a, _, _) -> {
+    EUnop(_, op, a, s, e) -> {
       let (t, cs) = infer(env, cs, a, ctx);
-      if op == "-" { (t_int(), unify_at(env, cs, t_int(), t, ex_s(a), ex_e(a), Some("operand of `-`"))) }
+      if op == "-" {
+        let nt = numeric_target(cs, t, t);
+        let cs = unify_at(env, cs, nt, t, ex_s(a), ex_e(a), Some("operand of `-`"));
+        (nt, numeric_defer(cs, nt, "-", s, e))
+      }
       else { (t_bool(), unify_at(env, cs, t_bool(), t, ex_s(a), ex_e(a), Some("operand of `!`"))) }
     },
     ELambda(_, params, body, _, _) -> {
@@ -404,6 +429,19 @@ fn infer_stmt(env, cs, stmt, inner, outer) {
   }
 }
 
+// The type an arithmetic operator's operands must have, given what is known
+// of them: Float if either is a Float, still open if both are unknown (to be
+// settled by the end of the top-level function), and otherwise Int, so that
+// a String operand is reported as not an Int.
+fn numeric_target(cs, lt, rt) {
+  let lp = prune(cs_st(cs), lt);
+  let rp = prune(cs_st(cs), rt);
+  let is_float = |t| match t { TC("Float", _) -> true, _ -> false };
+  let is_var = |t| match t { TV(_) -> true, _ -> false };
+  if is_float(lp) || is_float(rp) { t_float() } else if is_var(lp) && is_var(rp) { lp } else { t_int() }
+}
+fn numeric_defer(cs, t, op, s, e) { match prune(cs_st(cs), t) { TV(_) -> cs_defer(cs, DNum(t, op, s, e)), _ -> cs } }
+
 fn infer_binop(env, cs, id, op, l, r, s, e, ctx) {
   let (lt, cs) = infer(env, cs, l, ctx);
   let (rt, cs) = infer(env, cs, r, ctx);
@@ -412,11 +450,14 @@ fn infer_binop(env, cs, id, op, l, r, s, e, ctx) {
     unify_at(env, cs, t, rt, ex_s(r), ex_e(r), Some(what_r))
   };
   if op == "+" || op == "-" || op == "*" {
-    (t_int(), both(cs, t_int(), "left operand of `" ++ op ++ "`", "right operand of `" ++ op ++ "`"))
+    let nt = numeric_target(cs, lt, rt);
+    (nt, numeric_defer(both(cs, nt, "left operand of `" ++ op ++ "`", "right operand of `" ++ op ++ "`"), nt, op, s, e))
   } else if op == "/" || op == "%" {
-    let cs = both(cs, t_int(), "left operand of `" ++ op ++ "`", "right operand of `" ++ op ++ "`");
-    if is_safe(env, ctx, s, e) { (t_int(), if !assume_safe(env) { cs_set_safe(cs, id) } else { cs }) }
-    else { (t_int(), perform(cs, ["fail"], ctx, s, e, "`" ++ op ++ "` (division by zero)", why_unsafe(env, ctx, s, e))) }
+    // Division of Ints or Floats; the remainder of Ints only.
+    let nt = if op == "%" { t_int() } else { numeric_target(cs, lt, rt) };
+    let cs = numeric_defer(both(cs, nt, "left operand of `" ++ op ++ "`", "right operand of `" ++ op ++ "`"), nt, op, s, e);
+    if is_safe(env, ctx, s, e) { (nt, if !assume_safe(env) { cs_set_safe(cs, id) } else { cs }) }
+    else { (nt, perform(cs, ["fail"], ctx, s, e, "`" ++ op ++ "` (division by zero)", why_unsafe(env, ctx, s, e))) }
   } else if op == "&&" || op == "||" {
     (t_bool(), both(cs, t_bool(), "left operand of `" ++ op ++ "`", "right operand of `" ++ op ++ "`"))
   } else if op == "++" {

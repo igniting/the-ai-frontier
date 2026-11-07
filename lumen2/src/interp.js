@@ -9,6 +9,7 @@
 //     the array it was given.
 //   * Tail calls run in constant stack (a trampoline).
 
+import { floatToString, floatToFixed, parseFloatText } from './floats.js';
 import { makeHost } from './host.js';
 
 export const INT_MIN = -(1n << 63n);
@@ -19,6 +20,8 @@ export const MAX_STRING = (1 << 24) - 1;
 export class LumenRuntimeError extends Error {}
 const fail = (msg) => { throw new LumenRuntimeError(msg); };
 const int = (v) => (v < INT_MIN || v > INT_MAX ? fail('integer overflow') : v);
+// A Float is a JavaScript number, and always finite.
+const flt = (x) => (Number.isFinite(x) ? x : fail('float overflow'));
 
 class TailCall { constructor(fn, args) { this.fn = fn; this.args = args; } }
 
@@ -28,7 +31,7 @@ class TailCall { constructor(fn, args) { this.fn = fn; this.args = args; } }
 // so comparing long lists takes constant stack.
 export function compare(a, b, userOrd = () => null) {
   for (;;) {
-    if (typeof a === 'bigint') return a < b ? -1 : a > b ? 1 : 0;
+    if (typeof a === 'bigint' || typeof a === 'number') return a < b ? -1 : a > b ? 1 : 0;
     if (typeof a === 'boolean') return a === b ? 0 : a ? 1 : -1;
     if (a === null) return 0;
     if (typeof a === 'string') return a < b ? -1 : a > b ? 1 : 0;
@@ -64,6 +67,7 @@ export function interpret(program, { input = '', maxSteps = Infinity, maxDepth =
   const headOfValue = (v) => {
     switch (typeof v) {
       case 'bigint': return 'Int';
+      case 'number': return 'Float';
       case 'string': return 'String';
       case 'boolean': return 'Bool';
       default:
@@ -122,6 +126,20 @@ export function interpret(program, { input = '', maxSteps = Infinity, maxDepth =
     clock_ms: () => host.clock(),
     random_int: ([lo, hi]) => host.random(lo, hi),
     int_to_string: ([n]) => n.toString(),
+    int_to_float: ([n]) => Number(n),
+    float_to_int: ([x]) => (x >= -(2 ** 63) && x < 2 ** 63 ? BigInt(Math.trunc(x)) : fail('integer overflow')),
+    sqrt: ([x]) => (x < 0 ? fail('square root of a negative number') : Math.sqrt(x)),
+    float_abs: ([x]) => Math.abs(x),
+    floor: ([x]) => Math.floor(x),
+    ceil: ([x]) => Math.ceil(x),
+    trunc: ([x]) => Math.trunc(x),
+    round: ([x]) => { const t = Math.trunc(x); return Math.abs(x - t) >= 0.5 ? t + Math.sign(x) : t; },
+    float_to_string: ([x]) => floatToString(x),
+    float_to_fixed: ([x, d]) => floatToFixed(x, Number(d < 0n ? 0n : d > 20n ? 20n : d)),
+    parse_float: ([s]) => {
+      const x = parseFloatText(s);
+      return Number.isNaN(x) ? { t: 'ctor', key: 'Option.None', idx: 0, name: 'None', f: [] } : { t: 'ctor', key: 'Option.Some', idx: 1, name: 'Some', f: [x] };
+    },
     concat_strings: ([xs]) => {
       const parts = [];
       let n = 0;
@@ -257,6 +275,7 @@ export function interpret(program, { input = '', maxSteps = Infinity, maxDepth =
     tick();
     switch (e.k) {
       case 'int': return e.v;
+      case 'float': return e.v;
       case 'str': return e.v;
       case 'bool': return e.v;
       case 'unit': return null;
@@ -277,7 +296,7 @@ export function interpret(program, { input = '', maxSteps = Infinity, maxDepth =
       case 'binop': return binop(e, env);
       case 'unop': {
         const v = ev(e.e, env);
-        return e.op === '-' ? int(-v) : !v;
+        return e.op === '-' ? (typeof v === 'number' ? -v : int(-v)) : !v;
       }
       case 'lambda': return { t: 'clo', params: e.params, body: e.body, env };
       case 'tuple': return { t: 'tup', v: e.elems.map((x) => ev(x, env)) };
@@ -293,6 +312,15 @@ export function interpret(program, { input = '', maxSteps = Infinity, maxDepth =
     if (e.op === '&&') return ev(e.l, env) && ev(e.r, env);
     if (e.op === '||') return ev(e.l, env) || ev(e.r, env);
     const l = ev(e.l, env), r = ev(e.r, env);
+    if (typeof l === 'number') {
+      switch (e.op) {
+        case '+': return flt(l + r);
+        case '-': return flt(l - r);
+        case '*': return flt(l * r);
+        case '/': if (r === 0 && e.safe) unsound(); return r === 0 ? fail('division by zero') : flt(l / r);
+        default: break;
+      }
+    }
     switch (e.op) {
       case '+': return int(l + r);
       case '-': return int(l - r);

@@ -5,7 +5,8 @@
 // variables; function types have no effects). After reference counting the
 // tree also has dup, drop, drop-reuse, free-token and unpack nodes.
 
-type At { QVar(String), QInt(Int), QBool(Bool), QUnit, QStr(String) }
+// QFloat: a Float constant, as the bits of the double.
+type At { QVar(String), QInt(Int), QFloat(Int), QBool(Bool), QUnit, QStr(String) }
 type Rhs {
   RAtom(At),
   RPrim(String, List<At>, Option<Ty>),             // op, args, the operand type (comparisons)
@@ -57,5 +58,6 @@ fn tkey(t) {
     _ -> internal("tkey"),
   }
 }
-fn valtype(t) { match t { TC("Int", _) -> "i64", _ -> "i32" } }
+fn valtype(t) { match t { TC("Int", _) -> "i64", TC("Float", _) -> "f64", _ -> "i32" } }
+fn is_float_ty(t) { match t { TC("Float", _) -> true, _ -> false } }
 fn conc_head(t) { match t { TC(n, _) -> Some(n), TT(es) -> Some("(" ++ int_to_string(length(es)) ++ ")"), _ -> None } }

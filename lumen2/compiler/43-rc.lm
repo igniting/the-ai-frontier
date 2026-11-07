@@ -6,7 +6,7 @@ fn is_heap(adts, t) {
   match t {
     TT(_) -> true,
     TF(_, _, _) -> true,
-    TC(n, _) -> if n == "Int" || n == "Bool" || n == "Unit" { false } else if n == "String" || n == "Array" { true }
+    TC(n, _) -> if n == "Int" || n == "Float" || n == "Bool" || n == "Unit" { false } else if n == "String" || n == "Array" { true }
       else { match om_get(adts, n) { Some(a) -> any(adt_ctors(a), |c| !is_empty(ctor_fields(c))), None -> internal("is_heap " ++ n) } },
     _ -> internal("is_heap"),
   }

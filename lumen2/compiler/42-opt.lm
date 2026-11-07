@@ -298,7 +298,7 @@ fn sm_dce(e) {
 // result.) What a branch or a nested block computes is not available after it.
 fn cse_atom(sub, a) { match a { QVar(x) -> match m_get(sub, x) { Some(y) -> QVar(y), None -> a }, _ -> a } }
 fn cse_key(op, args, t) {
-  let ak = map(args, |a| match a { QVar(v) -> "v" ++ v, QInt(n) -> "i" ++ int_to_string(n), QBool(b) -> if b { "t" } else { "f" }, QUnit -> "u", QStr(_) -> "s" });
+  let ak = map(args, |a| match a { QVar(v) -> "v" ++ v, QInt(n) -> "i" ++ int_to_string(n), QFloat(n) -> "d" ++ int_to_string(n), QBool(b) -> if b { "t" } else { "f" }, QUnit -> "u", QStr(_) -> "s" });
   op ++ (match t { Some(_) -> "?", None -> "" }) ++ "(" ++ join(ak, ",") ++ ")"
 }
 fn cse_hoist(r) {

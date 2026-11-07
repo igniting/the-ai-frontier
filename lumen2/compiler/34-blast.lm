@@ -49,11 +49,29 @@ fn insert_by_id(xs, e) {
 }
 fn canon_term(t) { match t { Term(cs, c) -> Term(fold(cs, [], insert_by_id), c) } }
 fn leads_negative(t) { match term_coeffs(t) { [(_, k), .._] -> b_lt(k, BS(0)), [] -> false } }
+// A comparison is divided by the gcd g of its coefficients, so that its
+// coefficients stay small: the atoms are integers, so t < 0 holds exactly
+// when t/g < 0 with the constant rounded down, and t = 0 has no solution
+// unless g divides the constant. (K*x - K*y < 6, with K near 2^63, is x - y < 1:
+// as written, its circuit was too large to solve.)
+fn b_gcd(a, b) { if b_is_zero(b) { b_abs(a) } else { b_gcd(b, b_rem(a, b)) } }
+fn coeff_gcd(t) { fold(term_coeffs(t), BS(0), |g, e| match e { (_, k) -> b_gcd(g, k) }) }
+fn coeffs_over(t, g) { map(term_coeffs(t), |e| match e { (id, k) -> (id, b_quot(k, g)) }) }
 fn lt0(t0) {
-  let t = canon_term(t0);
+  let t1 = canon_term(t0);
+  let g = coeff_gcd(t1);
+  let t = if b_lt(BS(1), g) { Term(coeffs_over(t1, g), floor_div(term_c(t1), g)) } else { t1 };
   if leads_negative(t) { FNot(FLt(sub_terms(scale_term(t, BS(0 - 1)), konst(BS(1))))) } else { FLt(t) }
 }
-fn eq0(t0) { let t = canon_term(t0); if leads_negative(t) { FEq(scale_term(t, BS(0 - 1))) } else { FEq(t) } }
+fn eq0(t0) {
+  let t1 = canon_term(t0);
+  let g = coeff_gcd(t1);
+  if b_lt(BS(1), g) && !b_is_zero(b_rem(term_c(t1), g)) { FFalse }
+  else {
+    let t = if b_lt(BS(1), g) { Term(coeffs_over(t1, g), b_quot(term_c(t1), g)) } else { t1 };
+    if leads_negative(t) { FEq(scale_term(t, BS(0 - 1))) } else { FEq(t) }
+  }
+}
 fn compare(op, a, b) {
   if op == "<" { lt0(sub_terms(a, b)) } else if op == "<=" { lt0(sub_terms(sub_terms(a, b), konst(BS(1)))) }
   else if op == ">" { lt0(sub_terms(b, a)) } else if op == ">=" { lt0(sub_terms(sub_terms(b, a), konst(BS(1)))) }
@@ -354,8 +372,14 @@ fn prove_fresh(atoms, used, relevant, goal, mutant, max_conflicts, keep) {
       },
     }
   }
-  fn term_bits(e, bits, t) {
-    fold(term_coeffs(t), (e_constant(e, term_c(t)), e, bits), |acc, c| match (acc, c) {
+  // A term is g times its sum with the coefficients divided by their gcd g
+  // (signed, so that the sum's first coefficient is positive), plus its
+  // constant. The gates are shared, so K*x - K*y and x - y + 1 use the one
+  // circuit for x - y, and what the facts say about x - y reaches K*x - K*y
+  // by propagation alone. (Built separately, two wide adders that agree are
+  // a hard problem for the solver.)
+  fn sum_bits(e, bits, cs) {
+    fold(cs, (e_constant(e, BS(0)), e, bits), |acc, c| match (acc, c) {
       ((acc_bits, e, bits), (id, k)) -> {
         let (ab, e, bits) = bits_of(e, bits, id);
         let (sc, e) = e_scale(e, ab, k);
@@ -363,6 +387,15 @@ fn prove_fresh(atoms, used, relevant, goal, mutant, max_conflicts, keep) {
         (sum, e, bits)
       },
     })
+  }
+  fn term_bits(e, bits, t0) {
+    let t = canon_term(t0);
+    let g0 = coeff_gcd(t);
+    let g = if leads_negative(t) { b_neg(g0) } else { g0 };
+    let (r, e, bits) = if b_is_zero(g) { (e_constant(e, BS(0)), e, bits) } else { sum_bits(e, bits, coeffs_over(t, g)) };
+    let (sc, e) = if b_is_zero(g) || b_eq(g, BS(1)) { (r, e) } else { e_scale(e, r, g) };
+    let (s, e) = e_add(e, sc, e_constant(e, term_c(t)), 0 - 1);
+    (s, e, bits)
   }
   fn formula(e, bits, f) {
     match f {

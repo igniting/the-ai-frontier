@@ -21,7 +21,7 @@ type Pat {
   PCtor(Int, String, List<Pat>, Bool, Int, Int)   // the Bool: from list syntax
 }
 type Ex {
-  EInt(Int, Int, Int, Int), EStr(Int, String, Int, Int), EBool(Int, Bool, Int, Int), EVar(Int, String, Int, Int),
+  EInt(Int, Int, Int, Int), EFloat(Int, Int, Int, Int), EStr(Int, String, Int, Int), EBool(Int, Bool, Int, Int), EVar(Int, String, Int, Int),
   ECtor(Int, String, Option<List<Ex>>, Bool, Int, Int), EUnit(Int, Int, Int), ETuple(Int, List<Ex>, Int, Int),
   ECall(Int, Ex, List<Ex>, Int, Int), EBinop(Int, String, Ex, Ex, Int, Int), EUnop(Int, String, Ex, Int, Int),
   ELambda(Int, List<Param>, Ex, Int, Int), EIf(Int, Ex, Ex, Option<Ex>, Int, Int), EMatch(Int, Ex, List<Arm>, Int, Int),
@@ -44,21 +44,21 @@ type Ast { Ast(List<TypeDecl>, List<Fn>, List<TraitDecl>, List<ImplDecl>, List<F
 
 fn ex_id(e) {
   match e {
-    EInt(i, _, _, _) -> i, EStr(i, _, _, _) -> i, EBool(i, _, _, _) -> i, EVar(i, _, _, _) -> i, ECtor(i, _, _, _, _, _) -> i,
+    EInt(i, _, _, _) -> i, EFloat(i, _, _, _) -> i, EStr(i, _, _, _) -> i, EBool(i, _, _, _) -> i, EVar(i, _, _, _) -> i, ECtor(i, _, _, _, _, _) -> i,
     EUnit(i, _, _) -> i, ETuple(i, _, _, _) -> i, ECall(i, _, _, _, _) -> i, EBinop(i, _, _, _, _, _) -> i, EUnop(i, _, _, _, _) -> i,
     ELambda(i, _, _, _, _) -> i, EIf(i, _, _, _, _, _) -> i, EMatch(i, _, _, _, _) -> i, EBlock(i, _, _, _, _) -> i,
   }
 }
 fn ex_s(e) {
   match e {
-    EInt(_, _, s, _) -> s, EStr(_, _, s, _) -> s, EBool(_, _, s, _) -> s, EVar(_, _, s, _) -> s, ECtor(_, _, _, _, s, _) -> s,
+    EInt(_, _, s, _) -> s, EFloat(_, _, s, _) -> s, EStr(_, _, s, _) -> s, EBool(_, _, s, _) -> s, EVar(_, _, s, _) -> s, ECtor(_, _, _, _, s, _) -> s,
     EUnit(_, s, _) -> s, ETuple(_, _, s, _) -> s, ECall(_, _, _, s, _) -> s, EBinop(_, _, _, _, s, _) -> s, EUnop(_, _, _, s, _) -> s,
     ELambda(_, _, _, s, _) -> s, EIf(_, _, _, _, s, _) -> s, EMatch(_, _, _, s, _) -> s, EBlock(_, _, _, s, _) -> s,
   }
 }
 fn ex_e(e) {
   match e {
-    EInt(_, _, _, x) -> x, EStr(_, _, _, x) -> x, EBool(_, _, _, x) -> x, EVar(_, _, _, x) -> x, ECtor(_, _, _, _, _, x) -> x,
+    EInt(_, _, _, x) -> x, EFloat(_, _, _, x) -> x, EStr(_, _, _, x) -> x, EBool(_, _, _, x) -> x, EVar(_, _, _, x) -> x, ECtor(_, _, _, _, _, x) -> x,
     EUnit(_, _, x) -> x, ETuple(_, _, _, x) -> x, ECall(_, _, _, _, x) -> x, EBinop(_, _, _, _, _, x) -> x, EUnop(_, _, _, _, x) -> x,
     ELambda(_, _, _, _, x) -> x, EIf(_, _, _, _, _, x) -> x, EMatch(_, _, _, _, x) -> x, EBlock(_, _, _, _, x) -> x,
   }
@@ -98,7 +98,7 @@ fn p_id(p) { match p { P(toks, pos, id) -> (id, P(toks, pos, id + 1)) } }
 fn describe(t) {
   match t {
     Tok("eof", _, _, _) -> "end of input", Tok("lower", v, _, _) -> "`" ++ v ++ "`", Tok("upper", v, _, _) -> "`" ++ v ++ "`",
-    Tok("int", _, _, _) -> "a number", Tok("str", _, _, _) -> "a string", Tok(k, _, _, _) -> "`" ++ k ++ "`",
+    Tok("int", _, _, _) -> "a number", Tok("float", _, _, _) -> "a number", Tok("str", _, _, _) -> "a string", Tok(k, _, _, _) -> "`" ++ k ++ "`",
   }
 }
 fn p_fail(p, msg) { let t = p_tok(p); fail_span(msg, tok_s(t), tok_e(t)) }
@@ -124,6 +124,14 @@ fn int_literal(digits, neg) {
 }
 fn check_int(t, neg) {
   match int_literal(tok_val(t), neg) { Some(v) -> v, None -> fail_span("integer literal out of range (64-bit integers)", tok_s(t), tok_e(t)) }
+}
+// A float literal's IEEE 754 bits (31-float.lm), negated with neg.
+fn check_float(t, neg) {
+  match float_bits(tok_val(t)) {
+    FLit(bits) -> if neg { bits + (0 - 9223372036854775807 - 1) } else { bits },
+    FTooLarge -> fail_at("float literal out of range", tok_s(t), tok_e(t), Some("the largest Float is about 1.7976931348623157e308")),
+    FTooSmall -> fail_at("float literal too small: it would be 0", tok_s(t), tok_e(t), Some("the smallest Float above 0 is about 5e-324")),
+  }
 }
 
 // Items up to `close`, separated by commas (a trailing comma allowed).
@@ -230,6 +238,9 @@ fn parse_pattern(p) {
     let p = p_skip(p);
     if tok_val(t) == "_" { (PWild(id, tok_s(t), tok_e(t)), p) } else { (PVar(id, tok_val(t), tok_s(t), tok_e(t)), p) }
   } else if k == "int" { (PInt(id, check_int(t, false), tok_s(t), tok_e(t)), p_skip(p)) }
+  else if k == "float" || (k == "-" && tok_kind(p_peek(p, 1)) == "float") {
+    fail_at("a float cannot be a pattern", tok_s(t), tok_e(t), Some("compare it with `==` in a guard or an `if`"))
+  }
   else if k == "-" && tok_kind(p_peek(p, 1)) == "int" {
     let p = p_skip(p);
     let (n, p) = p_next(p);
@@ -355,6 +366,10 @@ fn parse_unary(p) {
       let (n, p) = p_next(p);
       let (id, p) = p_id(p);
       parse_postfix(EInt(id, check_int(n, true), tok_s(t), tok_e(n)), p)
+    } else if p_at(p, "float") {
+      let (n, p) = p_next(p);
+      let (id, p) = p_id(p);
+      parse_postfix(EFloat(id, check_float(n, true), tok_s(t), tok_e(n)), p)
     } else {
       let (e, p) = parse_unary(p);
       let (id, p) = p_id(p);
@@ -382,6 +397,7 @@ fn parse_primary(p) {
   let t = p_tok(p);
   let k = tok_kind(t);
   if k == "int" { let (id, p) = p_id(p); (EInt(id, check_int(t, false), tok_s(t), tok_e(t)), p_skip(p)) }
+  else if k == "float" { let (id, p) = p_id(p); (EFloat(id, check_float(t, false), tok_s(t), tok_e(t)), p_skip(p)) }
   else if k == "str" { let (id, p) = p_id(p); (EStr(id, tok_val(t), tok_s(t), tok_e(t)), p_skip(p)) }
   else if k == "true" || k == "false" { let (id, p) = p_id(p); (EBool(id, k == "true", tok_s(t), tok_e(t)), p_skip(p)) }
   else if k == "lower" { let (id, p) = p_id(p); (EVar(id, tok_val(t), tok_s(t), tok_e(t)), p_skip(p)) }
