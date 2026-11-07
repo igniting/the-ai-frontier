@@ -1,0 +1,236 @@
+<!doctype html>
+<!-- The one-page summary of the project, also published as a private artifact; built by hand, see README. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>:root { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); color-scheme: light; } body { margin: 0; } img { max-width: 100%; } [hidden] { display: none !important; }</style>
+<title>The AI Frontier at a Glance</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Newsreader:opsz,wght@6..72,500;6..72,600&display=swap">
+<style>
+  /* Layout: one reading column of about 70 characters; the three things built side by side; a table of claims and checks. */
+  :root {
+    --bg: #f4f6f9; --surface: #ffffff; --ink: #18202b; --muted: #5a6575; --rule: #d9dfe8;
+    --accent: #2f4fc4; --ok: #1d7a4c;
+    --g1: #3557d4; --g2: #b9781f; --g3: #26875f; --g4: #9c4a8a; --on-g: #ffffff;
+    --display: "Newsreader", Georgia, "Times New Roman", serif;
+    --body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f141b; --surface: #161d27; --ink: #e5eaf1; --muted: #9aa5b5; --rule: #283344;
+      --accent: #93a9ff; --ok: #62c793;
+      --g1: #8ea6ff; --g2: #e3ad5f; --g3: #63c79c; --g4: #d993c9; --on-g: #10151c;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f141b; --surface: #161d27; --ink: #e5eaf1; --muted: #9aa5b5; --rule: #283344;
+    --accent: #93a9ff; --ok: #62c793;
+    --g1: #8ea6ff; --g2: #e3ad5f; --g3: #63c79c; --g4: #d993c9; --on-g: #10151c;
+    color-scheme: dark;
+  }
+  body { background: var(--bg); color: var(--ink); font: 400 16px/1.6 var(--body); }
+  .page {
+    max-width: 960px; margin: 0 auto;
+    padding-block: 48px 64px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    display: grid; gap: 56px;
+  }
+  a { color: var(--accent); text-underline-offset: 2px; }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+  h1, h2, h3 { font-family: var(--display); font-weight: 600; text-wrap: balance; margin: 0; }
+  h1 { font-size: clamp(2rem, 4.6vw, 3.1rem); line-height: 1.1; letter-spacing: -0.01em; max-width: 22ch; }
+  h2 { font-size: 1.6rem; line-height: 1.2; }
+  h3 { font-size: 1.2rem; line-height: 1.25; }
+  p { margin: 0; max-width: 68ch; }
+  code { font-family: var(--mono); font-size: 0.86em; }
+  .eyebrow { font: 500 0.78rem/1.4 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+  header { display: grid; gap: 18px; }
+  .lead { font-size: 1.12rem; color: var(--ink); }
+  .links { display: flex; flex-wrap: wrap; gap: 10px 22px; font-weight: 500; }
+  section { display: grid; gap: 22px; }
+  .built { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 28px; }
+  .built article { display: grid; gap: 10px; align-content: start; min-width: 0; border-top: 2px solid var(--ink); padding-top: 14px; }
+  .built ul { margin: 0; padding-left: 1.1em; display: grid; gap: 6px; color: var(--ink); }
+  .built .what { color: var(--muted); }
+  figure { margin: 0; display: grid; gap: 12px; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 20px; }
+  .split { display: grid; grid-template-columns: repeat(22, minmax(0, 1fr)); gap: 3px; }
+  .split span { font: 500 0.72rem/1 var(--mono); font-variant-numeric: tabular-nums; aspect-ratio: 1; display: grid; place-items: center; border-radius: 3px; color: var(--on-g); min-width: 0; }
+  .g1 { background: var(--g1); } .g2 { background: var(--g2); } .g3 { background: var(--g3); } .g4 { background: var(--g4); }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font: 400 0.82rem/1.4 var(--mono); color: var(--muted); }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+  figcaption { font-size: 0.92rem; color: var(--muted); max-width: 72ch; }
+  .verdict { font: 500 0.82rem/1.4 var(--mono); color: var(--ok); }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 6px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; min-width: 720px; font-size: 0.93rem; }
+  th, td { text-align: left; vertical-align: top; padding: 12px 14px; border-bottom: 1px solid var(--rule); }
+  tr:last-child td { border-bottom: 0; }
+  th { font: 500 0.74rem/1.3 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+  td:first-child { font-weight: 600; width: 27%; }
+  td code { display: block; white-space: nowrap; color: var(--ink); }
+  td code + code { margin-top: 4px; }
+  .pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 28px; }
+  .pair article { display: grid; gap: 10px; align-content: start; min-width: 0; }
+  .pair ul { margin: 0; padding-left: 1.1em; display: grid; gap: 8px; }
+  footer { border-top: 1px solid var(--rule); padding-top: 18px; color: var(--muted); font-size: 0.9rem; display: grid; gap: 6px; }
+  @media (max-width: 520px) {
+    .page { gap: 44px; padding-block: 32px 48px; }
+    .split { grid-template-columns: repeat(11, minmax(0, 1fr)); }
+  }
+</style>
+</head>
+<body>
+
+<main class="page">
+  <header>
+    <p class="eyebrow">One Claude Code session, checked end to end</p>
+    <h1>Two languages, a theorem, and a check for every claim</h1>
+    <p class="lead">In one long session, Claude built two programming languages from scratch, with their compilers,
+    a SAT solver, and a machine-checked proof that the Schur number S(4) is 44. Each layer was checked by the one
+    below it, and every claim here can be re-run from the repository with Node 22 and nothing else.</p>
+    <nav class="links" aria-label="Where to go next">
+      <a href="https://igniting.github.io/the-ai-frontier/">Read the full story</a>
+      <a href="https://github.com/igniting/the-ai-frontier">The repository</a>
+      <a href="https://igniting.github.io/the-ai-frontier/lumen2/playground.html">Try Lumen 2 in the browser</a>
+    </nav>
+  </header>
+
+  <section aria-labelledby="built">
+    <h2 id="built">What was built</h2>
+    <div class="built">
+      <article>
+        <h3>Lumen</h3>
+        <p class="what">A small typed language, compiled to WebAssembly with a garbage collector.</p>
+        <ul>
+          <li>A compiler, and a reference interpreter to compare it with.</li>
+          <li>A second compiler, written in Lumen, that compiles itself to itself.</li>
+          <li>40 rewrite rules found by search, each proved with SAT.</li>
+          <li>An optimizer tuned in eight measured, gated steps.</li>
+        </ul>
+      </article>
+      <article>
+        <h3>A theorem</h3>
+        <p class="what">S(4) = 44: the numbers 1 to 44 split into four groups with no x, y and x + y in one
+        group, and 1 to 45 cannot.</p>
+        <ul>
+          <li>A SAT solver written in Lumen refutes 1 to 45 in 255,663 steps.</li>
+          <li>Lumen 2 prints the same refutation, byte for byte, and on four cores proves the theorem in 22
+          seconds.</li>
+        </ul>
+      </article>
+      <article>
+        <h3>Lumen 2</h3>
+        <p class="what">A second language, designed from what the first one taught.</p>
+        <ul>
+          <li>Types say what a function can do: print, read, use the clock or randomness, or fail.</li>
+          <li>Array accesses proved safe, each proof a SAT refutation with a certificate.</li>
+          <li>Memory without a garbage collector, by reference counting.</li>
+          <li>A compiler of about 8,600 lines of Lumen 2 that compiles itself, after a port that matched the
+          JavaScript original on 1,086 programs.</li>
+          <li>Users' functions over files, on every core, with step budgets and incremental re-runs.</li>
+        </ul>
+      </article>
+    </div>
+    <figure>
+      <div class="split" id="split" role="img" aria-label="The numbers 1 to 44, each colored by the group the solver put it in"></div>
+      <div class="legend" aria-hidden="true">
+        <span><i class="g1"></i>group 1</span><span><i class="g2"></i>group 2</span>
+        <span><i class="g3"></i>group 3</span><span><i class="g4"></i>group 4</span>
+      </div>
+      <figcaption>The split of 1 to 44 that the solver found, which shows S(4) is at least 44. That no split of 1 to
+      45 exists is the 255,663-step refutation. <span class="verdict" id="split-check">Checking the split in your
+      browser…</span></figcaption>
+    </figure>
+  </section>
+
+  <section aria-labelledby="checked">
+    <h2 id="checked">What was checked, and how to re-run it</h2>
+    <p>CI repeats these checks on every push to the repository, both S(4) proofs included. The one exception is the
+    timing against C, which needs a quiet machine.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">Claim</th><th scope="col">Checked by</th><th scope="col">Re-run it</th></tr></thead>
+        <tbody>
+          <tr><td>The compilers do what the interpreters do</td><td>Differential fuzzing on fresh random programs every run, and bugs planted in the compilers (34 in Lumen, 27 in Lumen 2) that the tests must catch</td><td><code>node fuzz/fuzz.js --count 1000</code><code>node lumen2/test/fuzz.js --mutants</code></td></tr>
+          <tr><td>The compiler compiles itself to itself</td><td>The compiler's build compiles its own source to the same bytes</td><td><code>node lumen2/compiler/bootstrap.js</code></td></tr>
+          <tr><td>S(4) = 44</td><td>The project's own proof checker; a second checker, written in Lumen 2 and proved unable to crash; and drat-trim, a widely used checker nobody here wrote</td><td><code>node lumen2/proofs/prove-schur.js 4 44</code></td></tr>
+          <tr><td>Every proof the project writes out</td><td>drat-trim checks 21 refutations in CI: S(4) three ways, 7 rewrite rules, 11 refinement certificates</td><td><code>the drat-trim job in .github/workflows/ci.yml</code></td></tr>
+          <tr><td>Lumen 2 runs 1.1 to 3.5 times as long as C</td><td>Six programs in both languages, outputs compared, best of three</td><td><code>node lumen2/bench/run.js</code></td></tr>
+          <tr><td>An incremental re-run prints exactly a full run's output</td><td>Random edits on five transforms; a simulated month of a daily pipeline against a dbt-style merge and caches</td><td><code>node lumen2/transform/bench/simulate.js</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="means">
+    <h2 id="means">What it shows, and what it doesn't</h2>
+    <div class="pair">
+      <article>
+        <h3>It shows</h3>
+        <ul>
+          <li>Sustained engineering over one long session, in which each layer was checked by the one below it,
+          including the mistakes those checks caught, which the story lists.</li>
+          <li>That every claim can be re-run: the commands are in the repository, and CI runs all but the timings on
+          every push.</li>
+        </ul>
+      </article>
+      <article>
+        <h3>It doesn't show</h3>
+        <ul>
+          <li>That earlier models could not have done it. <a href="https://github.com/igniting/the-ai-frontier/blob/main/CHALLENGE.md">CHALLENGE.md</a>
+          turns the task into a benchmark with a scorer, for anyone who wants to compare.</li>
+          <li>A new result in mathematics: S(4) = 44 has been known since 1965. What is new is that a language built
+          in the session produced the proof.</li>
+          <li>That Lumen 2 is worth adopting. It is slower than C, and its wins come from what its checker proves.
+          In a simulated month of a daily pipeline, its incremental re-runs were right every day, but the computing
+          they saved was worth about a cent.</li>
+          <li>Anything beyond one machine: every timing comes from one 4-core machine and one JavaScript engine.</li>
+        </ul>
+      </article>
+    </div>
+  </section>
+
+  <footer>
+    <p>Built with Claude Code. The numbers are the repository's, as of November 2026; the
+    <a href="https://igniting.github.io/the-ai-frontier/">full story</a> has the details, the mistakes and the
+    live demos.</p>
+  </footer>
+</main>
+
+<script>
+  // The four groups of 1..44 that the solver found (lumen2/proofs/prove-schur.js 4 44).
+  const groups = [
+    [1, 4, 9, 12, 19, 26, 33, 36, 39, 41, 44],
+    [2, 3, 10, 11, 15, 16, 29, 34, 35, 42, 43],
+    [5, 6, 7, 8, 17, 18, 27, 28, 37, 38, 40],
+    [13, 14, 20, 21, 22, 23, 24, 25, 30, 31, 32],
+  ];
+  const groupOf = new Map();
+  groups.forEach((g, i) => g.forEach((n) => groupOf.set(n, i)));
+  const split = document.getElementById('split');
+  for (let n = 1; n <= 44; n++) {
+    const cell = document.createElement('span');
+    cell.className = `g${groupOf.get(n) + 1}`;
+    cell.textContent = n;
+    split.appendChild(cell);
+  }
+  // Every number from 1 to 44 in exactly one group, and no group holding x, y and x + y (x = y included).
+  let tried = 0, bad = null;
+  const all = groups.flat().sort((a, b) => a - b);
+  const covers = all.length === 44 && all.every((n, i) => n === i + 1);
+  for (const g of groups) {
+    const set = new Set(g);
+    for (const x of g) for (const y of g) if (x <= y && x + y <= 44) { tried++; if (set.has(x + y)) bad = [x, y, x + y]; }
+  }
+  document.getElementById('split-check').textContent = covers && !bad
+    ? `Checked in your browser: each number is in one group, and none of the ${tried} sums x + y within a group lands in it.`
+    : `Check failed: ${bad ? `${bad[0]} + ${bad[1]} = ${bad[2]} in one group` : 'the groups do not cover 1 to 44'}.`;
+</script>
+</body>
+</html>

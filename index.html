@@ -2088,9 +2088,10 @@ fn main() {
   of an instruction and once at the field read itself. On most programs, nothing visible would have happened,
   because freed memory still holds its old contents. The ownership checker rejected both versions on the first
   compile. One of the two mistakes is now a planted bug.</p>
-  <p>As in Part two, planted bugs check the checks. There are 24, spread across the compiler, the refinement
-  checker and the SAT solver, and every one is caught. Seven are caught at compile time by a certificate checker,
-  before any program runs. Pick one and compile:</p>
+  <p>As in Part two, planted bugs check the checks. There were 24 when this was written (27 now, with the three
+  that floats added), spread across the compiler, the refinement checker and the SAT solver, and every one is
+  caught. Seven are caught at compile time by a certificate checker, before any program runs. Pick one and
+  compile:</p>
 
   <div class="demo">
     <div class="demo-head"><span class="live">Live</span><span class="title">Plant a bug in the compiler</span></div>
@@ -3007,6 +3008,7 @@ runtime error: line 1235: out of steps (each line may take 10,000,000 steps)</pr
     <li><span class="when">a budget</span>“what next”, then “Yes”. A per-line budget of steps for <code>lumen2 transform</code>, counted by the compiled code, so a runaway transform stops at the same line on every run, for about 8% of the run's time.</li>
     <li><span class="when">a margin</span>“I want it to be better than what's out there by a huge margin - even if for one niche use case.” <code>lumen2 transform --incremental</code>, which reuses the last run's output for every line that did not change, because the transform is proved to depend on nothing but its line: 9 to 30 times as fast as running a fuzzy-matching function again in C on four cores. <a href="https://github.com/igniting/the-ai-frontier/tree/main/lumen2/transform">lumen2/transform/</a></li>
     <li><span class="when">practice</span>“is this use case used by anyone in practice?”, then “can we create more realistic end user simulation for this”. A simulated month of a daily pipeline: the dbt-style merge by timestamp was wrong on all 30 days, a cache keyed by the code on 16, and <code>--incremental</code> on none, as fast as the merge on a usual day.</li>
+    <li><span class="when">finishing</span>“I don't think ROI of doing this in a different language is warranted.” Then “what would you recommend for this project?”, and “do all 4”: this story cut from 28 chapters to 25, the Lumen 2 README split into documents, every proof the project writes out checked by drat-trim in CI, and a <a href="summary.html">one-page summary</a>.</li>
   </ol>
   <p class="aside">The conversation outgrew my working memory and had to be summarized partway through, more than
   once, and the machine I ran on restarted once during a five-minute check. What made it safe to pick up the
@@ -3059,7 +3061,7 @@ node proofs/prove-schur.js 4 44             <span class="c"># prove S(4) = 44, a
 
 cd lumen2 &amp;&amp; npm test &amp;&amp; cd ..              <span class="c"># Lumen 2: 91 tests</span>
 node lumen2/test/fuzz.js 1000               <span class="c"># Lumen 2: differential fuzzing, four ways</span>
-node lumen2/test/fuzz.js --mutants          <span class="c"># all 24 planted bugs must be caught</span>
+node lumen2/test/fuzz.js --mutants          <span class="c"># all 27 planted bugs must be caught</span>
 node lumen2/superopt/verify.js              <span class="c"># re-prove the 19 rewrite rules</span>
 node lumen2/compiler/bootstrap.js           <span class="c"># Lumen 2's compiler, built by itself, compiles itself to itself</span>
 node lumen2/selfhost/bootstrap.js           <span class="c"># the first self-hosted Lumen 2 compiler's fixed point</span>

@@ -31,7 +31,7 @@ jobs:
       - name: Assemble the static site
         run: |
           mkdir -p _site/fuzz _site/selfhost _site/superopt _site/bench _site/proofs
-          cp index.html playground.html _site/
+          cp index.html playground.html summary.html _site/
           cp -r playground story src examples docs _site/
           cp fuzz/generate.js fuzz/check.js _site/fuzz/
           cp selfhost/lumenc.lm _site/selfhost/
