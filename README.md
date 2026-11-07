@@ -52,29 +52,32 @@ printing the same 255,663-step refutation as Lumen's solver, byte for
 byte; split into 256 cubes and refuted on every core, the whole checked
 proof takes 22 seconds instead of 8 minutes. Lumen 2's compiler is written in Lumen 2 and compiles itself to
 itself; it was ported from JavaScript pass by pass, wrote the same bytes as
-the original for every program in a 1,086-program corpus, and replaced it. Its [showcase](lumen2/README.md#showcase) has a heapsort that is pure,
+the original for every program in a 1,086-program corpus, and replaced it. Its [showcase](lumen2/docs/language.md#showcase) has a heapsort that is pure,
 sorts a million numbers in place with 106 allocations, and is proved unable
 to fail. The S(4) proof is also checked by a DRUP checker written in Lumen 2
 whose every array access is proved in bounds, so it cannot crash. On four
-[benchmark programs](lumen2/README.md#how-fast-it-is), the same algorithm
+[benchmark programs](lumen2/docs/performance.md#how-fast-it-is), the same algorithm
 takes 1.1 to 3.5 times as long in Lumen 2 as in C compiled natively
 (the slowest two are on floats, which are never infinite or NaN, so a
 parallel float sum is the same bits on any number of threads), and
 `par_map`, whose function the types keep free of input and output, runs on
 every core: on four, faster than C on one. The same guarantee makes
-[`lumen2 transform`](lumen2/README.md#user-defined-functions-lumen2-transform)
+[`lumen2 transform`](lumen2/docs/transform.md#user-defined-functions-lumen2-transform)
 practical: it runs a user's function over every line of a file on every
 core, after rejecting any function that could do input or output or read
 the clock or randomness, and gives each line a budget of steps that stops a
 runaway at the same line on every run; on 2 million CSV rows it is 6 times as fast
 as Python running the same function with `exec`. And because the function
 is proved to depend only on its line, a run after the file changes
-[transforms only the changed lines](lumen2/README.md#running-it-again---incremental),
+[transforms only the changed lines](lumen2/docs/transform.md#running-it-again---incremental),
 with output identical to a full run: after 500 of 500,000 rows change, a
 fuzzy-matching function runs again in 0.38 s, where C takes 5.1 s on four
 cores and Python about 20 minutes. In a simulated month of a daily
 pipeline, it was right every day and as fast as the usual dbt-style merge
-of rows updated since the last run, which was wrong every day. It has its own
+of rows updated since the last run, which was wrong every day. None of this
+makes Lumen 2 a language to adopt: it runs 1.1 to 3.5 times as long as C,
+and [what it is, and what it isn't](lumen2/README.md#what-it-is-and-what-it-isnt)
+says what its guarantees are worth. It has its own
 [playground](https://igniting.github.io/the-ai-frontier/lumen2/playground.html),
 and [Part five of the story](https://igniting.github.io/the-ai-frontier/#lumen2)
 explains it.

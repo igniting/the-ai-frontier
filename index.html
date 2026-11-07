@@ -290,15 +290,12 @@ table.t.trace td code { white-space: nowrap; }
     <li><a href="#certified"><span class="n">18</span>A compiler that checks its own output</a></li>
     <li><a href="#lumen2-schur"><span class="n">19</span>The same theorem, without mutation</a></li>
     <li><a href="#lumen2-selfhost"><span class="n">20</span>The compiler compiles itself, again</a></li>
-    <li><a href="#lumen2-port"><span class="n">21</span>Retiring the JavaScript compiler</a></li>
-    <li><a href="#lumen2-speed"><span class="n">22</span>How fast is it, next to C?</a></li>
-    <li><a href="#lumen2-transform"><span class="n">23</span>Other people's code, on every core</a></li>
-    <li><a href="#lumen2-floats"><span class="n">24</span>Numbers that are always numbers</a></li>
-    <li><a href="#lumen2-budget"><span class="n">25</span>A budget for every line</a></li>
-    <li><a href="#lumen2-incremental"><span class="n">26</span>Running only what changed</a></li>
+    <li><a href="#lumen2-speed"><span class="n">21</span>How fast is it, next to C?</a></li>
+    <li><a href="#lumen2-transform"><span class="n">22</span>Other people's code, on every core</a></li>
+    <li><a href="#lumen2-incremental"><span class="n">23</span>Running only what changed, and what it is worth</a></li>
     <li class="toc-part">Part six · Mistakes and limits</li>
-    <li><a href="#caught"><span class="n">27</span>What the checks caught, including my mistakes</a></li>
-    <li><a href="#limits"><span class="n">28</span>What this shows, and what it doesn't</a></li>
+    <li><a href="#caught"><span class="n">24</span>What the checks caught, including my mistakes</a></li>
+    <li><a href="#limits"><span class="n">25</span>What this shows, and what it doesn't</a></li>
   </ol>
 </header>
 
@@ -323,9 +320,10 @@ table.t.trace td code { white-space: nowrap; }
   uses all of it to prove a theorem, and explains SAT solving and proof checking on the way. <b>Part five</b> starts
   again: a second language, designed with what the first one taught me, that proves its own array accesses safe,
   needs no garbage collector, proves the same theorem, ends up with its whole compiler written in itself, runs
-  within 1.1 to 3.5 times of C, runs on every core, runs other people's code there safely, gives that code a budget that stops it at the same
-  line on every run, runs it again on only the lines that changed, and has floats that are always numbers. <b>Part six</b> lists what went wrong and what this does
-  and doesn't show.</p>
+  within 1.1 to 3.5 times of C, has floats that are always numbers, runs on every core, runs other people's code
+  there safely with a budget that stops it at the same line on every run, runs it again on only the lines that
+  changed, and then asks what that is worth. <b>Part six</b> lists what went wrong and what this does and doesn't
+  show.</p>
 </section>
 
 <div class="part">
@@ -447,7 +445,7 @@ fn main() {
   function can therefore run for any number of iterations in constant stack space.</p>
   <h3>What it leaves out</h3>
   <p>Lumen is small by design. It has no floating point, no modules and no exceptions. Strings are immutable byte
-  strings. Integers are 31 bits wide, not 32, for a reason chapter 4 explains. Until part four it had no mutable
+  strings. Integers are 31 bits wide, not 32, for a reason <a href="#memory">chapter 4</a> explains. Until part four it had no mutable
   data at all; arrays arrived when a SAT solver needed them. The full definition is in
   <a href="https://github.com/igniting/the-ai-frontier/blob/main/SPEC.md">SPEC.md</a>, which is precise enough for
   someone to write a second implementation and check it against this one with the included scorer.</p>
@@ -548,7 +546,7 @@ fn main() {
   }
 }</pre>
     <figcaption><code>eq_imm</code> compares a variable with a constant. The numbers make names unique. A <code>#</code> marks a variable whose type means it can only ever
-    hold a plain number, never a pointer; chapter 4 explains why that matters.</figcaption>
+    hold a plain number, never a pointer; <a href="#memory">chapter 4</a> explains why that matters.</figcaption>
   </figure>
   <p>This form exists mainly for the garbage collector. With every intermediate value named, the compiler always
   knows where every pointer is. The same pass does three more things:</p>
@@ -605,9 +603,9 @@ fn main() {
   </figure>
   <p>Two things look strange, and both are deliberate. First, numbers are stored as <code>2n + 1</code>, so
   comparing with 0 means comparing with 1, and subtracting 1 means subtracting 3 and adding 1 back. That is how the
-  garbage collector tells numbers from pointers, the subject of chapter 4. Second, a comparison's result is packed
+  garbage collector tells numbers from pointers, the subject of <a href="#memory">chapter 4</a>. Second, a comparison's result is packed
   into a Lumen boolean only to be unpacked on the next line. That is the price of simple code generation, and
-  chapter 8 shows proved rewrite rules removing it.</p>
+  <a href="#proofs">chapter 8</a> shows proved rewrite rules removing it.</p>
 
   <h3>6 · The binary encoder</h3>
   <p>Finally the module is written out as bytes: a magic number, then sections for types, imports, functions,
@@ -715,7 +713,7 @@ fn main() {
   number and is left alone; an even field is a pointer and is followed.</p>
   <p>A collection costs time in proportion to the <i>live</i> data, not the garbage. If a collection leaves the
   heap more than half full, both semispaces double in size with <code>memory.grow</code>, so a program with a
-  growing data set doesn't spend all its time copying. Chapter 9 tunes that threshold and measures the cost.</p>
+  growing data set doesn't spend all its time copying. <a href="#campaign">Chapter 9</a> tunes that threshold and measures the cost.</p>
 
   <h3>The hard part: finding the roots</h3>
   <p>The collector needs every root, and because it moves objects, it must also <i>update</i> every root with the
@@ -735,13 +733,13 @@ fn main() {
   the callee does is store them in its own new frame.</p>
   <p>Types decide which variables need a slot. A variable of type <code>Int</code>, <code>Bool</code> or
   <code>()</code> can never hold a pointer, so it stays in a fast wasm local and the collector never sees it. Those
-  are the <code>#</code> variables in the IR in chapter 3. A-normal form completes the picture: because every
+  are the <code>#</code> variables in the IR in <a href="#compiler">chapter 3</a>. A-normal form completes the picture: because every
   intermediate result has a name, no pointer sits unnamed on wasm's operand stack while an allocation happens.
   Every pointer is in a named variable, and every pointer-holding variable is in a slot.</p>
   <p>New frames need clearing. A frame occupies memory that an earlier call used, so its slots start out holding
   that call's old pointers. If a collection happened before a slot was written, the collector would treat a stale
   address as a live object. Every function therefore clears its frame on entry with <code>memory.fill</code>.
-  Chapter 9 makes that cheaper, and chapter 23 shows the checks catching me getting it wrong.</p>
+  <a href="#campaign">Chapter 9</a> makes that cheaper, and <a href="#caught">chapter 24</a> shows the checks catching me getting it wrong.</p>
   <p>Root handling is the most error-prone part of any compiler with a moving collector. Forget to put one pointer
   in a slot before one call that allocates, and the program works until a collection happens at that moment,
   perhaps ten thousand allocations later. Bugs like that are why part two exists.</p>
@@ -783,7 +781,7 @@ fn main() {
   doesn't matter for an oracle.</p>
   <p>Sharing the front end has a cost: a bug in the parser or the type checker affects both sides alike, so
   differential testing cannot see it. Two other things cover those stages. Hand-written tests exercise each
-  language feature and error message. And chapter 7 adds a second front end, written separately in Lumen, which
+  language feature and error message. And <a href="#selfhost">chapter 7</a> adds a second front end, written separately in Lumen, which
   must produce the same syntax trees, types and error messages.</p>
 
   <h3>Random programs, well-typed by construction</h3>
@@ -808,7 +806,7 @@ fn main() {
     allocation. A missing root normally causes trouble only if a collection happens at the wrong moment. Under GC
     stress every moment is that moment. The collector also overwrites the space it just left, so a dangling pointer
     reads garbage at once;</li>
-    <li>compiled with <code>-O</code>, the optimizer from chapters 8 and 9;</li>
+    <li>compiled with <code>-O</code>, the optimizer from chapters <a href="#proofs">8</a> and <a href="#campaign">9</a>;</li>
     <li>compiled with <code>-O</code> and GC stress, in a <b>paranoid mode</b> where frames are poisoned when
     they are freed and the collector validates every root it sees.</li>
   </ol>
@@ -945,7 +943,7 @@ fn main() {
   <p>Still, one program is only one program, however large. The broader evidence is that the bootstrap check also
   compiles every example and a hundred or more random programs with both compilers, and requires identical binaries
   and identical error messages. That makes the Lumen compiler a second, independent implementation of the whole
-  compiler, front end included, and covers the blind spot described in chapter 5.</p>
+  compiler, front end included, and covers the blind spot described in <a href="#doubt">chapter 5</a>.</p>
 
   <div class="demo">
     <div class="demo-head"><span class="live">Live</span><span class="title">Run the bootstrap in this tab</span></div>
@@ -965,7 +963,7 @@ fn main() {
   </div>
   <p>This turned out to be the strictest test in the project. Any change to the JavaScript compiler that alters
   its output, even a harmless one, breaks the match until the Lumen compiler makes the same change. The self-hosted
-  compiler also became the largest benchmark for the performance work in chapter 9, compiling its own 3,362
+  compiler also became the largest benchmark for the performance work in <a href="#campaign">chapter 9</a>, compiling its own 3,362
   lines.</p>
 </section>
 
@@ -999,7 +997,7 @@ fn main() {
     scheduling, package dependencies, and the mathematics in part four.</p>
     <p>The two answers are not alike. If a formula is satisfiable, the solver can show an assignment, and anyone
     can check it by plugging it in. If it is unsatisfiable, the claim is that <i>no</i> assignment out of 2ⁿ works,
-    and checking that requires a proof. Chapter 13 explains how such proofs work.</p>
+    and checking that requires a proof. <a href="#certificate">Chapter 13</a> explains how such proofs work.</p>
   </div>
 
   <h3>From instructions to a formula</h3>
@@ -1055,7 +1053,7 @@ fn main() {
   <p>A SAT solver is a complicated program, and mine was written in the same session as everything else. If it
   had a bug, it could declare a wrong rewrite “proved”. To guard against that, the solver records every clause it
   learns while searching, and a separate, much simpler <i>proof checker</i> re-derives each one from the formula. The checker
-  shares no code with the solver. A rule is accepted only if its proof checks. Chapter 13 explains how that
+  shares no code with the solver. A rule is accepted only if its proof checks. <a href="#certificate">Chapter 13</a> explains how that
   checking works, because the theorem in part four relies on the same checker.</p>
   <p>The checker was checked too. It uses the same indexing technique as solvers (watched literals), so I wrote a
   deliberately naive checker to cross-check it. On the first test they disagreed, and the naive one was wrong: it
@@ -1114,7 +1112,7 @@ fn main() {
   The gate is a single command that runs everything built so far, and stops at the first failure:</p>
   <ul class="plain">
     <li>the full test suite, where every language test runs in the interpreter and four compiled builds;</li>
-    <li>4,500 freshly generated programs, each run the five ways from chapter 5;</li>
+    <li>4,500 freshly generated programs, each run the five ways from <a href="#doubt">chapter 5</a>;</li>
     <li>every planted bug, each of which must be caught, with new ones planted for each new optimization;</li>
     <li>every superoptimizer rule, re-proved and its proof re-checked;</li>
     <li>the self-hosting bootstrap;</li>
@@ -1149,7 +1147,7 @@ fn main() {
     <li><b>Turn self tail calls into loops.</b> A function that tail-calls itself now assigns the new arguments
     and jumps back to its start.</li>
     <li><b>Access arrays inline, and give no frame to functions in which nothing can trigger a collection.</b>
-    This step came later, prompted by the SAT solver in part four (chapter 14).</li>
+    This step came later, prompted by the SAT solver in part four (<a href="#payoff">chapter 14</a>).</li>
   </ol>
   <div class="table-wrap">
     <table class="t">
@@ -1173,7 +1171,7 @@ fn main() {
   2 re-mines rules for code that step 1 reshaped. Per-benchmark figures are in
   <a href="https://github.com/igniting/the-ai-frontier/blob/main/bench/history.json">bench/history.json</a>.</p>
   <p>After all ten steps, <code>sum_to</code> compiles to the code below. Compare it with the listing in
-  chapter 3:</p>
+  <a href="#compiler">chapter 3</a>:</p>
   <figure>
     <p class="listing-label">WebAssembly, -O</p>
     <pre class="listing">(func $sum_to (param $env i32) (param $n i32) (param $acc i32) (result i32)
@@ -1302,7 +1300,7 @@ fn main() {
   can't join A, because 1 + 3 = 4, so it goes to B. And 5 has nowhere to go: in A it would complete 1 + 4 = 5, in
   B it would complete 2 + 3 = 5. Every step was forced, so S(2) = 4. With three groups the game ends at 13, but the
   reasoning no longer runs in a straight line: some placements have to be guessed and later undone. Deducing and
-  guessing are the two things a SAT solver does, and chapter 12 returns to them.</p>
+  guessing are the two things a SAT solver does, and <a href="#solver">chapter 12</a> returns to them.</p>
 
   <h3>Why Schur asked</h3>
   <p>Schur's interest was not the puzzle. He was working on Fermat's Last Theorem, which says that
@@ -1332,7 +1330,7 @@ fn main() {
 <section class="chapter" id="encoding">
   <p class="chapter-label">11 · Part four</p>
   <h2>Turning a question into a formula</h2>
-  <p>To use a SAT solver, the question has to become a formula in the form described in chapter 8: an AND of
+  <p>To use a SAT solver, the question has to become a formula in the form described in <a href="#proofs">chapter 8</a>: an AND of
   clauses, each an OR of variables or their negations. The translation, called the <i>encoding</i>, is short.</p>
   <p><b>Variables.</b> One Boolean variable for each number and group: <i>x(i, c)</i> means “number i is in group
   c”. For 45 numbers and 4 groups that is 180 variables.</p>
@@ -1409,8 +1407,8 @@ fn main() {
     conflict, undo the most recent guess and try the other value. Every modern solver still has this loop at its
     core.</p>
   </div>
-  <p>The hand argument for S(2) = 4 in chapter 10 was unit propagation, step for step. Traced over the clauses of
-  chapter 11, it reads:</p>
+  <p>The hand argument for S(2) = 4 in <a href="#schur">chapter 10</a> was unit propagation, step for step. Traced over the clauses of
+  <a href="#encoding">chapter 11</a>, it reads:</p>
   <div class="table-wrap">
     <table class="t trace">
       <thead><tr><th>clause</th><th>what it forces</th></tr></thead>
@@ -1428,7 +1426,7 @@ fn main() {
     </table>
   </div>
   <p>No guess was needed: propagation alone reaches a conflict. Given this formula, the Lumen solver's entire proof
-  that 1 to 5 cannot be split is therefore a single line, <code>0</code>, meaning “the empty clause follows”. Chapter 13 explains why that one line is a checkable proof.</p>
+  that 1 to 5 cannot be split is therefore a single line, <code>0</code>, meaning “the empty clause follows”. <a href="#certificate">Chapter 13</a> explains why that one line is a checkable proof.</p>
 
   <h3>Learning from conflicts</h3>
   <p>For three groups and 14 numbers, propagation stalls before reaching a conflict, and the solver must guess.
@@ -1488,14 +1486,14 @@ fn main() {
   </ul>
   <p>Unlike production solvers, this one never deletes learned clauses. Those solvers regularly discard clauses
   that have stopped being useful, because every kept clause slows propagation. Keeping all of them costs
-  speed, but it keeps the proof simple, as chapter 13 shows, and at 255,663 clauses for S(4) it is still
+  speed, but it keeps the proof simple, as <a href="#certificate">chapter 13</a> shows, and at 255,663 clauses for S(4) it is still
   manageable.</p>
 
   <h3>A solver in Lumen needed a language change</h3>
   <p>All of this updates arrays in place: assignments, watch lists, the heap. Lumen had no mutable data, so the
   language had to change first, and the change went through the same gate as everything else. <code>Array</code>
   was added to both compilers, the interpreter, the spec, the fuzzer and the planted bugs.</p>
-  <p>Mutation brought a classic trap with it. The type checker generalizes <code>let</code> bindings, as chapter 3
+  <p>Mutation brought a classic trap with it. The type checker generalizes <code>let</code> bindings, as <a href="#compiler">chapter 3</a>
   explains, and that is unsound for mutable values:</p>
   <figure>
     <pre class="listing">let a = array_make(1, []);   <span class="c">// an array holding one empty list: a list of what?</span>
@@ -1544,17 +1542,17 @@ match array_get(a, 0) {      <span class="c">// read it back as a list of String
   propagation can confirm against the clauses the solver had at the time. The solver never deletes a clause, and
   the checker keeps every clause it accepts, so the checker always has at least those clauses available. It never
   needs to know how the solver found a clause, only that the clause follows. At the empty clause there is nothing to
-  assume, so the checker just propagates. For 1 to 5 in two groups, that propagation is the trace in chapter 12,
+  assume, so the checker just propagates. For 1 to 5 in two groups, that propagation is the trace in <a href="#solver">chapter 12</a>,
   which is why the one-line proof <code>0</code> is complete.</p>
   <p>The checker, <a href="https://github.com/igniting/the-ai-frontier/blob/main/superopt/rup.js"><code>superopt/rup.js</code></a>, is 86 lines of JavaScript. It was written for the superoptimizer's
-  proofs in chapter 8 and shares no code with either solver. It was itself cross-checked against a deliberately
+  proofs in <a href="#proofs">chapter 8</a> and shares no code with either solver. It was itself cross-checked against a deliberately
   naive implementation, on real proofs and on proofs corrupted on purpose.</p>
 
   <h3>What you have to trust</h3>
   <p>Put together, the proof of S(4) = 44 rests on four things:</p>
   <ul class="plain">
     <li><b>the formula means the problem</b>: two encoders, written separately, produce identical clauses;</li>
-    <li><b>the symmetry argument</b>: one line of reasoning, given in chapter 11;</li>
+    <li><b>the symmetry argument</b>: one line of reasoning, given in <a href="#encoding">chapter 11</a>;</li>
     <li><b>about 170 lines of checking code</b>: the 86-line proof checker, and 80 lines in
     <a href="https://github.com/igniting/the-ai-frontier/blob/main/proofs/schur-core.js"><code>proofs/schur-core.js</code></a> that parse the formula and the proof, hold the second encoder, compare the two
     encodings and check the split against the definition;</li>
@@ -1598,7 +1596,7 @@ match array_get(a, 0) {      <span class="c">// read it back as a list of String
   proof of 255,663 steps, about 22 MB. The checker accepts every step in another three to four minutes. Three
   groups need 34 learned clauses and four need about 7,500 times as many, which gives a sense of why S(5) needed a
   computing cluster and a two-petabyte proof.</p>
-  <p>Is two minutes fast? For a reference point, the JavaScript solver from chapter 8 implements the same
+  <p>Is two minutes fast? For a reference point, the JavaScript solver from <a href="#proofs">chapter 8</a> implements the same
   algorithm, with floating-point activities, and runs under V8's optimizing compiler. It refutes the same formula in
   139 seconds with 233,704 conflicts; the Lumen solver, compiled with <code>-O</code>, took 116 seconds with
   255,663 (single runs on the same machine, in Node). The two make slightly different choices, so they search
@@ -1622,7 +1620,7 @@ match array_get(a, 0) {      <span class="c">// read it back as a list of String
   now compiled in place: compare the index with the length stored in the header, then load or store.</p>
   <p><b>No frame where nothing can collect.</b> The solver has many tiny accessor functions, such as one
   that returns the assignment array from the solver record. Each one pushed a shadow-stack frame on entry and
-  popped it on exit, as chapter 4 requires of any function that holds a pointer. But the frame exists only so
+  popped it on exit, as <a href="#memory">chapter 4</a> requires of any function that holds a pointer. But the frame exists only so
   the collector can find and update that pointer, and a collection can only happen during an allocation. If
   nothing a function does while it is running can allocate, its pointers can stay in plain wasm locals. The
   analysis has to be careful about calls, and at first I wasn't. Two properties are involved:</p>
@@ -1638,7 +1636,7 @@ match array_get(a, 0) {      <span class="c">// read it back as a list of String
   which allocates. But <code>append</code> calls <code>reverse</code> and then carries on using its other argument.
   Treating <code>reverse</code> as never-collecting let <code>append</code> drop its frame while that argument was
   still live, and a collection inside <code>rev_append</code> then moved the list out from under it. The paranoid
-  mode from chapter 5 caught it on one of the test suite's fixed random programs, as an invalid pointer on the
+  mode from <a href="#doubt">chapter 5</a> caught it on one of the test suite's fixed random programs, as an invalid pointer on the
   shadow stack, before anything was committed. The two properties are now computed separately, in the same way.
   Start by assuming that every function qualifies, then repeatedly remove any function that breaks the rule under
   the current assumptions, until nothing changes. What remains is the largest set consistent with the rule,
@@ -1646,7 +1644,7 @@ match array_get(a, 0) {      <span class="c">// read it back as a list of String
   fuzzer must catch.</p>
   <p>Together the two changes cut the solver's executed instructions by 30% and its running time by 27% on the
   search for a split of 1 to 44. It prints a byte-identical 255,663-step proof. Every other benchmark except
-  <code>fib</code> executes fewer instructions too; this is step 9 in chapter 9.</p>
+  <code>fib</code> executes fewer instructions too; this is step 9 in <a href="#campaign">chapter 9</a>.</p>
 </section>
 
 <div class="part">
@@ -1655,8 +1653,9 @@ match array_get(a, 0) {      <span class="c">// read it back as a list of String
   <p class="part-intro">After everything above was finished, I was asked what language I would design if I could
   start again, and then to build it. This part is about that language, Lumen 2. It covers what I changed and why,
   how it proves its own array accesses safe, how it manages memory with no garbage collector, how it checks its
-  compiler's output on every compile, how it proved the same theorem without mutation, how it compiles itself,
-  and how its JavaScript compiler was replaced by one written in Lumen 2.</p>
+  compiler's output on every compile, how it proved the same theorem without mutation, how it came to compile
+  itself with no JavaScript compiler left, how fast it is next to C, how it runs other people's code safely, and
+  again on only what changed, and what that turned out to be worth.</p>
 </div>
 
 <section class="chapter" id="lumen2">
@@ -1671,9 +1670,9 @@ match array_get(a, 0) {      <span class="c">// read it back as a list of String
     <li><b>Its safety checks happen at run time.</b> Every array access and every division is checked as the
     program runs. The SAT solver in Part four performs millions of bounds checks that can never fail. I knew that,
     but the language gave me no way to say it, and the compiler no way to use it.</li>
-    <li><b>Its memory model fought the problem.</b> The garbage collector in chapter 4 was the hardest part of the
+    <li><b>Its memory model fought the problem.</b> The garbage collector in <a href="#memory">chapter 4</a> was the hardest part of the
     compiler to get right. A copying collector also can't update anything in place, so the SAT solver needed
-    mutable arrays, a language change (chapter 12) that gave up some of Lumen's purity.</li>
+    mutable arrays, a language change (<a href="#solver">chapter 12</a>) that gave up some of Lumen's purity.</li>
   </ul>
   <p>Testing had taught me two more lessons. Properties like “reversing a list twice gives it back” lived in
   external tools rather than in the language. And the compiler's output was trusted except where tests happened to
@@ -1732,7 +1731,7 @@ fn main() {
 
   <div class="bg">
     <p class="bg-label">Background · Effect types</p>
-    <p>The checker extends the unification of chapter 3 to sets of effects. An effect set is written as a list of
+    <p>The checker extends the unification of <a href="#compiler">chapter 3</a> to sets of effects. An effect set is written as a list of
     labels, optionally followed by a variable that stands for “and possibly more”, so <code>{output | e}</code>
     means “output, and whatever <code>e</code> turns out to be”. Unifying two such <i>rows</i> matches the labels
     they share and lets each variable absorb the labels only the other side has. Inference stays fully automatic,
@@ -1808,7 +1807,7 @@ property sort_is_sorted(xs: List&lt;Int&gt;) { sorted(sort(xs)) }</pre>
   safe.</p>
   <p>A SAT solver knows only true and false, so the integers have to become booleans. This is called
   <b>bit-blasting</b>. Each integer variable becomes a vector of boolean variables, one per bit, in two's
-  complement. Each operation becomes a circuit written as clauses, in the style of chapter 11. An addition is a
+  complement. Each operation becomes a circuit written as clauses, in the style of <a href="#encoding">chapter 11</a>. An addition is a
   chain of full adders, where each output bit and carry is a few clauses over the input bits. A comparison
   <code>a &lt; b</code> becomes <code>a − b &lt; 0</code>: a subtraction, then a look at the sign bit. The vectors are about 66 bits wide, wide enough that no sum of
   64-bit values in an obligation can overflow, so the bit-level arithmetic agrees with real integer arithmetic.
@@ -1818,8 +1817,8 @@ property sort_is_sorted(xs: List&lt;Int&gt;) { sorted(sort(xs)) }</pre>
   the formula and writes a DRUP proof. A separate RUP checker,
   <a href="https://github.com/igniting/the-ai-frontier/blob/main/lumen2/compiler/33-rup.lm"><code>lumen2/compiler/33-rup.lm</code></a>, checks
   that proof before the operation is treated as safe. (Both were JavaScript at first, like the rest of the
-  compiler until <a href="#lumen2-port">chapter 21</a>.) The two share no code with each other or with Lumen's
-  solver and checker. For <code>safe_get</code>, the proof is the one-line proof <code>0</code> from chapter 13:
+  compiler until <a href="#lumen2-port">chapter 20</a>.) The two share no code with each other or with Lumen's
+  solver and checker. For <code>safe_get</code>, the proof is the one-line proof <code>0</code> from <a href="#certificate">chapter 13</a>:
   unit propagation alone reaches the contradiction, so the solver learns nothing (zero lemmas).</p>
   <p>When the formula is satisfiable, the solver's assignment is a counterexample. The checker then tries again
   with the numbers restricted to small values, so the counterexample it reports is easy to read.</p>
@@ -1868,10 +1867,10 @@ fn main() {
   access. So the proofs are checked twice. Each refutation passes the RUP checker before the compiler uses it.
   And the reference interpreter re-checks every proved fact as the program runs, while the compiled code does not.
   If a proof were wrong, the two would disagree on some program, and the fuzzer would see it. Two of the planted
-  bugs in chapter 18 test exactly this: a checker that assumes an <code>if</code>'s condition in its
+  bugs in <a href="#certified">chapter 18</a> test exactly this: a checker that assumes an <code>if</code>'s condition in its
   <code>else</code> branch too, and an adder circuit that drops its carry. The run-time re-check catches both. It
-  has also caught two real mistakes in the checker, described in chapter 23.</p>
-  <p>How far does this go? Chapter 17 ends with a complete program that the checker proves cannot stop with an
+  has also caught two real mistakes in the checker, described in <a href="#caught">chapter 24</a>.</p>
+  <p>How far does this go? <a href="#perceus">Chapter 17</a> ends with a complete program that the checker proves cannot stop with an
   error.</p>
 
   <h3>Facts about every element</h3>
@@ -1892,19 +1891,19 @@ fn main() {
   that each literal is in range.</p>
   <p>The checker still has clear limits. Its facts are linear arithmetic over integers and array lengths, plus
   one fact about every element of an array. It knows nothing about list lengths, it cannot state a fact about
-  particular positions in an array, and it never invents an invariant. In the SAT solver of chapter 19, it proves
+  particular positions in an array, and it never invents an invariant. In the SAT solver of <a href="#lumen2-schur">chapter 19</a>, it proves
   19 of the 20 divisions safe, and all of the input parser's indexing. It does not prove the 27 accesses to the
   solver's state arrays. Those arrays sit inside a record, whose fields cannot be refined, and each mixes several
   kinds of number: the clause array holds each clause's length followed by its literals. The fact that would make
   an access safe, "the number after a clause's start is a literal", is about a position, not about every
   element. Those accesses keep their run-time checks, and the solver's functions have <code>fail</code> in their
-  types. Chapter 19 shows what I did instead.</p>
+  types. <a href="#lumen2-schur">Chapter 19</a> shows what I did instead.</p>
 </section>
 
 <section class="chapter" id="perceus">
   <p class="chapter-label">17 · Part five</p>
   <h2>Memory without a garbage collector</h2>
-  <p>Lumen's copying collector, from chapter 4, finds live objects by following pointers from the roots, and it
+  <p>Lumen's copying collector, from <a href="#memory">chapter 4</a>, finds live objects by following pointers from the roots, and it
   needs the shadow stack to know where the roots are. Lumen 2 has no collector. Every heap object carries a count
   of the references to it, and it is freed the moment the count reaches zero.</p>
 
@@ -1982,7 +1981,7 @@ fn main() {
   passes on, is <i>borrowed</i>. The caller keeps its reference for the duration of the call, so neither side
   counts anything. The compiler infers which parameters qualify. And when a function takes apart a cell that
   nothing else refers to, it can <i>move</i> the fields out (<code>unpack</code>) instead of taking a new reference
-  to each field and then releasing the cell. Chapter 19 shows how much each of these was worth.</p>
+  to each field and then releasing the cell. <a href="#lumen2-schur">Chapter 19</a> shows how much each of these was worth.</p>
 
   <h3>Checking it</h3>
   <p>Reference counting fails quietly. Freeing too early usually works anyway, because freed memory still holds
@@ -2135,17 +2134,17 @@ fn main() {
   <p>The other seventeen planted bugs produce code that passes every certificate, so they need the dynamic checks
   to catch them. They include reusing a cell that is shared, updating a shared array in place, dropping the
   overflow check on addition, an off-by-one in the overflow bound for multiplication by a constant, and
-  applying a rewrite rule from chapter 19 without checking its side condition. The
+  applying a rewrite rule from <a href="#lumen2-schur">chapter 19</a> without checking its side condition. The
   differential runs catch them, as do the leak check and the interpreter's run-time re-check of proofs. Each is
   caught by one of the first 142 generated programs. With every feature in place, 3,000 generated programs ran with
   no disagreement, and CI runs 1,000 fresh ones on every push. Fresh programs have found two false proofs in the
-  refinement checker (chapter 23).</p>
+  refinement checker (<a href="#caught">chapter 24</a>).</p>
 </section>
 
 <section class="chapter" id="lumen2-schur">
   <p class="chapter-label">19 · Part five</p>
   <h2>The same theorem, without mutation</h2>
-  <p>The last test of the new language was to prove S(4) = 44 again. Lumen's solver from chapter 12 keeps its
+  <p>The last test of the new language was to prove S(4) = 44 again. Lumen's solver from <a href="#solver">chapter 12</a> keeps its
   state in arrays and changes them in place. Lumen 2 has no mutation at all. So how do you write a SAT solver,
   which updates its assignment, watch lists and activity scores constantly?</p>
   <p>You thread the state. The solver's whole state is one record of arrays and counters. Every function takes
@@ -2225,7 +2224,7 @@ fn main() {
   push, next to Lumen's.</p>
 
   <h3>The superoptimizer, again</h3>
-  <p>I also rebuilt chapter 8's superoptimizer for Lumen 2, with new code: it searches the wasm Lumen 2 emits for
+  <p>I also rebuilt <a href="#proofs">chapter 8</a>'s superoptimizer for Lumen 2, with new code: it searches the wasm Lumen 2 emits for
   windows of up to seven instructions with a cheaper equivalent, and proves each one with Lumen 2's own solver and
   checker. One improvement made the difference. A rule found with concrete constants is generalized: the
   constants become symbols, and the search looks for the weakest side condition under which the rule still holds.
@@ -2262,7 +2261,7 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
   below the number of clauses. With these types, the checker proves all 360 of the program's obligations in about
   16 seconds, and no function in it has <code>fail</code> in its type. Input that would break an invariant, such as
   a literal larger than the number of variables, is reported as an error rather than trusted.</p>
-  <p>The language needed two additions for it. One was element refinements (chapter 16). The other was
+  <p>The language needed two additions for it. One was element refinements (<a href="#refinements">chapter 16</a>). The other was
   reading input a line at a time: the proof is 22.6 MB, a Lumen 2 string holds at most 16 MB, so
   <code>read_input</code> could not hold it, and a new builtin, <code>read_line</code>, reads one line at a time.
   The program needed one fix. The first version took fifty times as long as the JavaScript checker. When a clause
@@ -2273,7 +2272,7 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
   still holds, made the updates happen in place again.</p>
   <p>On S(4) it checks all 255,663 lemmas in 529 seconds, on a machine busy with other work, where
   <code>src/rup.js</code> took 304. On smaller proofs it takes 1.5 to 2 times as long as the JavaScript checker.
-  CI runs it on every push, compiled by the self-hosted compiler of chapter 20, so the WebAssembly that checks the
+  CI runs it on every push, compiled by the self-hosted compiler of <a href="#lumen2-selfhost">chapter 20</a>, so the WebAssembly that checks the
   proof comes from that compiler's code generator rather than the reference compiler's.</p>
 
 </section>
@@ -2281,7 +2280,7 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
 <section class="chapter" id="lumen2-selfhost">
   <p class="chapter-label">20 · Part five</p>
   <h2>The compiler compiles itself, again</h2>
-  <p>Chapter 7 ended Lumen's story with a compiler for the language written in the language, and Lumen 2 ends the
+  <p><a href="#selfhost">Chapter 7</a> ended Lumen's story with a compiler for the language written in the language, and Lumen 2 ends the
   same way. <a href="https://github.com/igniting/the-ai-frontier/blob/main/lumen2/selfhost/lumen2c.lm"><code>lumen2c.lm</code></a>
   is about 2,800 lines of Lumen 2. It reads a program on standard input and writes a WebAssembly module on standard
   output, with the same stages as the reference compiler: a lexer and parser, type inference with traits and
@@ -2301,7 +2300,7 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
   along the depth-first search, and it works the same way.</p>
 
   <h3>The fixed point</h3>
-  <p>The test is the one from chapter 7. The reference compiler builds stage 1. Stage 1 compiles
+  <p>The test is the one from <a href="#selfhost">chapter 7</a>. The reference compiler builds stage 1. Stage 1 compiles
   <code>lumen2c.lm</code> into stage 2, and stage 2 compiles it into stage 3. If the compiler is right, stages 2
   and 3 are the same bytes: the compiler, compiled by itself, reproduces itself. Stage 1 differs from them,
   because it comes from a different compiler with different optimizations. The demo runs all three stages in
@@ -2329,30 +2328,17 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
   compared with the reference interpreter on every example, the SAT solver, the proof checker and 1,000 generated programs. Every
   one printed the same output and stopped with the same error. CI repeats the bootstrap and a smaller version of
   that comparison on every push.</p>
-  <p>The comparison found one bug. A trait method called on a type that inference leaves undetermined, as in
-  <code>size([])</code>, has no impl to call. Both compilers default the type to <code>()</code>, and the call can
-  never be reached with a value, so the reference compiler emits <code>unreachable</code> there. Now
-  <code>lumen2c</code> does too. Writing it also found a bug in the reference compiler. Its lowering passes
-  continuations, so its stack depth grows with the number of bindings in a function. A list literal of about
-  800 elements overflows it, and so did <code>lumen2c</code>'s table of runtime routines, until each routine
-  became a function of its own.</p>
+  <p>The comparison found one bug, in a trait method called on a type that inference leaves undetermined, and
+  writing the compiler found one in the reference compiler, whose lowering ran out of stack on a list literal of
+  about 800 elements.</p>
+  <p>This compiler checks types but not effects or refinements, keeps every run-time check, and makes none of the
+  optimizations of <a href="#lumen2-schur">chapter 19</a> except tail calls, so the SAT solver it compiles takes 19.6 seconds where the
+  reference compiler's build takes 2.4. It leans on the reference compiler, which was JavaScript, to reject bad
+  programs.</p>
 
-  <h3>A second compiler, not a copy</h3>
-  <p>It checks types but not effects or refinements, so it relies on the reference compiler to reject invalid
-  programs. It keeps every run-time check, and it makes none of chapter 19's optimizations except tail calls.
-  The SAT solver it compiles takes 19.6 seconds for the split of 1 to 44, against 2.4 from the reference
-  compiler, with the same output. That matches the 19.0 seconds the reference compiler took before those five
-  optimizations. It compiles the showcase programs too, and they print exactly what the reference compiler's
-  modules print.</p>
-</section>
-
-<section class="chapter" id="lumen2-port">
-  <p class="chapter-label">21 · Part five</p>
-  <h2>Retiring the JavaScript compiler</h2>
-  <p>The compiler in chapter 20 compiles itself, but it skips effects, refinements and every optimization, so it
-  leans on the reference compiler to reject bad programs. The reference compiler was JavaScript, about 5,500
-  lines in <code>lumen2/src</code>. The last step was to make Lumen 2's real compiler a Lumen 2 program, every
-  pass of it, and then delete the JavaScript one. The result is
+  <h3 id="lumen2-port">Retiring the JavaScript compiler</h3>
+  <p>That reference compiler was about 5,500 lines of JavaScript in <code>lumen2/src</code>. The last step was to
+  make Lumen 2's real compiler a Lumen 2 program, every pass of it, and then delete the JavaScript one. The result is
   <a href="https://github.com/igniting/the-ai-frontier/tree/main/lumen2/compiler"><code>lumen2/compiler/</code></a>:
   about 8,200 lines in 25 files, one per pass, and a 1.5 MB WebAssembly module that is that source compiled by
   itself.</p>
@@ -2364,8 +2350,6 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
   pass was written. The corpus was every Lumen 2 program in the repository (the port's own source among them),
   200 generated programs, 600 programs broken on purpose, which must fail with the same message at the same
   place, and the 270 programs the test suite compiles.</p>
-
-  <h3>Copying the accidents</h3>
   <p>Byte-identical output means reproducing the original's accidents, not just its algorithms. The SAT solver
   ranks variables by activities that JavaScript stores as floating-point numbers, and every decision it makes
   follows a comparison between two of them. Lumen 2 had no floating point then, so the port computes IEEE 754 doubles
@@ -2374,31 +2358,14 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
   maps iterate in insertion order, and the order of drops, of captured variables and of the per-type functions in
   the module all follow from that, so the port keeps ordered lists wherever the original had a map. Positions
   differ too: JavaScript counts UTF-16 units and Lumen 2 counts bytes, so the compiler reports byte offsets
-  and the host turns them into characters.</p>
-  <p>The comparison found a bug in the original. A refined <code>let</code> inside a lambda crashed it, because
-  the refinement's bound variable looked like a variable the lambda captured. Both compilers were fixed the same
-  way, and a regression test was added. Compiling the port also hit the stack limit of chapter 20 again: the
-  JavaScript compiler's lowering ran out of stack on the port's table of runtime routines, until each routine
-  became a function of its own.</p>
-
-  <h3>Making it fast enough</h3>
-  <p>The first complete port proved obligations five to thirty times more slowly than the original. V8 profiles
-  WebAssembly by function name, and the compiler's modules carry their names, so the profile pointed at the
-  causes. Inner loops of the SAT solver and the proof checker were local functions that captured the whole
-  solver state, so every clause visit allocated a closure. The exact double multiplication went through general
-  bignum division, where splitting the mantissas into 26-bit halves keeps every product within 64 bits. Clauses
-  lived in an array of arrays, so reading one meant taking it out and putting it back. They now share one flat
-  array of literals. The proof checker removed duplicate literals with a quadratic scan, which one pass over a
-  mark per variable replaces. These changes left the output unchanged and brought <code>examples/refine.lm</code>
-  from 5.1 to 1.9 seconds, against 1.1 for the JavaScript compiler.</p>
-  <p>The tests needed one more thing. The JavaScript compiler had kept proved queries in memory for the life of the
-  process, so the thousand generated programs in the test suite rarely proved the same fact twice. The port runs
-  as a fresh instance for each program, so it asks its host instead. Before proving a query it prints it, marked
-  with byte 1, and reads the answer with <code>read_line</code>; after proving one it prints the result. The host
-  answers from its own table. Proofs are deterministic, so the table changes only the time taken, and a program
-  checks in about 0.1 seconds once the queries it shares with earlier programs are known. The first version of the
-  host treated every output chunk that began with byte 1 as a message. One 4,096-byte chunk of a compiled module
-  began with byte 1, and the engine rejected the module, which is how the bug surfaced.</p>
+  and the host turns them into characters. The comparison also found a bug in
+  the original: a refined <code>let</code> inside a lambda crashed it, and both compilers were fixed the same way.</p>
+  <p>The first complete port proved obligations five to thirty times more slowly than the original. The profile
+  pointed at closures allocated in the solver's inner loops, a general bignum division in the exact multiplication
+  of doubles, clauses kept in an array of arrays, and a quadratic scan for duplicate literals. With those fixed,
+  <code>examples/refine.lm</code> checks in 1.9 seconds, against 1.1 for the JavaScript compiler. Each program now
+  compiles in a fresh instance, so the compiler asks its host about queries it proved before: proofs are
+  deterministic, so the answers change only the time taken.</p>
 
   <h3>The fixed point, for real</h3>
   <p>The JavaScript compiler built the first <code>lumen2c.wasm</code> from the port's source. That module
@@ -2431,7 +2398,7 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
 </section>
 
 <section class="chapter" id="lumen2-speed">
-  <p class="chapter-label">22 · Part five</p>
+  <p class="chapter-label">21 · Part five</p>
   <h2>How fast is it, next to C?</h2>
   <p>With the compiler written in itself, I suggested the usual next step for a compiler, and was told: “Don't
   think in terms of compiler - think in terms of what language can achieve and how fast it can solve complex
@@ -2467,7 +2434,7 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
     </table>
   </div>
   <p class="caption">Best of three runs on one core of a 2.1 GHz Xeon, Node 22, clang 18. “Before” is the same
-  Lumen 2 source compiled by the compiler as it was at the end of chapter 21. Every version of a program prints
+  Lumen 2 source compiled by the compiler as it was at the end of <a href="#lumen2-port">chapter 20</a>. Every version of a program prints
   the same output, and <code>lumen2/bench/run.js</code> checks that it does.</p>
 
   <h3>Where the time went</h3>
@@ -2479,7 +2446,7 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
   helpers returned pairs and every pair was a heap object. A function that returns a tuple now returns its fields
   as several WebAssembly values, and a tuple built and taken apart in one function stays in local variables.
   The same program made 24 allocations after that.</p>
-  <p><b>Proved, but still checked.</b> Chapter 16's checker proves array accesses in bounds and takes away their
+  <p><b>Proved, but still checked.</b> <a href="#refinements">Chapter 16</a>'s checker proves array accesses in bounds and takes away their
   <code>fail</code> effect, but the compiled code still tested every index. A proved operation now has no
   run-time check. Paranoid mode keeps the checks, so if a proof were wrong, the differential tests would see the
   two modes disagree.</p>
@@ -2493,7 +2460,7 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
   a list, a tuple or a closure, and an array read out of another array.</p>
   <p><b>A list walk that wasn't free.</b> N-queens checks each square against a list of the queens placed so far.
   The function that walks the list only reads it, yet it was paying for two reference count updates per element.
-  Borrow inference (chapter 17) gave up on a parameter whenever a recursive tail call passed it something the
+  Borrow inference (<a href="#perceus">chapter 17</a>) gave up on a parameter whenever a recursive tail call passed it something the
   function did not own, and the list's tail, read out of the borrowed list, counted as that. The rule now looks
   at where the value came from, and the walk touches no counts at all.</p>
   <p><b>Branches the processor cannot predict.</b> Edit distance takes the minimum of three numbers for every
@@ -2543,7 +2510,7 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
   from memory of its own, while the C threads share <code>malloc</code>.</p>
 
   <h3>The theorem again, on every core</h3>
-  <p>The hardest problem in this project is still S(4) = 44 (chapter 19). Its slowest step is the refutation of
+  <p>The hardest problem in this project is still S(4) = 44 (<a href="#lumen2-schur">chapter 19</a>). Its slowest step is the refutation of
   1..45, which took 153 seconds on one core, and checking that refutation took 316 more. Cube and conquer splits
   the formula into parts that can be refuted separately. Fixing the groups of 3, 4, 5 and 6 (1 and 2 are placed
   already) gives 256 cubes, and <code>par_map</code> refutes them on every core, each with the unchanged solver.
@@ -2558,10 +2525,75 @@ trail: Array&lt;{x: Int | 2 &lt;= x &amp;&amp; x &lt; 2 * n + 2}&gt;</pre>
   seconds to check. After each cube, its clauses are deleted, a standard part of the DRUP format that the
   checker now supports. The four cores then added a factor of 3.7 to the solving, and the proof runs in CI on
   every push, next to the sequential one.</p>
+
+  <h3 id="lumen2-floats">Floats that are always numbers</h3>
+  <p>Later, asked “What next in this project?”, I named the limitation that every section had come to end on:
+  Lumen 2 had no floating point. The one real design decision was what to do about infinity and NaN. In C,
+  JavaScript or Python, a division by zero or an overflow quietly produces one, and a NaN then compares unequal to
+  everything, itself included, and spreads through every result it touches. Lumen 2 already refused to let
+  integers wrap silently, so a <code>Float</code> follows the same rule: it is an IEEE 754 double that is always
+  finite. An operation whose result would be infinite stops the program with <code>float overflow</code>, and
+  <code>x / 0.0</code> stops with <code>division by zero</code>. With finite operands there is then no way to make
+  a NaN, so equality, ordering and sorting work on floats as on any other type, and a result is the same bits on
+  every machine and every thread.</p>
+  <figure>
+    <pre class="listing">fn mean(xs: List&lt;Float&gt;) -&gt; Float { fold(xs, 0.0, |acc, x| acc + x) / int_to_float(length(xs)) }
+
+mean([1.5, 2.5, 3.0])     <span class="c">// 2.3333333333333335</span>
+0.1 + 0.2                 <span class="c">// 0.30000000000000004</span>
+1e308 * 10.0              <span class="c">// runtime error: float overflow</span></pre>
+  </figure>
+  <p>Arithmetic takes two integers or two floats, never one of each, and an operator whose operands are still
+  unknown waits until its top-level function is finished; one still unknown then is an integer, so every program
+  written before floats keeps its types. The compiler, which uses no floats itself, rounds a literal such as
+  <code>0.1</code> to the nearest double exactly, with the bignums its refinement checker already had. On 600
+  literals, ties between adjacent doubles and subnormals among them, it agrees with JavaScript's
+  <code>Number</code> on every bit.</p>
+  <p>On the two usual benchmarks of floating point, Lumen 2 takes 2.8 and 3.5 times as long as C:</p>
+  <div class="table-wrap">
+    <table class="t">
+      <thead><tr><th>program</th><th style="text-align:right">C</th><th style="text-align:right">C, WebAssembly</th><th style="text-align:right">Lumen 2</th><th style="text-align:right">Lumen 2 / C</th></tr></thead>
+      <tbody>
+        <tr><td>n-body, 5,000,000 steps</td><td class="num">0.25 s</td><td class="num">0.31 s</td><td class="num">0.70 s</td><td class="num">2.8×</td></tr>
+        <tr><td>spectral norm, n = 3,000</td><td class="num">0.47 s</td><td class="num">0.47 s</td><td class="num">1.63 s</td><td class="num">3.5×</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="caption">Best of three on one core of the same machine. Each Lumen 2 program does the same
+  floating-point operations as the C one, in the same order, and prints the same digits: −0.169075164 and
+  −0.169087605 for n-body, the published reference values.</p>
+  <p>The first version tested every float result for being finite. But an infinity or a NaN stays one through
+  <code>+</code>, <code>-</code> and <code>*</code>, so a result whose only use is the next such operation needs no
+  test of its own: the later test fails exactly when the earlier one would have. In
+  <code>dx * dx + dy * dy + dz * dz</code> only the last addition is tested now, and n-body went from 0.75 to 0.55
+  seconds. Spectral norm gained from integers instead: a product of two integers that fit in 32 bits cannot
+  overflow, so it needs no 64-bit division to check, and it went from 2.2 to 1.6 seconds.</p>
+  <p>A parallel sum of floats is where C and Lumen 2 differ most. Floating-point addition does not associate, so
+  the answer depends on how the terms are grouped, and with OpenMP's <code>reduction</code> the grouping depends on
+  the number of threads:</p>
+  <div class="table-wrap">
+    <table class="t">
+      <thead><tr><th style="text-align:right">threads</th><th style="text-align:right">C, OpenMP reduction</th><th style="text-align:right">Lumen 2, par_map</th></tr></thead>
+      <tbody>
+        <tr><td class="num">1</td><td class="num">0.69314713056010635</td><td class="num">0.6931471305599604</td></tr>
+        <tr><td class="num">2</td><td class="num">0.69314713056006005</td><td class="num">0.6931471305599604</td></tr>
+        <tr><td class="num">3</td><td class="num">0.69314713056002475</td><td class="num">0.6931471305599604</td></tr>
+        <tr><td class="num">4</td><td class="num">0.69314713056005628</td><td class="num">0.6931471305599604</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="caption">The 10 million terms of 1 − 1/2 + 1/3 − …, in <code>lumen2/bench/sum-par.c</code> and
+  <code>sum-par.lm</code>.</p>
+  <p>The Lumen 2 program splits the terms into 1,000 blocks, which <code>par_map</code> sums, and adds up the
+  block sums in order. The blocks do not depend on the number of threads, and <code>par_map</code> returns their
+  sums in order, so the result is the same bits on one thread or four. A C programmer can get the same guarantee by
+  writing the loop that way. In Lumen 2, a parallel map cannot be written any other way.</p>
+  <p>What is missing is mostly a library: there are no <code>exp</code>, <code>log</code>, power or trigonometric
+  functions yet.</p>
 </section>
 
 <section class="chapter" id="lumen2-transform">
-  <p class="chapter-label">23 · Part five</p>
+  <p class="chapter-label">22 · Part five</p>
   <h2>Other people's code, on every core</h2>
   <p>After the parallel proof came a fair question: “But this should be provable in C as well, right?” It should.
   Nothing about S(4) needs Lumen 2, and a C solver split into the same cubes would prove it faster. What Lumen 2
@@ -2644,126 +2676,19 @@ error: `transform` can use randomness, but a transform may only compute (and fai
   so I took it out again. Together, the three changes brought the transform's run from 3.4 to 2.5 seconds on one
   thread, and from 1.9 to 1.4 seconds on four.</p>
   <p>What is left is mostly structure. The main thread reads the lines and writes the output while the other
-  threads wait, so four threads give 1.8 times the speed of one, not 4. Without floating point, a transform could
-  handle money exactly, as decimals in hundredths, but not parse a measurement (chapter 24 adds floats). A quoted CSV field cannot hold
-  a line break, because lines are split first. And nothing limits a transform's time: one that loops forever
-  runs forever, though its memory stops at the WebAssembly memory's 1 GB (chapter 25 adds a budget).</p>
-</section>
+  threads wait, so four threads give 1.8 times the speed of one, not 4. A quoted CSV field cannot hold a line
+  break, because lines are split first. And at first nothing limited a transform's time: one that looped forever
+  ran forever, though its memory stopped at the WebAssembly memory's 1 GB.</p>
 
-<section class="chapter" id="lumen2-floats">
-  <p class="chapter-label">24 · Part five</p>
-  <h2>Numbers that are always numbers</h2>
-  <p>Asked “What next in this project?”, I named the limitation that every section had come to end on: Lumen 2
-  had no floating point. A transform could not parse a temperature, the benchmarks could not include the usual
-  numeric programs, and the language could not simulate anything. The answer was “Yes”.</p>
-  <p>The one real design decision was what to do about infinity and NaN. In C, JavaScript or Python, a division
-  by zero or an overflow quietly produces one, and a NaN then compares unequal to everything, itself included,
-  sorts nowhere in particular, and spreads through every result that touches it. Lumen 2 already refused to let
-  integers wrap silently, so a <code>Float</code> follows the same rule: it is an IEEE 754 double that is always
-  finite. An operation whose result would be infinite stops the program with <code>float overflow</code>, and
-  <code>x / 0.0</code> stops with <code>division by zero</code>. With finite operands there is then no way to make
-  a NaN at all. Equality, ordering and sorting work on floats as on any other type, and a result is the same bits
-  on every machine and every thread.</p>
-  <figure>
-    <pre class="listing">fn mean(xs: List&lt;Float&gt;) -&gt; Float { fold(xs, 0.0, |acc, x| acc + x) / int_to_float(length(xs)) }
-
-mean([1.5, 2.5, 3.0])     <span class="c">// 2.3333333333333335</span>
-0.1 + 0.2                 <span class="c">// 0.30000000000000004</span>
-1e308 * 10.0              <span class="c">// runtime error: float overflow</span></pre>
-  </figure>
-  <p>Arithmetic now takes two integers or two floats, never one of each. Inference has to settle which, and
-  <code>fold(xs, 0.0, |acc, x| acc + x)</code> shows why it cannot decide on the spot: the lambda is checked
-  before the call tells it that <code>acc</code> is a float. So an operator whose operands are still unknown
-  waits, and is settled when its top-level function is finished; one still unknown then is an integer, so every
-  program written before floats keeps its types.</p>
-
-  <h3>Rounding literals without floats</h3>
-  <p>The compiler is a Lumen 2 program that does not use floats, yet it has to turn a literal such as
-  <code>0.1</code> into the 64 bits of the nearest double. It does the arithmetic exactly, with the bignums its
-  refinement checker already had: the decimal becomes a fraction, scaled until its quotient has 54 bits, and the
-  last bit and the remainder decide the rounding, ties to even, with subnormals handled apart. The interpreter
-  reads the same literal with JavaScript's <code>Number</code>, so a test compares the two on 600 literals, among
-  them exact ties between adjacent doubles, values a hair to either side, and subnormal ties. They agree on every
-  bit. Writing and reading floats as text is left to the host, JavaScript, whose shortest round-trip formatting is
-  hard to get right; compiled code and the interpreter call the same functions.</p>
-
-  <h3>An old bug, found by the new fuzzer</h3>
-  <p>Half the fuzzer's programs now use floats, and in the first 300 one made the compiler run out of memory.
-  The cause had nothing to do with floats. It was <code>(c1 - c2) * 7</code>, tested to lie between 0 and 6,
-  halved, and used as an index into an array of three. The refinement checker built <code>7*c1 - 7*c2</code> and
-  <code>c1 - c2</code> as two separate 64-bit adders, and the SAT solver had to discover that one was seven times
-  the other, and its search, which keeps every clause it learns, ran the compiler out of memory first. The
-  compiler from before floats failed the same way. Now every comparison is divided by the greatest common divisor of its coefficients, and every term
-  is built as that divisor times a shared reduced sum, so <code>7*c1 - 7*c2</code> reuses the circuit of
-  <code>c1 - c2</code>. What the facts say about one then reaches the other by unit propagation, and the proof
-  takes no search. Every program in the repository proves exactly the obligations it proved before.</p>
-
-  <h3>Against C</h3>
-  <div class="table-wrap">
-    <table class="t">
-      <thead><tr><th>program</th><th style="text-align:right">C</th><th style="text-align:right">C, WebAssembly</th><th style="text-align:right">Lumen 2</th><th style="text-align:right">Lumen 2 / C</th></tr></thead>
-      <tbody>
-        <tr><td>n-body, 5,000,000 steps</td><td class="num">0.25 s</td><td class="num">0.31 s</td><td class="num">0.70 s</td><td class="num">2.8×</td></tr>
-        <tr><td>spectral norm, n = 3,000</td><td class="num">0.47 s</td><td class="num">0.47 s</td><td class="num">1.63 s</td><td class="num">3.5×</td></tr>
-      </tbody>
-    </table>
-  </div>
-  <p class="caption">Best of three on one core of the same machine. Each Lumen 2 program does the same
-  floating-point operations as the C one, in the same order, and prints the same digits: −0.169075164 and
-  −0.169087605 for n-body, the published reference values.</p>
-  <p>Floats cost more than integers did, and I measured why. The first version tested every float result for
-  being finite, and dropping all those tests (as a planted bug) made n-body take a third less time. But an infinity or a
-  NaN stays one through <code>+</code>, <code>-</code> and <code>*</code>, so a result whose only use is the next
-  such operation needs no test of its own: the later test fails exactly when the earlier one would have, with the
-  same message. In <code>dx * dx + dy * dy + dz * dz</code> only the last addition is tested now, and n-body went
-  from 0.75 to 0.55 seconds. A division is not such a use, because <code>1 / inf</code> is 0, and a planted bug
-  that treats it as one must be caught by the fuzzer. Spectral norm had a cost of its own. Multiplying two
-  integers tested for overflow by dividing the product back, a 64-bit division; when both operands fit in 32 bits
-  the product cannot overflow, two comparisons show it, and spectral norm went from 2.2 to 1.6 seconds.</p>
-
-  <h3>The same sum on any number of threads</h3>
-  <p>A parallel sum of floats is where C and Lumen 2 differ most. Floating-point addition does not associate, so
-  the answer depends on how the terms are grouped. With OpenMP's <code>reduction</code>, each thread sums its own
-  share, and the shares depend on how many threads there are:</p>
-  <div class="table-wrap">
-    <table class="t">
-      <thead><tr><th style="text-align:right">threads</th><th style="text-align:right">C, OpenMP reduction</th><th style="text-align:right">Lumen 2, par_map</th></tr></thead>
-      <tbody>
-        <tr><td class="num">1</td><td class="num">0.69314713056010635</td><td class="num">0.6931471305599604</td></tr>
-        <tr><td class="num">2</td><td class="num">0.69314713056006005</td><td class="num">0.6931471305599604</td></tr>
-        <tr><td class="num">3</td><td class="num">0.69314713056002475</td><td class="num">0.6931471305599604</td></tr>
-        <tr><td class="num">4</td><td class="num">0.69314713056005628</td><td class="num">0.6931471305599604</td></tr>
-      </tbody>
-    </table>
-  </div>
-  <p class="caption">The 10 million terms of 1 − 1/2 + 1/3 − …, in <code>lumen2/bench/sum-par.c</code> and
-  <code>sum-par.lm</code>.</p>
-  <p>The Lumen 2 program splits the terms into 1,000 blocks, which <code>par_map</code> sums, and adds up the
-  block sums in order. The blocks do not depend on the number of threads, and <code>par_map</code> returns their
-  sums in order, so the result is the same bits on one thread or four. A C programmer can get the same guarantee by
-  writing the loop that way. In Lumen 2, a parallel map cannot be written any other way.</p>
-  <p>What is missing is mostly a library: there are no <code>exp</code>, <code>log</code>, power or trigonometric
-  functions yet, and the refinement checker proves nothing about floats except that a literal other than
-  <code>0.0</code> is not zero, so <code>x / 2.0</code> is pure while <code>x / y</code> keeps
-  <code>fail</code>.</p>
-</section>
-
-<section class="chapter" id="lumen2-budget">
-  <p class="chapter-label">25 · Part five</p>
-  <h2>A budget for every line</h2>
-  <p>Asked “what next” again, I went back to the last limitation of chapter 23: nothing limited a transform's
-  time. A function that looped forever on one line of a file hung the whole run, and nothing said which line it
-  was. I proposed a budget of steps for each line; the answer was “Yes”.</p>
+  <h3 id="lumen2-budget">A budget for every line</h3>
   <p>The usual fix is a timeout, and it is the wrong one here. A timeout depends on the machine and on what else
   it is doing, so a line that takes nine seconds passes on one run and fails on the next, and on four threads it
-  does not even say which line ran out. A transform is pure, so its output is the same on any number of threads.
-  I wanted its failures to be the same too, and that means counting work, not time.</p>
-  <p>Lumen 2 has no loop statement. Every loop is a function that calls itself, and the compiler turns a call in
-  tail position into a jump back to the start of the function. So a computation that runs long passes the start
-  of some function again and again, and that is where the compiled code counts. With counting on, every
-  function begins by taking one from a 64-bit global and stops with <code>out of steps</code> if the result is
-  below zero. A self tail call jumps back to just before that test, so a loop pays once per turn. Each thread runs
-  its own instance of the module, with its own counter, so the threads never share one.</p>
+  does not even say which line ran out. A transform's output is the same on any number of threads; I wanted its
+  failures to be the same too, so the budget counts work, not time. Every loop in Lumen 2 is a function that calls
+  itself, so a computation that runs long passes the start of some function again and again. With counting on,
+  every function begins by taking one from a 64-bit global, one per thread, and stops with
+  <code>out of steps</code> below zero. A self tail call jumps back to just before that test, so a loop pays once
+  per turn.</p>
   <figure>
     <pre class="listing">fn spin(k: Int) -&gt; Int { if k &lt; 0 { k } else { spin(k + 1) } }
 fn transform(n: Int, line: String) -&gt; Option&lt;String&gt; {
@@ -2773,27 +2698,17 @@ fn transform(n: Int, line: String) -&gt; Option&lt;String&gt; {
 <span class="c">$ lumen2 transform spin.lm --input rows.csv</span>
 runtime error: line 1235: out of steps (each line may take 10,000,000 steps)</pre>
   </figure>
-  <p>The harness sets the budget before each line with a builtin that exists only for it,
-  <code>tf_steps</code>, and the tool refuses a transform that names anything starting with <code>tf_</code>, so
-  a transform cannot give itself more. When a task of 64 lines fails, the tool runs its lines again, one to a task,
-  to find the failing one, as it does for any other error. The count depends only on the line, so the second run
-  fails at the same line. The test puts an endless loop on line 1,235 and expects that line on one thread and on
-  four, in two batch sizes. It then searches for the smallest budget that a whole file passes with, takes one step
-  off, and expects the same line to fail on one thread and on four.</p>
-  <p>Ten million steps is the default, and <code>--steps</code> changes it. A line of the orders benchmark takes
-  at most 172 steps, the log example 225 and the sensor example 76, so the default leaves room for functions
-  tens of thousands of times as heavy. The loop above uses up its budget, and the whole command finishes, in 0.9
-  seconds. Counting costs about 8% of a compiled run, measured back to back, for a subtraction, a write, a
-  comparison and a branch on every call. <code>--steps none</code> compiles without it.</p>
-  <p>A step is not a unit of time. A builtin such as <code>concat_strings</code> is one call however long its
-  strings are, so the budget bounds a line's time in proportion to the size of its data, not absolutely. What it
-  does guarantee is the property a timeout lacks: the same line, given the same budget, fails on every machine
-  and every run.</p>
+  <p>The harness sets the budget before each line, with a builtin that only it may name, so a transform cannot give
+  itself more, and a failing line is found again as any failure is; the count depends only on the line, so it is
+  the same line on every run. Ten million steps is the default. A line of the orders benchmark takes at most 172,
+  and counting costs about 8% of a run. A step is not a unit of time: a builtin such as
+  <code>concat_strings</code> is one step however long its strings are, so the budget bounds a line's time in
+  proportion to its data, not absolutely.</p>
 </section>
 
 <section class="chapter" id="lumen2-incremental">
-  <p class="chapter-label">26 · Part five</p>
-  <h2>Running only what changed</h2>
+  <p class="chapter-label">23 · Part five</p>
+  <h2>Running only what changed, and what it is worth</h2>
   <p>Asked “Do we have now a novel language which is useful and faster than other languages in production for
   some use cases?”, I said not yet. Lumen 2 was 1.1 to 3.5 times slower than C, and its clear wins were against
   Python and a JavaScript sandbox that isolated nothing. The reply was “I want it to be better than what's out
@@ -2901,16 +2816,27 @@ runtime error: line 1235: out of steps (each line may take 10,000,000 steps)</pr
   not matter above 3, then above 24. Each time, two of the five tests failed. A run that fails is run again in
   full, so its error and the output printed before it are exactly a full run's, and damaged or foreign state is
   ignored.</p>
-  <p>Two things went wrong on the way, and numbers that did not add up caught both. The first version read the
-  state's tables with Node's <code>Buffer.slice</code>, which, unlike the <code>slice</code> of other typed
-  arrays, does not copy. Every state looked broken, so every run transformed every line: the output was correct,
-  but there was no speedup, which is the way the design allows it to fail. And the benchmark reported that 5,000
-  changed rows made 4,354 lines to transform. The tool was right: the benchmark's random number generator had
-  picked some rows twice, and it now changes exactly the number of rows it names.</p>
-  <p>What it does not do: the file is read into memory, and the state holds a copy of the last input and output,
+    <p>What it does not do: the file is read into memory, and the state holds a copy of the last input and output,
   so a run needs room for both. A change to the transform, the library, the compiler or the budget starts again
   from nothing. And the state is trusted as the compiled transforms beside it in the cache are; its copy of the
   input is not hashed again when it is read back.</p>
+
+  <h3>What it is worth</h3>
+  <p>Then came the question that decides it: “I don't think ROI of doing this in a different language is
+  warranted. Is there a very high value (in terms of money) work which warrants this decrease in latency?” I could
+  not name one. The computing is cheap: running the function over the whole file again in C, every day for a
+  month, takes about three minutes of a four-core machine, around a cent at cloud prices, so
+  <code>--incremental</code> saves a fraction of that, and a thousand times the data would save a few dollars a
+  month. Where recomputing does cost real money, a new language still does not win. Calls to a model on every row
+  go over the network, which a transform cannot reach. Risk systems in finance are built around events, on
+  established libraries. Build systems already get their correctness from hermetic actions. And when a person is
+  waiting, it is usually because they changed the function, which makes <code>--incremental</code> start
+  again.</p>
+  <p>What is worth something is the guarantee, not the speed. Warehouses already depend on promises that nothing
+  checks: incremental refreshes trust functions declared <code>IMMUTABLE</code>, and merges by timestamp trust the
+  timestamps. A check of such a promise for code people already write, a Python function or a WebAssembly module,
+  would carry what Lumen 2 proves without asking anyone to change languages. Whether anyone would pay for it, I
+  have not tested.</p>
 </section>
 
 <div class="part">
@@ -2921,7 +2847,7 @@ runtime error: line 1235: out of steps (each line may take 10,000,000 steps)</pr
 </div>
 
 <section class="chapter" id="caught">
-  <p class="chapter-label">27 · Part six</p>
+  <p class="chapter-label">24 · Part six</p>
   <h2>What the checks caught, including my mistakes</h2>
   <ul class="plain">
     <li><b>A real bug in the reference interpreter.</b> A random program grew a string eightfold per step.
@@ -2933,7 +2859,7 @@ runtime error: line 1235: out of steps (each line may take 10,000,000 steps)</pr
     heap. That led to the paranoid mode, which poisons freed frames and validates every pointer the collector
     sees. Now that bug is caught after 8 programs.</li>
     <li><b>A hole in my own optimization.</b> The first version of frame removal treated “has no frame” and “never
-    triggers a collection” as the same property. Chapter 14 tells the story. The paranoid mode caught it before
+    triggers a collection” as the same property. <a href="#payoff">Chapter 14</a> tells the story. The paranoid mode caught it before
     anything was committed.</li>
     <li><b>A bug in the checker's checker.</b> The naive proof checker, written only to cross-check the fast one,
     was the one that was wrong.</li>
@@ -2942,7 +2868,7 @@ runtime error: line 1235: out of steps (each line may take 10,000,000 steps)</pr
     comparing against it. I found that before reporting anything.</li>
     <li><b>A claim I had to retract.</b> I wrote that the tail-call change made one benchmark about 30% faster.
     When I re-measured, its typical run was slower. I corrected the commit message before pushing, and the slowdown
-    is documented in chapter 9.</li>
+    is documented in <a href="#campaign">chapter 9</a>.</li>
     <li><b>Smaller ones, early on:</b> a user function called <code>run</code> silently replaced the program's
     entry point, and two of my hand-written test expectations were wrong while the code was right.</li>
   </ul>
@@ -2957,9 +2883,9 @@ runtime error: line 1235: out of steps (each line may take 10,000,000 steps)</pr
     checker reported counterexamples that could not happen. Those facts define a fresh value and constrain
     nothing else, so they now hold everywhere.</li>
     <li><b>Two liveness bugs in my own optimization</b>, caught by the ownership checker before anything ran
-    (chapter 18).</li>
+    (<a href="#certified">chapter 18</a>).</li>
     <li><b>A correct optimization that made everything slower.</b> Borrow inference copied the solver's arrays
-    on every update until I changed one rule (chapter 19).</li>
+    on every update until I changed one rule (<a href="#lumen2-schur">chapter 19</a>).</li>
     <li><b>A proof checker too slow to use.</b> The first RUP checker re-propagated every clause for every lemma,
     and took 22 seconds on a 3,665-lemma proof. With watched literals it takes 0.35 seconds. Keeping what the
     clauses alone imply between lemmas brought the S(4) check from 275 to 170 seconds.</li>
@@ -2968,11 +2894,11 @@ runtime error: line 1235: out of steps (each line may take 10,000,000 steps)</pr
     Replaying 200 property cases as one compiled program found it.</li>
     <li><b>A compiler that could not compile a long function.</b> The reference compiler's lowering recurses once
     per binding, and it overflowed its stack on the self-hosted compiler's table of runtime routines
-    (chapter 20), and later on the port's (chapter 21).</li>
+    (<a href="#lumen2-selfhost">chapter 20</a>), and later on the port's (<a href="#lumen2-port">chapter 20</a>).</li>
     <li><b>A crash in the original found by the port.</b> A refined <code>let</code> inside a lambda crashed the
-    JavaScript compiler, which took the refinement's bound variable for a captured one (chapter 21).</li>
+    JavaScript compiler, which took the refinement's bound variable for a captured one (<a href="#lumen2-port">chapter 20</a>).</li>
     <li><b>A host that ate part of a module.</b> The compiler's host first treated any output chunk that began
-    with byte 1 as a message from the compiler, and one chunk of a compiled module did (chapter 21).</li>
+    with byte 1 as a message from the compiler, and one chunk of a compiled module did (<a href="#lumen2-port">chapter 20</a>).</li>
     <li><b>Missing tail calls.</b> <code>a || f(x)</code> at the end of a function did not compile to a tail
     call, in either compiler, so checking that a million-element array was sorted overflowed the stack. The
     heapsort showcase found it.</li>
@@ -2995,9 +2921,9 @@ runtime error: line 1235: out of steps (each line may take 10,000,000 steps)</pr
     contradiction anything follows: an out-of-bounds access later in the function counted as proved. A defined
     value's range now covers every value its definition allows. This is a planted bug too.</li>
     <li><b>A checker that copied its database on every step</b>, until the clause being changed was taken out of
-    it first (chapter 19).</li>
+    it first (<a href="#lumen2-schur">chapter 19</a>).</li>
     <li><b>A shortcut that only handled variables.</b> When a proved <code>char_code_at</code> became inline code
-    (chapter 22), the code generator expected the string to be in a variable. The first test program read a
+    (<a href="#lumen2-speed">chapter 21</a>), the code generator expected the string to be in a variable. The first test program read a
     character from a string literal, and the compiler stopped with an internal error.</li>
     <li><b>An optimization that overflowed the compiler's stack.</b> Moving the first instructions of nested
     blocks in front of them made common subexpressions visible. But applied to every instruction, it turned a
@@ -3013,14 +2939,14 @@ runtime error: line 1235: out of steps (each line may take 10,000,000 steps)</pr
     closes its effect row. That row was also the call's own, so closing it closed the effects of the function
     making the call, and the first test program's <code>println</code> in <code>main</code> was rejected.</li>
     <li><b>A proof that ran out of memory.</b> A generated program, on its first run in CI, made the compiler
-    run out of memory while proving an array access in bounds, a bug older than everything in chapter 22. The if
+    run out of memory while proving an array access in bounds, a bug in the refinement checker's circuits. The if
     around the access said <code>!(array_length(a) &lt;= i)</code>, the goal said <code>i &lt; array_length(a)</code>,
     and the checker built a separate circuit for each. With a value near 2<sup>63</sup> in the term, the solver
     needed more and more conflicts to find the two equal. Comparisons now have one canonical form, so both are
     one literal: that proof takes no conflicts, and checking the binary search showcase takes half as long.</li>
     <li><b>A parallel program four times slower than the sequential one.</b> In the first parallel N-queens, one
     lambda passed a new list to <code>safe</code> in tail position. To keep that call a tail call, borrow inference
-    made <code>safe</code> own its list (chapter 17), and every other call of <code>safe</code> then counted
+    made <code>safe</code> own its list (<a href="#perceus">chapter 17</a>), and every other call of <code>safe</code> then counted
     references along the list. Comparing timings with the sequential program found it.</li>
     <li><b>A failure the tool could not place.</b> <code>lumen2 transform</code> finds the line that failed from
     the index <code>par_map</code> reports. A <code>par_map</code> over one element runs without the threads and
@@ -3030,7 +2956,7 @@ runtime error: line 1235: out of steps (each line may take 10,000,000 steps)</pr
     parts. <code>"ab"</code> occurs once in that string, so it gives two, as the library did.</li>
     <li><b>An old proof that ran out of memory, found by the new fuzzer.</b> A product of a difference by a
     constant made the refinement checker build two adders that the SAT solver had to find equal; the compiler from
-    before floats failed the same way (chapter 24).</li>
+    before floats failed the same way (<a href="#lumen2-floats">chapter 21</a>).</li>
     <li><b>A planted bug the fuzzer could not see.</b> The fast path for multiplying two integers that fit in 32
     bits came with a planted bug that allows 33. The fuzzer missed it in 300 programs: its large numbers were
     constants, which take another path, and two of them in the window between 2<sup>31</sup> and 2<sup>33</sup>
@@ -3041,6 +2967,17 @@ runtime error: line 1235: out of steps (each line may take 10,000,000 steps)</pr
     <li><b>A benchmark in C that disagreed with itself.</b> The edit-distance program printed one answer natively
     and another compiled to WebAssembly. <code>long</code> is 32 bits there, and the random number generator
     overflowed. The benchmark runner compares every version's output, so the mistake never reached a timing.</li>
+    <li><b>An optimization that silently did nothing.</b> The first version of <code>--incremental</code> read its
+    state's tables with Node's <code>Buffer.slice</code>, which, unlike the <code>slice</code> of other typed arrays,
+    does not copy. Every state looked broken, so every run transformed every line: the output was right, and there
+    was no speedup, the way the design allows it to fail. A profile showed the state being read and then
+    ignored.</li>
+    <li><b>A benchmark that changed fewer rows than it said.</b> It reported that 5,000 changed rows meant 4,354 lines
+    to transform. The tool was right: the benchmark's random number generator had picked some rows twice. It now
+    changes exactly the number of rows it names.</li>
+    <li><b>A measurement I spoiled.</b> I ran the test suite while a benchmark was running, so the C baseline
+    could have looked slower than it is, which would have flattered Lumen 2. I stopped the run and timed everything
+    again on an idle machine.</li>
   </ul>
 
   <h3>How the session went</h3>
@@ -3077,7 +3014,7 @@ runtime error: line 1235: out of steps (each line may take 10,000,000 steps)</pr
 </section>
 
 <section class="chapter" id="limits">
-  <p class="chapter-label">28 · Part six</p>
+  <p class="chapter-label">25 · Part six</p>
   <h2>What this shows, and what it doesn't</h2>
   <p>It shows one long session of sustained engineering in which each layer was checked by the one below it. The
   work is a compiler, an independent re-implementation of it, a prover with a proof checker, an optimizer gated by
@@ -3088,6 +3025,12 @@ runtime error: line 1235: out of steps (each line may take 10,000,000 steps)</pr
   <a href="https://github.com/igniting/the-ai-frontier#readme">README</a>. CI repeats the checks, including the
   whole proof of S(4) = 44 in both languages, and a second check of the Lumen 2 proof by a checker proved unable to
   crash, on every push.</p>
+  <p>It does not show that Lumen 2 is worth adopting. It is 1.1 to 3.5 times slower than C on one core. Its wins
+  come from what its checker proves, not from speed: a parallel result that cannot depend on the threads, user code
+  that cannot reach anything, failures and budgets that are the same on every run, and outputs that can be reused
+  because the function provably depends on nothing else. Those are real, but in money they are small, and
+  <a href="#lumen2-incremental">chapter 23</a> ends on the honest form of that: the guarantee would be worth more as a check on code
+  people already write than as a reason to write code in a new language.</p>
   <p>It does not show that earlier models could not have done this. I can't run that comparison. If you want to,
   <a href="https://github.com/igniting/the-ai-frontier/blob/main/CHALLENGE.md">CHALLENGE.md</a> turns the original
   task into a benchmark with an automatic scorer. S(4) = 44 has been known since 1965; what is new here is that a
